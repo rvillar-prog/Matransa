@@ -370,19 +370,75 @@ function ticketCardHTML(t){
   </div>`;
 }
 
-function imprimirHoy(){
-  const tickets=historial.filter(t=>t.visibleTareo!==false);
-  if(!tickets.length)return;
+function abrirSelectorImpresion(){
+  // Recopilar fechas disponibles con tickets
+  const fechas=[...new Set(historial.filter(t=>t.visibleTareo!==false).map(t=>t.fechaEjecucion).filter(Boolean))].sort((a,b)=>{
+    const pa=a.split('/').reverse().join('');const pb=b.split('/').reverse().join('');return pb.localeCompare(pa);
+  });
+  if(!fechas.length){showAlert('tareo','No hay tickets para imprimir.','warn');return;}
+  // Crear modal de selección
+  let modal = document.getElementById('modal-imprimir-sel');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'modal-imprimir-sel';
+    modal.className = 'modal-overlay';
+    modal.style.display = 'none';
+    modal.innerHTML = `<div class="modal" style="width:340px">
+      <div class="modal-title">Seleccionar día a imprimir</div>
+      <div class="field" style="margin-bottom:1rem">
+        <label>Fecha de ejecución</label>
+        <select id="imprimir-fecha-sel" style="width:100%"></select>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" onclick="document.getElementById('modal-imprimir-sel').style.display='none'">Cancelar</button>
+        <button class="btn btn-primary" onclick="imprimirFechaSeleccionada()">🖨 Imprimir</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+  const sel = document.getElementById('imprimir-fecha-sel');
+  const hoy = hoyStr();
+  const manana = new Date();manana.setDate(manana.getDate()+1);
+  const manStr = manana.toLocaleDateString('es-PE');
+  sel.innerHTML = fechas.map(f=>`<option value="${f}">${f===hoy?'Hoy — '+f:f===manStr?'Mañana — '+f:f}</option>`).join('');
+  modal.style.display = 'flex';
+}
+window.abrirSelectorImpresion=abrirSelectorImpresion;
+window.imprimirFechaSeleccionada=imprimirFechaSeleccionada;
+
+function imprimirFechaSeleccionada(){
+  const fechaSel = document.getElementById('imprimir-fecha-sel').value;
+  document.getElementById('modal-imprimir-sel').style.display='none';
+  imprimirHoy(fechaSel);
+}
+
+function imprimirHoy(fechaFiltro){
+  const ORDEN_AREAS_PRINT=['HABILITADO','ENSAMBLE','FIERRO','PINTURA DE FIERRO','EVA','ACABADO','MANTENIMIENTO','PROD-ADMIN'];
+  const fechaImprimir = fechaFiltro || hoyStr();
+  const tickets=historial.filter(t=>t.visibleTareo!==false && t.fechaEjecucion===fechaImprimir);
+  if(!tickets.length){showAlert('tareo','No hay tickets para esa fecha.','warn');return;}
+  // Ordenar por área según orden de planta
+  tickets.sort((a,b)=>{
+    const areaA=trabajadores.find(w=>w.nombre===(a.nombres||[])[0])?.area||'PROD-ADMIN';
+    const areaB=trabajadores.find(w=>w.nombre===(b.nombres||[])[0])?.area||'PROD-ADMIN';
+    const iA=ORDEN_AREAS_PRINT.indexOf(areaA); const iB=ORDEN_AREAS_PRINT.indexOf(areaB);
+    if(iA!==iB) return iA-iB;
+    return (a.nombres||[])[0]?.localeCompare((b.nombres||[])[0])||0;
+  });
   const fecha=new Date();
-  document.getElementById('print-fecha').textContent=fecha.toLocaleDateString('es-PE',{weekday:'long',year:'numeric',month:'long',day:'numeric'}).toUpperCase();
+  // Parsear fechaImprimir para el header
+  const partes=fechaImprimir.split('/');
+  const fechaObj=new Date(partes[2],partes[1]-1,partes[0]);
+  document.getElementById('print-fecha').textContent=fechaObj.toLocaleDateString('es-PE',{weekday:'long',year:'numeric',month:'long',day:'numeric'}).toUpperCase();
   document.getElementById('print-total').textContent=`${tickets.length} ticket${tickets.length>1?'s':''} — ${fecha.toLocaleTimeString('es-PE',{hour:'2-digit',minute:'2-digit'})}`;
   document.getElementById('print-grid').innerHTML=tickets.map(t=>{
-    const area=trabajadores.find(w=>w.nombre===t.nombres[0])?.area||'PROD-ADMIN';
+    const area=trabajadores.find(w=>w.nombre===(t.nombres||[])[0])?.area||'PROD-ADMIN';
     const aClass=AREA_CLASS[area]||'area-prod';
     const nClass=NUM_CLASS[area]||'num-prod';
     const names=t.nombres.map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
     const horaGen=fecha.toLocaleTimeString('es-PE',{hour:'2-digit',minute:'2-digit'});
-    const fechaCorta=fecha.toLocaleDateString('es-PE',{weekday:'short',day:'2-digit',month:'short'}).toUpperCase();
+    const fechaCorta=fechaObj.toLocaleDateString('es-PE',{weekday:'short',day:'2-digit',month:'short'}).toUpperCase();
+    const proyNombre=t.proyectoCodigo?(proyectosTC.find(p=>p.codigo===t.proyectoCodigo)?.nombre||t.proyecto):t.proyecto;
     return `<div class="print-ticket">
       <div class="pt-header ${aClass}">
         <div style="flex:1;margin-right:6px">
@@ -390,7 +446,7 @@ function imprimirHoy(){
           <div class="pt-area">${area}</div>
         </div>
         <div class="pt-header-right">
-          <div class="pt-badge">${t.proyecto}</div>
+          <div class="pt-badge">${proyNombre}</div>
           <div class="pt-fecha">${fechaCorta}</div>
           <div class="pt-hora">${horaGen}</div>
         </div>
@@ -2899,7 +2955,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
   <div id="pendientes-wrap" style="display:none"></div>
   <div id="tickets-wrap"><div class="empty"><div class="empty-icon">📋</div><div>Sin tickets para hoy.</div></div></div>
   <div class="actions no-print" style="margin-top:1rem">
-    <button class="btn btn-primary" id="btn-imprimir" style="display:none" onclick="imprimirHoy()">🖨 Imprimir tickets de hoy</button>
+    <button class="btn btn-primary" id="btn-imprimir" style="display:none" onclick="abrirSelectorImpresion()">🖨 Imprimir tickets</button>
   </div>
 </div>
 
