@@ -928,7 +928,7 @@ function exportarExcel(){
     if(fp&&t.proyecto!==fp)return false;
     return true;
   });
-  if(!datos.length){alert('No hay datos.');return;}
+  if(!datos.length){showAlert('hist','No hay datos para exportar.','warn');return;}
   const rows=[['Fecha ejecución','Fecha creación','Trabajador(es)','Área','Proyecto','Producto','Tarea','N°','t.u. plan','t.u. real','Diferencia','T.T. plan','T.T. real','Completado','Incidencias']];
   datos.forEach(t=>{
     const area=trabajadores.find(w=>w.nombre===(t.nombres||[])[0])?.area||'';
@@ -1236,6 +1236,13 @@ async function eliminarM3(fbId) {
   await deleteDoc(doc(db,'planM3',fbId));
 }
 
+function numeroSemanaISO(fecha) {
+  const d = new Date(Date.UTC(fecha.getFullYear(), fecha.getMonth(), fecha.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+}
 function renderM3() {
   const dias = diasSemanaActiva();
   const totalPlan = planM3.reduce((s,t)=>s+t.m3,0);
@@ -1328,13 +1335,6 @@ async function moverM3Dia(fbId, nuevoDia) {
 }
 
 
-function numeroSemanaISO(fecha) {
-  const d = new Date(Date.UTC(fecha.getFullYear(), fecha.getMonth(), fecha.getDate()));
-  const dayNum = d.getUTCDay() || 7;
-  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
-  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-}
 
 function imprimirM3() {
   const dias = diasSemanaActiva().slice(0,6);
@@ -1974,7 +1974,7 @@ async function eliminarProyectoTC(id, nombre) {
     renderConfigProyectosTC();
     poblarFiltroProyectoTC();
     poblarSelectProyectoTC();
-  } catch(e) { alert('Error al eliminar.'); }
+  } catch(e) { showAlert('hist','Error al eliminar el ticket.','warn'); }
 }
 
 function showAlert(pagina,msg,tipo){const el=document.getElementById(`alert-${pagina}`);el.className=`alert alert-${tipo}`;el.textContent=msg;el.style.display='block';setTimeout(()=>el.style.display='none',3500);}
