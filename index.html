@@ -815,6 +815,14 @@ function renderHist(){
     if(fp&&t.proyecto!==fp)return false;
     return true;
   });
+  // Ordenar por fecha de ejecución descendente (más reciente primero)
+  datos.sort((a,b)=>{
+    const fa=fechaStrToDate(a.fechaEjecucion||a.fecha||'1/1/2000');
+    const fb=fechaStrToDate(b.fechaEjecucion||b.fecha||'1/1/2000');
+    if(fb-fa!==0) return fb-fa;
+    // Mismo día: ordenar por hora de creación
+    return new Date(b.guardado||0)-new Date(a.guardado||0);
+  });
   const cont=document.getElementById('hist-content');
   if(!datos.length){cont.innerHTML='<div class="empty"><div class="empty-icon">📊</div><div>Sin registros.</div></div>';return;}
   cont.innerHTML=`<table><thead><tr>
