@@ -1135,7 +1135,9 @@ async function guardarM3() {
   const dia = document.getElementById('m3-dia').value;
   if(!of||!l||!a||!h) { alert('Completa OF y las tres dimensiones.'); return; }
   const m3 = parseFloat((l*a*h*c).toFixed(3));
-  const entrada = {of, l, a, h, cant:c, m3, dia, m3Real:null, guardado:new Date().toISOString()};
+  const precioSoles = parseFloat(document.getElementById('m3-precio-soles').value)||0;
+  const precioDolares = parseFloat(document.getElementById('m3-precio-usd').value)||0;
+  const entrada = {of, l, a, h, cant:c, m3, dia, precioSoles, precioDolares, m3Real:null, guardado:new Date().toISOString()};
   try {
     await addDoc(collection(db,'planM3'), entrada);
     cerrarM3();
@@ -1252,48 +1254,111 @@ async function moverM3Dia(fbId, nuevoDia) {
   await updateDoc(doc(db,'planM3',fbId),{dia:nuevoDia});
 }
 
+
+function numeroSemanaISO(fecha) {
+  const d = new Date(Date.UTC(fecha.getFullYear(), fecha.getMonth(), fecha.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+}
+
 function imprimirM3() {
   const dias = diasSemanaActiva().slice(0,6);
   const totalPlan = planM3.reduce((s,t)=>s+t.m3,0);
   const totalReal = planM3.filter(t=>t.m3Real!=null).reduce((s,t)=>s+t.m3Real,0);
-  const semLabel = semanaOffset===0?'Semana actual':semanaOffset===1?'Semana siguiente':`Semana +${semanaOffset}`;
+  // Calcular semana ISO y rango de fechas
+  const primerDia = dias[0].date;
+  const ultimoDia = dias[dias.length-1].date;
+  const nroSemana = numeroSemanaISO(primerDia);
+  const meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  const rangoFechas = `${primerDia.getDate()} al ${ultimoDia.getDate()} de ${meses[ultimoDia.getMonth()]} de ${ultimoDia.getFullYear()}`;
+  // Totales monetarios
+  let totalSoles = 0, totalDolares = 0, realSoles = 0, realDolares = 0;
+  planM3.forEach(e => {
+    const ps = parseFloat(e.precioSoles)||0;
+    const pd = parseFloat(e.precioDolares)||0;
+    const cant = parseFloat(e.cant)||1;
+    totalSoles += ps*cant;
+    totalDolares += pd*cant;
+    if(e.m3Real!=null) { realSoles += ps*cant; realDolares += pd*cant; }
+  });
+  const fmtS = v => v>0?'S/. '+v.toLocaleString('es-PE',{minimumFractionDigits:0,maximumFractionDigits:0}):'—';
+  const fmtD = v => v>0?'$ '+v.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0}):'—';
   const w = window.open('','_blank');
   w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
   <style>
     *{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,sans-serif;}
-    body{padding:12mm;background:#fff;}
-    h1{font-size:18px;font-weight:700;letter-spacing:1px;margin-bottom:2px;}
-    .sub{font-size:11px;color:#888;margin-bottom:10px;}
-    .meta-bar{display:flex;align-items:center;gap:16px;background:#f5f5f5;border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:12px;}
-    .meta-num{font-size:20px;font-weight:700;}
+    @page{size:A3 landscape;margin:10mm;}
+    body{padding:8mm;background:#fff;}
+    .header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px;border-bottom:2px solid #1a1a18;padding-bottom:8px;}
+    .header-left h1{font-size:22px;font-weight:900;letter-spacing:2px;color:#1a1a18;margin-bottom:2px;}
+    .header-left .semana{font-size:15px;font-weight:700;color:#2563eb;}
+    .header-left .rango{font-size:11px;color:#666;margin-top:2px;}
+    .header-right{text-align:right;font-size:10px;color:#888;}
+    .meta-bar{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:10px;}
+    .meta-card{border:1px solid #e5e7eb;border-radius:6px;padding:7px 10px;}
+    .meta-label{font-size:9px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px;}
+    .meta-val{font-size:18px;font-weight:800;}
+    .meta-sub{font-size:9px;color:#aaa;margin-top:1px;}
+    .progress-wrap{border:1px solid #e5e7eb;border-radius:6px;padding:8px 12px;margin-bottom:10px;}
+    .progress-label{display:flex;justify-content:space-between;font-size:10px;margin-bottom:4px;}
+    .progress-track{height:14px;background:#f0f0f0;border-radius:7px;overflow:hidden;position:relative;}
+    .progress-fill{height:100%;border-radius:7px;transition:width 0.3s;}
+    .progress-meta-line{position:absolute;right:0;top:0;height:100%;width:2px;background:#1a1a18;}
     .grid{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;}
-    .dia{border:1.5px solid #1a1a18;border-radius:6px;overflow:hidden;}
-    .dia-head{background:#1a1a18;color:#fff;padding:6px 8px;text-align:center;}
-    .dia-nombre{font-size:11px;font-weight:700;text-transform:uppercase;}
-    .dia-fecha{font-size:9px;color:#aaa;margin-top:1px;}
-    .dia-totales{display:flex;justify-content:space-between;padding:5px 8px;background:#f5f5f5;border-bottom:1px solid #eee;}
-    .dia-plan{font-size:11px;font-weight:600;color:#2563eb;}
-    .dia-real{font-size:11px;font-weight:600;color:#27ae60;}
+    .dia{border:1.5px solid #1a1a18;border-radius:8px;overflow:hidden;}
+    .dia-head{color:#fff;padding:7px 8px;text-align:center;}
+    .dia-nombre{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1px;}
+    .dia-fecha{font-size:9px;opacity:0.8;margin-top:1px;}
+    .dia-stats{display:flex;justify-content:space-between;padding:5px 8px;background:#f8f8f8;border-bottom:1px solid #eee;}
+    .stat-plan{font-size:11px;font-weight:700;color:#2563eb;}
+    .stat-real{font-size:11px;font-weight:700;color:#27ae60;}
+    .stat-acum{font-size:9px;color:#888;}
     .of-item{padding:5px 8px;border-bottom:0.5px solid #eee;font-size:10px;}
-    .of-id{font-weight:600;color:#1a1a18;}
-    .of-dim{color:#888;font-size:9px;}
-    .of-m3{font-weight:700;color:#1a1a18;float:right;}
-    .dia-empty{padding:8px;text-align:center;font-size:10px;color:#ccc;}
-    .progress{height:5px;background:#eee;margin:4px 8px 6px;border-radius:3px;overflow:hidden;}
-    .progress-bar{height:100%;border-radius:3px;}
-    .footer{margin-top:10px;display:flex;justify-content:space-between;font-size:10px;color:#888;border-top:0.5px solid #eee;padding-top:6px;}
+    .of-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:2px;}
+    .of-id{font-weight:700;color:#1a1a18;font-size:10px;}
+    .of-m3{font-weight:800;font-size:11px;color:#1a1a18;}
+    .of-desc{color:#555;font-size:9px;line-height:1.3;margin-bottom:2px;}
+    .of-dim{color:#999;font-size:8px;}
+    .of-precio{display:flex;gap:6px;margin-top:2px;}
+    .precio-sol{font-size:9px;font-weight:600;color:#059669;background:#f0fdf4;padding:1px 5px;border-radius:3px;}
+    .precio-usd{font-size:9px;font-weight:600;color:#2563eb;background:#eff6ff;padding:1px 5px;border-radius:3px;}
+    .of-proy-badge{display:inline-block;font-size:8px;font-weight:600;padding:1px 6px;border-radius:3px;color:#fff;margin-bottom:2px;}
+    .dia-empty{padding:12px 8px;text-align:center;font-size:10px;color:#ccc;font-style:italic;}
+    .dia-progress{height:4px;background:#eee;overflow:hidden;}
+    .dia-progress-fill{height:100%;}
+    .footer{margin-top:8px;display:flex;justify-content:space-between;font-size:9px;color:#aaa;border-top:0.5px solid #eee;padding-top:5px;}
+    .motivacion{text-align:center;font-size:11px;font-weight:700;color:#1a1a18;letter-spacing:1px;margin-bottom:6px;text-transform:uppercase;}
   </style></head><body>
-  <h1>MATRANSA — Plan de producción semanal</h1>
-  <div class="sub">${semLabel} · Meta: ${metaM3} m³ · Generado: ${new Date().toLocaleString('es-PE')}</div>
+  <div class="header">
+    <div class="header-left">
+      <h1>MATRANSA</h1>
+      <div class="semana">SEMANA N° ${nroSemana}</div>
+      <div class="rango">${rangoFechas}</div>
+    </div>
+    <div class="header-right">
+      <div style="font-size:11px;font-weight:600;color:#1a1a18">PLAN DE PRODUCCIÓN SEMANAL</div>
+      <div>Meta mínima: <strong>${metaM3} m³</strong></div>
+      <div style="margin-top:4px">Generado: ${new Date().toLocaleString('es-PE')}</div>
+    </div>
+  </div>
   <div class="meta-bar">
-    <div><div style="font-size:10px;color:#888">META SEMANAL</div><div class="meta-num">${metaM3} m³</div></div>
-    <div><div style="font-size:10px;color:#888">PLANIFICADO</div><div class="meta-num" style="color:#2563eb">${totalPlan.toFixed(1)} m³</div></div>
-    <div><div style="font-size:10px;color:#888">REAL</div><div class="meta-num" style="color:#27ae60">${totalReal.toFixed(1)} m³</div></div>
-    <div style="flex:1">
-      <div style="font-size:10px;color:#888;margin-bottom:3px">AVANCE</div>
-      <div style="background:#eee;height:8px;border-radius:4px;overflow:hidden">
-        <div style="background:${totalReal>=metaM3?'#27ae60':'#2563eb'};height:100%;width:${Math.min(100,(totalReal/metaM3)*100)}%"></div>
-      </div>
+    <div class="meta-card"><div class="meta-label">Meta semanal</div><div class="meta-val">${metaM3} m³</div><div class="meta-sub">mínimo requerido</div></div>
+    <div class="meta-card"><div class="meta-label">Planificado</div><div class="meta-val" style="color:#2563eb">${totalPlan.toFixed(1)} m³</div><div class="meta-sub">${totalPlan>=metaM3?'✓ Cubre la meta':'⚠ Falta '+(metaM3-totalPlan).toFixed(1)+' m³'}</div></div>
+    <div class="meta-card"><div class="meta-label">Real ejecutado</div><div class="meta-val" style="color:#27ae60">${totalReal.toFixed(1)} m³</div><div class="meta-sub">${metaM3>0?Math.round((totalReal/metaM3)*100)+'% de la meta':'—'}</div></div>
+    <div class="meta-card"><div class="meta-label">Pendiente</div><div class="meta-val" style="color:#e8a020">${Math.max(0,metaM3-totalReal).toFixed(1)} m³</div><div class="meta-sub">por ejecutar</div></div>
+    <div class="meta-card" style="border-color:#059669"><div class="meta-label">Valor S/.</div><div class="meta-val" style="color:#059669;font-size:14px">${fmtS(totalSoles)}</div><div class="meta-sub">planificado semana</div></div>
+    <div class="meta-card" style="border-color:#2563eb"><div class="meta-label">Valor $</div><div class="meta-val" style="color:#2563eb;font-size:14px">${fmtD(totalDolares)}</div><div class="meta-sub">planificado semana</div></div>
+  </div>
+  <div class="progress-wrap">
+    <div class="progress-label">
+      <span style="font-weight:600;font-size:11px">Progreso semanal</span>
+      <span style="font-size:10px;color:#888">Real: <strong style="color:#27ae60">${totalReal.toFixed(1)} m³</strong> de <strong>${metaM3} m³</strong> meta · <strong>${totalPlan.toFixed(1)} m³</strong> planificado</span>
+    </div>
+    <div class="progress-track">
+      <div class="progress-fill" style="background:${totalReal>=metaM3?'#27ae60':'#2563eb'};width:${Math.min(100,(totalReal/metaM3)*100)}%"></div>
+      <div class="progress-meta-line"></div>
     </div>
   </div>
   <div class="grid">
@@ -1301,30 +1366,54 @@ function imprimirM3() {
       const entradas = planM3.filter(t=>t.dia===d.fecha);
       const planDia = entradas.reduce((s,t)=>s+t.m3,0);
       const realDia = entradas.filter(t=>t.m3Real!=null).reduce((s,t)=>s+t.m3Real,0);
+      const acumPlan = dias.slice(0,dias.indexOf(d)+1).reduce((s,dd)=>s+planM3.filter(t=>t.dia===dd.fecha).reduce((a,t)=>a+t.m3,0),0);
       const pct = planDia>0?Math.min(100,(realDia/planDia)*100):0;
-      const barC = realDia>=planDia&&planDia>0?'#27ae60':realDia>0?'#e8a020':'#ccc';
-      return `<div class="dia">
-        <div class="dia-head">
+      const barC = realDia>=planDia&&planDia>0?'#27ae60':realDia>0?'#e8a020':'#2563eb';
+      const esDiaActual = d.fecha===new Date().toLocaleDateString('es-PE');
+      return `<div class="dia" style="${esDiaActual?'border-color:#2563eb;border-width:2.5px':''}">
+        <div class="dia-head" style="background:#1a1a18">
           <div class="dia-nombre">${d.nombre}</div>
           <div class="dia-fecha">${d.fecha}</div>
         </div>
-        <div class="dia-totales">
-          <span class="dia-plan">Plan: ${planDia.toFixed(1)}m³</span>
-          <span class="dia-real">Real: ${realDia.toFixed(1)}m³</span>
+        <div class="dia-stats">
+          <div>
+            <div class="stat-plan">Plan: ${planDia.toFixed(2)} m³</div>
+            <div class="stat-acum">Acum: ${acumPlan.toFixed(2)} m³</div>
+          </div>
+          <div style="text-align:right">
+            <div class="stat-real">Real: ${realDia>0?realDia.toFixed(2)+' m³':'—'}</div>
+          </div>
         </div>
-        <div class="progress"><div class="progress-bar" style="background:${barC};width:${pct}%"></div></div>
-        ${entradas.length?entradas.map(e=>`<div class="of-item">
-          <span class="of-id">${e.of}</span><span class="of-m3">${e.m3}m³</span>
-          <div class="of-dim">${e.l}×${e.a}×${e.h}m · ${e.cant}und${e.m3Real!=null?' · Real:'+e.m3Real+'m³':''}</div>
-        </div>`).join(''):`<div class="dia-empty">Sin OF asignadas</div>`}
+        <div class="dia-progress"><div class="dia-progress-fill" style="background:${barC};width:${pct}%"></div></div>
+        ${entradas.length?entradas.map(e=>{
+          const proy = proyectosTC.find(p=>e.of&&e.of.startsWith(p.codigo))||proyectosTC.find(p=>e.proyecto===p.codigo);
+          const proyColor = proy?proy.color:'#888';
+          const proyNombre = proy?proy.nombre:'';
+          const ps = parseFloat(e.precioSoles)||0;
+          const pd = parseFloat(e.precioDolares)||0;
+          const cant = parseFloat(e.cant)||1;
+          return `<div class="of-item">
+            ${proyNombre?`<span class="of-proy-badge" style="background:${proyColor}">${proyNombre.substring(0,18)}</span>`:''}
+            <div class="of-header">
+              <span class="of-id">${e.of}</span>
+              <span class="of-m3">${e.m3} m³</span>
+            </div>
+            <div class="of-dim">${e.l}×${e.a}×${e.h}m · ${cant} und${e.m3Real!=null?' · ✓ Real: '+e.m3Real+' m³':''}</div>
+            ${ps>0||pd>0?`<div class="of-precio">
+              ${ps>0?`<span class="precio-sol">S/. ${(ps*cant).toLocaleString('es-PE',{maximumFractionDigits:0})}</span>`:''}
+              ${pd>0?`<span class="precio-usd">$ ${(pd*cant).toLocaleString('en-US',{maximumFractionDigits:0})}</span>`:''}
+            </div>`:''}
+          </div>`;
+        }).join(''):`<div class="dia-empty">Sin OF asignadas</div>`}
       </div>`;
     }).join('')}
   </div>
   <div class="footer">
-    <span>MATRANSA — Sistema de Tareos</span>
+    <span>MATRANSA — Sistema de Tareos · Semana N° ${nroSemana}</span>
+    <span style="font-weight:700;color:#1a1a18">META: ${metaM3} m³ mínimos · ¡Vamos equipo!</span>
     <span>Para pegar en todas las áreas · ${new Date().toLocaleDateString('es-PE')}</span>
   </div>
-  </body></html>`);
+  </body></html>\`);
   w.document.close();
   w.print();
 }
@@ -2162,6 +2251,10 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
       <div class="field"><label>Ancho (m)</label><input type="number" id="m3-a" min="0" step="0.01" placeholder="0.00" oninput="calcM3()"/></div>
       <div class="field"><label>Alto (m)</label><input type="number" id="m3-h" min="0" step="0.01" placeholder="0.00" oninput="calcM3()"/></div>
       <div class="field"><label>Total m³</label><input type="text" id="m3-total" readonly style="background:#f8f7f4;color:#1a1a18;font-weight:600;font-size:15px"/></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.875rem;margin-bottom:0.875rem">
+      <div class="field"><label>Precio unitario S/. <span style="font-size:10px;color:#aaa">(opcional)</span></label><input type="number" id="m3-precio-soles" min="0" step="0.01" placeholder="0.00"/></div>
+      <div class="field"><label>Precio unitario $ <span style="font-size:10px;color:#aaa">(opcional)</span></label><input type="number" id="m3-precio-usd" min="0" step="0.01" placeholder="0.00"/></div>
     </div>
     <div class="field" style="margin-bottom:0.875rem">
       <label>Día de ejecución</label>
