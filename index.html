@@ -550,7 +550,15 @@ function renderGanttDiario(){
     });
   });
 
-  const trabajadoresOrdenados=Object.keys(porTrab).sort();
+  const ORDEN_AREAS=['HABILITADO','ENSAMBLE','FIERRO','PINTURA DE FIERRO','EVA','ACABADO','MANTENIMIENTO','PROD-ADMIN'];
+  const trabajadoresOrdenados=Object.keys(porTrab).sort((a,b)=>{
+    const tA=trabajadores.find(w=>w.nombre===a);
+    const tB=trabajadores.find(w=>w.nombre===b);
+    const iA=ORDEN_AREAS.indexOf(tA?.area||'PROD-ADMIN');
+    const iB=ORDEN_AREAS.indexOf(tB?.area||'PROD-ADMIN');
+    if(iA!==iB) return iA-iB;
+    return a.localeCompare(b);
+  });
   if(!trabajadoresOrdenados.length){
     document.getElementById('gantt-diario').innerHTML=`<div style="padding:2rem;text-align:center;color:var(--text-secondary);font-size:13px">Sin tickets para esta fecha.</div>`;
     return;
@@ -574,12 +582,12 @@ function renderGanttDiario(){
   const horas=[];
   for(let h=horaInicio;h<=horaFin;h++) horas.push(h);
 
-  let html=`<div style="overflow-x:auto;padding-bottom:1rem">
+  let html=`<div style="overflow-x:auto;padding-bottom:1rem" id="gantt-scroll-wrap">
   <div style="min-width:${labelW+ganttW+20}px">`;
 
   // Header eje de horas
   html+=`<div style="display:flex;margin-bottom:4px">
-    <div style="width:${labelW}px;flex-shrink:0"></div>
+    <div style="width:${labelW}px;flex-shrink:0;position:sticky;left:0;background:var(--surface-0);z-index:2"></div>
     <div style="position:relative;flex:1;height:${headerH}px;border-bottom:1px solid var(--border)">`;
   horas.forEach(h=>{
     const x=((h-horaInicio)/duracionTotal)*100;
@@ -608,7 +616,7 @@ function renderGanttDiario(){
     const alerta=hrsLibres>=1;
 
     html+=`<div style="display:flex;align-items:center;margin-bottom:6px">
-      <div style="width:${labelW}px;flex-shrink:0;padding-right:8px">
+      <div style="width:${labelW}px;flex-shrink:0;padding-right:8px;position:sticky;left:0;background:var(--surface-0);z-index:1">
         <div style="font-size:11px;font-weight:500;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${nomCorto}</div>
         <div style="font-size:10px;color:var(--text-secondary)">${area}</div>
       </div>
