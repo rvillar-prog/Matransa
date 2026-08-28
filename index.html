@@ -715,7 +715,13 @@ function renderKanban(){
   document.getElementById('k-horas').textContent=horasPlan.toFixed(1)+'h';
   // Capacidad del día según horario
   const jornada=jornadaProductiva(fechaActiva);
-  const totalTrab=trabajadores.filter(w=>w.area!=='PROD-ADMIN').length;
+  // Solo operarios productivos: OPERARIO BASE/INTERMEDIO/SUPERIOR, excluye coordinadores, ADM y Andree
+  const cargosProductivos=['OPERARIO BASE','OPERARIO INTERMEDIO','OPERARIO SUPERIOR'];
+  const operariosProductivos=trabajadores.filter(w=>
+    cargosProductivos.includes(w.cargo) &&
+    !w.nombre.includes('VILLAFUERTE NAVARRETE') // Andree: analista, no operario
+  );
+  const totalTrab=operariosProductivos.length;
   const capacidad=totalTrab*jornada;
   const libre=Math.max(0,capacidad-horasPlan);
   const pctPlan=capacidad>0?Math.round((horasPlan/capacidad)*100):0;
@@ -723,7 +729,7 @@ function renderKanban(){
   const elLibre=document.getElementById('k-libre');
   elLibre.textContent=libre.toFixed(1)+'h';
   elLibre.style.color=libre>capacidad*0.3?'#EF9F27':libre>0?'#27ae60':'#27ae60';
-  document.getElementById('k-libre-sub').textContent=`${totalTrab} trab. × ${jornada}h jornada`;
+  document.getElementById('k-libre-sub').textContent=`${totalTrab} operarios × ${jornada}h jornada`;
   document.getElementById('k-comp').textContent=ticketsHoy.filter(t=>t.tu_real).length;
   const cont=document.getElementById('kanban-board');
   cont.innerHTML=AREAS_LIST.map(area=>{
