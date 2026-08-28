@@ -503,13 +503,21 @@ function setKanbanVista(v){
 }
 
 function horaFinJornada(fechaStr){
-  // fechaStr en formato dd/mm/yyyy
   const parts=fechaStr.split('/');
   const d=new Date(parts[2],parts[1]-1,parts[0]);
-  const dow=d.getDay(); // 0=dom,1=lun,...,5=vie,6=sab
-  if(dow===5) return 18;   // viernes
-  if(dow===6) return 13;   // sábado
-  return 17.5;             // lunes-jueves
+  const dow=d.getDay();
+  if(dow===5) return 18;
+  if(dow===6) return 13;
+  return 17.5;
+}
+function jornadaProductiva(fechaStr){
+  // Descuenta 1h de almuerzo (12-13h) de L-V; sabado no tiene almuerzo
+  const parts=fechaStr.split('/');
+  const d=new Date(parts[2],parts[1]-1,parts[0]);
+  const dow=d.getDay();
+  if(dow===6) return 5;    // sabado: 8-13h sin almuerzo
+  if(dow===5) return 9;    // viernes: 8-18h - 1h almuerzo
+  return 8.5;              // lunes-jueves: 8-17:30h - 1h almuerzo
 }
 
 function renderGanttDiario(){
@@ -615,11 +623,20 @@ function renderGanttDiario(){
       const w=((b.fin-b.inicio)/duracionTotal)*100;
       const horaInicioStr=`${Math.floor(b.inicio)}:${String(Math.round((b.inicio%1)*60)).padStart(2,'0')}`;
       const horaFinStr=`${Math.floor(b.fin)}:${String(Math.round((b.fin%1)*60)).padStart(2,'0')}`;
-      const tareaCorta=b.t.tarea&&b.t.tarea.length>20?b.t.tarea.substring(0,18)+'…':b.t.tarea||'—';
       const done=!!b.t.tu_real;
-      html+=`<div title="${b.t.tarea} — ${horaInicioStr} a ${horaFinStr} (${b.t.tt}h)" style="position:absolute;left:${x}%;width:${w}%;top:4px;bottom:4px;background:${done?color+'cc':color};border-radius:4px;display:flex;align-items:center;padding:0 6px;box-sizing:border-box;overflow:hidden;cursor:default;${done?'opacity:0.7':''}">
-        <span style="font-size:10px;font-weight:500;color:${colorText};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${tareaCorta}</span>
-        ${done?`<span style="margin-left:4px;font-size:10px;color:${colorText}">✓</span>`:''}
+      const proy=b.t.proyecto||'';
+      const prod=b.t.producto||'';
+      const tarea=b.t.tarea||'—';
+      const tooltipTxt=`${proy} · ${prod} · ${tarea} | ${horaInicioStr}–${horaFinStr} (${b.t.tt}h)`;
+      // Texto visible según ancho del bloque (en px aproximado)
+      const wPx=(b.fin-b.inicio)/duracionTotal*(ganttW);
+      let textoVisible='';
+      if(wPx>200) textoVisible=`${proy} · ${tarea.length>18?tarea.substring(0,16)+'…':tarea}`;
+      else if(wPx>100) textoVisible=tarea.length>14?tarea.substring(0,12)+'…':tarea;
+      else if(wPx>50) textoVisible=tarea.length>8?tarea.substring(0,6)+'…':tarea;
+      else textoVisible='';
+      html+=`<div title="${tooltipTxt}" style="position:absolute;left:${x}%;width:${w}%;top:4px;bottom:4px;background:${done?color+'cc':color};border-radius:4px;display:flex;align-items:center;padding:0 6px;box-sizing:border-box;overflow:hidden;cursor:default;${done?'opacity:0.7':''}">
+        <span style="font-size:10px;font-weight:500;color:${colorText};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${textoVisible}${done?' ✓':''}</span>
       </div>`;
     });
 
@@ -697,7 +714,7 @@ function renderKanban(){
   const horasPlan=ticketsHoy.reduce((s,t)=>s+t.tt,0);
   document.getElementById('k-horas').textContent=horasPlan.toFixed(1)+'h';
   // Capacidad del día según horario
-  const jornada=horaFinJornada(fechaActiva)-8;
+  const jornada=jornadaProductiva(fechaActiva);
   const totalTrab=trabajadores.filter(w=>w.area!=='PROD-ADMIN').length;
   const capacidad=totalTrab*jornada;
   const libre=Math.max(0,capacidad-horasPlan);
