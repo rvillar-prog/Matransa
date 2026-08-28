@@ -905,6 +905,8 @@ function renderKanban(){
       <div class="kanban-col-body">${cards}</div>
     </div>`;
   }).join('');
+  // Si el Gantt diario está visible, actualizarlo con la nueva fecha
+  if(kanbanVista==='gantt') renderGanttDiario();
 }
 
 // ===== HISTORIAL =====
