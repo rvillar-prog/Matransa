@@ -1665,7 +1665,8 @@ function renderTorre() {
             <span style="font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;background:${prioBg};color:${prioTxt};flex-shrink:0;margin-left:4px">${prioLabel}</span>
           </div>
           <div style="font-size:13px;font-weight:700;color:var(--text-primary);margin-bottom:1px">${of.numero||'—'}</div>
-          <div style="font-size:11px;color:var(--text-secondary);margin-bottom:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${of.descripcion||'—'}</div>
+          <div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${of.descripcion||'—'}</div>
+          <div style="display:flex;gap:3px;flex-wrap:wrap;margin-bottom:4px">${['H-1','H-2','H-3','H-4','H-5','H-6','H-7'].map(g=>{const aprobado=(of.gatesAprobados||{})[g];return `<span style="font-size:8px;padding:1px 5px;border-radius:3px;font-weight:600;background:${aprobado?'#EAF3DE':'var(--surface-0)'};color:${aprobado?'#3B6D11':'var(--text-muted)'};border:0.5px solid ${aprobado?'#639922':'var(--border)'}" title="${aprobado?g+' aprobado el '+new Date(aprobado.fecha).toLocaleDateString('es-PE'):g+' pendiente'}">${g}</span>`;}).join('')}</div>
           ${bloqueado?`<div style="font-size:10px;color:#f57f17;margin-bottom:5px;background:#fff8e1;padding:3px 6px;border-radius:4px">⚠ ${of.bloqueoTipo}</div>`:''}
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;margin-bottom:6px">
             <span style="font-size:9px;padding:3px 4px;border-radius:4px;background:var(--surface-1);color:var(--text-secondary);text-align:center;border:0.5px solid var(--border)">${of.gate||'—'}</span>
@@ -1787,25 +1788,194 @@ async function guardarOF() {
 }
 
 // ===== MOVER OF =====
+
+// ===== GATES DE CONTROL =====
+const GATES_CONFIG = {
+  'H-1': {
+    titulo: 'Gate H-1 — Comercial a Visita',
+    participantes: ['Raphael Cisneros','Pablo Arce','Ricardo Villar','Eduardo Nightingale'],
+    checklist: [
+      'Modular / Partes definidas',
+      'Materiales definidos',
+      'Secuencia de fabricación establecida'
+    ]
+  },
+  'H-2': {
+    titulo: 'Gate H-2 — Visita a Especificaciones',
+    participantes: ['Raphael Cisneros','Pablo Arce','Ricardo Villar','Eduardo Nightingale'],
+    checklist: [
+      'Dimensiones verificadas en obra',
+      'Piezas de cierre definidas',
+      'Accesos a obra evaluados',
+      'Acabados de vecinos / armonización revisada'
+    ]
+  },
+  'H-3': {
+    titulo: 'Gate H-3 — Especificaciones a Compras',
+    participantes: ['Raphael Cisneros','Pablo Arce','Ronald Cajo','Ricardo Villar','Eduardo Nightingale'],
+    checklist: [
+      'Listado de piezas completo',
+      'Optimización de materiales realizada',
+      'Familias de materiales definidas',
+      'Servicios determinados'
+    ]
+  },
+  'H-4': {
+    titulo: 'Gate H-4 — Compras a Producción',
+    participantes: ['Raphael Cisneros','Pablo Arce','Ronald Cajo','Ricardo Villar'],
+    checklist: [
+      'Compras completas confirmadas',
+      'Compras inteligentes aplicadas',
+      'Orden de servicio emitida',
+      'Servicios controlados'
+    ]
+  },
+  'H-5': {
+    titulo: 'Gate H-5 — Producción a APT',
+    participantes: ['Raphael Cisneros','Pablo Arce','Neicer Calampa','Ronald Cajo','Ricardo Villar'],
+    checklist: [
+      'Revisión de todas las áreas completada',
+      'Calidad verificada',
+      'Cantidades correctas',
+      'Comparativo con muestras aprobado',
+      'Foto al equipo tomada'
+    ]
+  },
+  'H-6': {
+    titulo: 'Gate H-6 — APT a Obra',
+    participantes: ['Ronald Cajo','Evaristo Rinza','Neicer Calampa','Ricardo Villar'],
+    checklist: [
+      'Embalaje completado',
+      'Piezas completas verificadas',
+      'Guía de remisión emitida',
+      'Acta de entrega preparada'
+    ]
+  },
+  'H-7': {
+    titulo: 'Gate H-7 — Obra a Cierre',
+    participantes: ['Darío Calderón','Evaristo Rinza','Ronald Cajo'],
+    checklist: [
+      'Simetrías verificadas en obra',
+      'Calidad aprobada en sitio',
+      'Acta de entrega firmada por cliente',
+      'Funcionalidad verificada',
+      'Fotos y videos al equipo enviados'
+    ]
+  }
+};
+
+// Mapa etapa → gate requerido para avanzar
+const ETAPA_A_GATE = {
+  'Comercial':        'H-1',
+  'Visita':           'H-2',
+  'Especificaciones': 'H-3',
+  'Compras':          'H-4',
+  'Producción':       'H-5',
+  'APT':              'H-6',
+  'Obra':             'H-7'
+};
+
+const ORDEN_ETAPAS = ['Comercial','Visita','Especificaciones','Compras','Producción','APT','Obra','Cierre'];
+
+function gateRequerido(etapaActual, etapaNueva) {
+  const iActual = ORDEN_ETAPAS.indexOf(etapaActual);
+  const iNueva = ORDEN_ETAPAS.indexOf(etapaNueva);
+  if(iNueva <= iActual) return null; // retroceso o mismo, no requiere gate
+  return ETAPA_A_GATE[etapaActual] || null;
+}
+
+function mostrarChecklist(gateKey) {
+  const gate = GATES_CONFIG[gateKey];
+  if(!gate) { document.getElementById('gate-checklist-wrap').style.display='none'; return; }
+  const wrap = document.getElementById('gate-checklist-wrap');
+  wrap.style.display = 'block';
+  document.getElementById('gate-titulo').textContent = gate.titulo;
+  document.getElementById('gate-participantes').textContent = 'Participantes: ' + gate.participantes.join(', ');
+  const lista = document.getElementById('gate-items');
+  lista.innerHTML = gate.checklist.map((item, i) => `
+    <label style="display:flex;align-items:flex-start;gap:8px;padding:8px 10px;background:var(--surface-1);border-radius:6px;cursor:pointer;border:0.5px solid var(--border)">
+      <input type="checkbox" id="gate-check-${i}" style="margin-top:2px;width:16px;height:16px;cursor:pointer" onchange="verificarGateCompleto()"/>
+      <span style="font-size:13px;color:var(--text-primary)">${item}</span>
+    </label>`).join('');
+  document.getElementById('btn-confirmar-mover').disabled = true;
+  document.getElementById('btn-confirmar-mover').style.opacity = '0.4';
+}
+
+function verificarGateCompleto() {
+  const gate = GATES_CONFIG[document.getElementById('gate-key-actual').value];
+  if(!gate) return;
+  const todos = gate.checklist.every((_, i) => document.getElementById(`gate-check-${i}`)?.checked);
+  const btn = document.getElementById('btn-confirmar-mover');
+  btn.disabled = !todos;
+  btn.style.opacity = todos ? '1' : '0.4';
+}
+
+function onCambiarEtapaMover() {
+  const of = ofs.find(o=>o.fbId===fbIdMoverOF);
+  if(!of) return;
+  const nuevaEtapa = document.getElementById('mover-etapa').value;
+  const gateKey = gateRequerido(of.etapa, nuevaEtapa);
+  document.getElementById('gate-key-actual').value = gateKey||'';
+  if(gateKey) {
+    mostrarChecklist(gateKey);
+    document.getElementById('mover-gate').value = gateKey;
+  } else {
+    document.getElementById('gate-checklist-wrap').style.display='none';
+    const btn = document.getElementById('btn-confirmar-mover');
+    btn.disabled = false;
+    btn.style.opacity = '1';
+  }
+}
+
 function abrirMoverOF(fbId) {
   fbIdMoverOF = fbId;
   const of = ofs.find(o=>o.fbId===fbId);
   if(!of) return;
-  document.getElementById('mover-of-info').innerHTML = `<strong>${of.numero}</strong> · ${of.descripcion} · Etapa actual: <strong>${of.etapa}</strong>`;
+  const p = proyectosTC.find(x=>x.codigo===of.proyectoCodigo);
+  document.getElementById('mover-of-info').innerHTML = `<strong>${of.numero}</strong> · ${of.descripcion}<br><span style="font-size:12px;color:var(--text-secondary)">Proyecto: ${p?.nombre||of.proyectoCodigo||'—'} · Etapa actual: <strong>${of.etapa}</strong></span>`;
   document.getElementById('mover-etapa').value = of.etapa||'Producción';
   document.getElementById('mover-gate').value = of.gate||'H-5';
+  document.getElementById('gate-checklist-wrap').style.display='none';
+  document.getElementById('gate-key-actual').value='';
+  const btn = document.getElementById('btn-confirmar-mover');
+  btn.disabled = false; btn.style.opacity='1';
   document.getElementById('modal-mover-of').style.display='flex';
 }
 function cerrarMoverOF() { document.getElementById('modal-mover-of').style.display='none'; fbIdMoverOF=null; }
 async function confirmarMoverOF() {
   const nuevaEtapa = document.getElementById('mover-etapa').value;
   const nuevoGate = document.getElementById('mover-gate').value;
+  const gateKey = document.getElementById('gate-key-actual').value;
   const of = ofs.find(o=>o.fbId===fbIdMoverOF);
   if(!of) return;
+  // Construir registro del gate completado
+  const gateCompletado = gateKey ? {
+    gate: gateKey,
+    fecha: new Date().toISOString(),
+    checklist: (GATES_CONFIG[gateKey]?.checklist||[]).map((item,i)=>({
+      item, completado: document.getElementById(`gate-check-${i}`)?.checked||false
+    }))
+  } : null;
   const mov = of.historialMovimientos||[];
-  mov.push({de:of.etapa, a:nuevaEtapa, gate:nuevoGate, fecha:new Date().toISOString(), hora:new Date().toLocaleTimeString('es-PE',{hour:'2-digit',minute:'2-digit'})});
-  await updateDoc(doc(db,'ofs',fbIdMoverOF),{etapa:nuevaEtapa, gate:nuevoGate, fechaEntradaEtapa:new Date().toISOString(), historialMovimientos:mov});
+  mov.push({
+    de: of.etapa,
+    a: nuevaEtapa,
+    gate: nuevoGate,
+    gateCompletado,
+    fecha: new Date().toISOString(),
+    hora: new Date().toLocaleTimeString('es-PE',{hour:'2-digit',minute:'2-digit'})
+  });
+  const gatesAprobados = of.gatesAprobados||{};
+  if(gateKey) gatesAprobados[gateKey] = {fecha:new Date().toISOString(), aprobado:true};
+  await updateDoc(doc(db,'ofs',fbIdMoverOF),{
+    etapa: nuevaEtapa,
+    gate: nuevoGate,
+    fechaEntradaEtapa: new Date().toISOString(),
+    historialMovimientos: mov,
+    gatesAprobados
+  });
   cerrarMoverOF();
+  showAlert('torre',`OF ${of.numero} movida a ${nuevaEtapa}${gateKey?' · Gate '+gateKey+' aprobado':''}`, 'success');
 }
 
 // ===== BLOQUEOS =====
@@ -1982,7 +2152,7 @@ function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classL
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
-window.confirmarTicketSobrecarga=confirmarTicketSobrecarga;window.renderDashboard=renderDashboard;window.abrirReasignar=abrirReasignar;window.cerrarReasignar=cerrarReasignar;window.confirmarReasignar=confirmarReasignar;window.abrirPosponer=abrirPosponer;window.cerrarPosponer=cerrarPosponer;window.confirmarPosponer=confirmarPosponer;window.asignarPendiente=asignarPendiente;window.poblarOFsModal=poblarOFsModal;window.seleccionarOFModal=seleccionarOFModal;window.actualizarColorTC=actualizarColorTC;window.abrirCrearOF=abrirCrearOF;window.abrirEditarOF=abrirEditarOF;window.cerrarOF=cerrarOF;window.guardarOF=guardarOF;window.abrirMoverOF=abrirMoverOF;window.cerrarMoverOF=cerrarMoverOF;window.confirmarMoverOF=confirmarMoverOF;window.abrirBloqueo=abrirBloqueo;window.cerrarBloqueo=cerrarBloqueo;window.guardarBloqueo=guardarBloqueo;window.abrirCrearProyectoTC=abrirCrearProyectoTC;window.cerrarProyectoTC=cerrarProyectoTC;window.selColor=selColor;window.guardarProyectoTC=guardarProyectoTC;window.renderTorre=renderTorre;window.toggleEtapa=toggleEtapa;window.editarProyectoTC=editarProyectoTC;window.agregarProductoUnif=agregarProductoUnif;window.eliminarProductoUnif=eliminarProductoUnif;window.eliminarProyectoTC=eliminarProyectoTC;window.renderConfigProyectosTC=renderConfigProyectosTC;window.cambiarSemana=cambiarSemana;window.moverM3Dia=moverM3Dia;window.abrirM3=abrirM3;window.cerrarM3=cerrarM3;window.calcM3=calcM3;window.guardarM3=guardarM3;window.actualizarMetaM3=actualizarMetaM3;window.registrarM3Real=registrarM3Real;window.eliminarM3=eliminarM3;window.imprimirM3=imprimirM3;window.ocultarDeTareo=ocultarDeTareo;window.ocultarDeAndree=ocultarDeAndree;window.eliminarPermanente=eliminarPermanente;
+window.confirmarTicketSobrecarga=confirmarTicketSobrecarga;window.renderDashboard=renderDashboard;window.abrirReasignar=abrirReasignar;window.cerrarReasignar=cerrarReasignar;window.confirmarReasignar=confirmarReasignar;window.abrirPosponer=abrirPosponer;window.cerrarPosponer=cerrarPosponer;window.confirmarPosponer=confirmarPosponer;window.asignarPendiente=asignarPendiente;window.poblarOFsModal=poblarOFsModal;window.seleccionarOFModal=seleccionarOFModal;window.actualizarColorTC=actualizarColorTC;window.abrirCrearOF=abrirCrearOF;window.abrirEditarOF=abrirEditarOF;window.cerrarOF=cerrarOF;window.guardarOF=guardarOF;window.abrirMoverOF=abrirMoverOF;window.cerrarMoverOF=cerrarMoverOF;window.confirmarMoverOF=confirmarMoverOF;window.onCambiarEtapaMover=onCambiarEtapaMover;window.verificarGateCompleto=verificarGateCompleto;window.abrirBloqueo=abrirBloqueo;window.cerrarBloqueo=cerrarBloqueo;window.guardarBloqueo=guardarBloqueo;window.abrirCrearProyectoTC=abrirCrearProyectoTC;window.cerrarProyectoTC=cerrarProyectoTC;window.selColor=selColor;window.guardarProyectoTC=guardarProyectoTC;window.renderTorre=renderTorre;window.toggleEtapa=toggleEtapa;window.editarProyectoTC=editarProyectoTC;window.agregarProductoUnif=agregarProductoUnif;window.eliminarProductoUnif=eliminarProductoUnif;window.eliminarProyectoTC=eliminarProyectoTC;window.renderConfigProyectosTC=renderConfigProyectosTC;window.cambiarSemana=cambiarSemana;window.moverM3Dia=moverM3Dia;window.abrirM3=abrirM3;window.cerrarM3=cerrarM3;window.calcM3=calcM3;window.guardarM3=guardarM3;window.actualizarMetaM3=actualizarMetaM3;window.registrarM3Real=registrarM3Real;window.eliminarM3=eliminarM3;window.imprimirM3=imprimirM3;window.ocultarDeTareo=ocultarDeTareo;window.ocultarDeAndree=ocultarDeAndree;window.eliminarPermanente=eliminarPermanente;
 window.registrarTiempo=registrarTiempo;window.resetTiempo=resetTiempo;
 window.abrirIncidencia=abrirIncidencia;window.cerrarIncidencia=cerrarIncidencia;window.guardarIncidencia=guardarIncidencia;
 window.renderHist=renderHist;window.exportarExcel=exportarExcel;
@@ -2551,12 +2721,13 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 
 <!-- MODAL MOVER OF -->
 <div class="modal-overlay" id="modal-mover-of">
-  <div class="modal">
+  <div class="modal" style="width:580px;max-height:90vh;overflow-y:auto">
     <div class="modal-title">Mover OF a otra etapa</div>
     <div style="background:var(--surface-1);border-radius:8px;padding:10px 12px;margin-bottom:1rem;font-size:13px" id="mover-of-info"></div>
+    <input type="hidden" id="gate-key-actual" value=""/>
     <div class="field" style="margin-bottom:0.875rem">
       <label>Nueva etapa</label>
-      <select id="mover-etapa">
+      <select id="mover-etapa" onchange="onCambiarEtapaMover()">
         <option value="Comercial">Comercial</option>
         <option value="Visita">Visita</option>
         <option value="Especificaciones">Especificaciones</option>
@@ -2567,7 +2738,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
         <option value="Cierre">Cierre</option>
       </select>
     </div>
-    <div class="field" style="margin-bottom:0.875rem">
+    <div class="field" style="margin-bottom:1rem">
       <label>Gate</label>
       <select id="mover-gate">
         <option value="H-1">H-1</option><option value="H-2">H-2</option>
@@ -2576,9 +2747,23 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
         <option value="H-7">H-7</option>
       </select>
     </div>
+    <!-- Checklist del Gate -->
+    <div id="gate-checklist-wrap" style="display:none;background:var(--surface-1);border-radius:10px;border:0.5px solid var(--border-accent);padding:14px;margin-bottom:1rem">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-size:16px">🔒</span>
+        <div>
+          <div style="font-size:13px;font-weight:600;color:var(--text-primary)" id="gate-titulo"></div>
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:1px" id="gate-participantes"></div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--text-accent);margin-bottom:10px;padding:6px 10px;background:var(--bg-accent);border-radius:6px">
+        ✓ Todos los puntos deben estar completados para avanzar la OF
+      </div>
+      <div id="gate-items" style="display:flex;flex-direction:column;gap:6px"></div>
+    </div>
     <div class="modal-actions">
       <button class="btn" onclick="cerrarMoverOF()">Cancelar</button>
-      <button class="btn btn-primary" onclick="confirmarMoverOF()">Mover OF</button>
+      <button class="btn btn-primary" id="btn-confirmar-mover" onclick="confirmarMoverOF()">Mover OF</button>
     </div>
   </div>
 </div>
