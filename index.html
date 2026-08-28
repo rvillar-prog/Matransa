@@ -1916,14 +1916,19 @@ function onCambiarEtapaMover() {
   const nuevaEtapa = document.getElementById('mover-etapa').value;
   const gateKey = gateRequerido(of.etapa, nuevaEtapa);
   document.getElementById('gate-key-actual').value = gateKey||'';
+  // Asignar gate automáticamente
   if(gateKey) {
-    mostrarChecklist(gateKey);
     document.getElementById('mover-gate').value = gateKey;
+    mostrarChecklist(gateKey);
   } else {
+    // Retroceso o misma etapa — sin checklist
     document.getElementById('gate-checklist-wrap').style.display='none';
     const btn = document.getElementById('btn-confirmar-mover');
     btn.disabled = false;
     btn.style.opacity = '1';
+    // Para retrocesos, usar el gate de la etapa destino
+    const gateDestino = ETAPA_A_GATE[nuevaEtapa]||'H-1';
+    document.getElementById('mover-gate').value = gateDestino;
   }
 }
 
@@ -2637,8 +2642,8 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
           <option value="Cierre">Cierre</option>
         </select>
       </div>
-      <div class="field"><label>Gate</label>
-        <select id="of-gate">
+      <div class="field"><label>Gate <span style="font-size:10px;color:var(--text-muted)">(automático)</span></label>
+        <select id="of-gate" disabled style="opacity:0.6">
           <option value="H-1">H-1</option><option value="H-2">H-2</option>
           <option value="H-3">H-3</option><option value="H-4">H-4</option>
           <option value="H-5" selected>H-5</option><option value="H-6">H-6</option>
@@ -2738,15 +2743,13 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
         <option value="Cierre">Cierre</option>
       </select>
     </div>
-    <div class="field" style="margin-bottom:1rem">
-      <label>Gate</label>
-      <select id="mover-gate">
-        <option value="H-1">H-1</option><option value="H-2">H-2</option>
-        <option value="H-3">H-3</option><option value="H-4">H-4</option>
-        <option value="H-5">H-5</option><option value="H-6">H-6</option>
-        <option value="H-7">H-7</option>
-      </select>
-    </div>
+    <!-- Gate se asigna automáticamente según etapa destino -->
+    <select id="mover-gate" style="display:none">
+      <option value="H-1">H-1</option><option value="H-2">H-2</option>
+      <option value="H-3">H-3</option><option value="H-4">H-4</option>
+      <option value="H-5">H-5</option><option value="H-6">H-6</option>
+      <option value="H-7">H-7</option>
+    </select>
     <!-- Checklist del Gate -->
     <div id="gate-checklist-wrap" style="display:none;background:var(--surface-1);border-radius:10px;border:0.5px solid var(--border-accent);padding:14px;margin-bottom:1rem">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
