@@ -242,9 +242,11 @@ async function agregarTicket(){
     return;
   }
 
+  const proyObj=proyectosTC.find(p=>p.codigo===proy);
+  const proyNombre=proyObj?`${proy} · ${proyObj.nombre}`:proy;
   const ticket={
     nombres:[t1,t2].filter(Boolean),
-    proyecto:proy,producto:prod,tarea,n,tu,
+    proyecto:proyNombre,producto:prod,tarea,n,tu,
     tt:parseFloat((n*tu/60).toFixed(2)),
     fechaCreacion:hoyStr(),
     fechaEjecucion:fechaEjec,
@@ -266,9 +268,11 @@ async function agregarTicket(){
 async function confirmarTicketSobrecarga(){
   const p=window._ticketPendiente;if(!p)return;
   document.getElementById('alert-sobrecarga').style.display='none';
+  const proyObj=proyectosTC.find(pr=>pr.codigo===p.proy);
+  const proyNombre=proyObj?`${p.proy} · ${proyObj.nombre}`:p.proy;
   const ticket={
     nombres:[p.t1,p.t2].filter(Boolean),
-    proyecto:p.proy,producto:p.prod,tarea:p.tarea,n:p.n,tu:p.tu,
+    proyecto:proyNombre,producto:p.prod,tarea:p.tarea,n:p.n,tu:p.tu,
     tt:parseFloat((p.n*p.tu/60).toFixed(2)),
     fechaCreacion:hoyStr(),fechaEjecucion:p.fechaEjec,
     visibleTareo:true,visibleAndree:true,
