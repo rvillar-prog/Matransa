@@ -1978,7 +1978,7 @@ async function eliminarProyectoTC(id, nombre) {
 }
 
 function showAlert(pagina,msg,tipo){const el=document.getElementById(`alert-${pagina}`);el.className=`alert alert-${tipo}`;el.textContent=msg;el.style.display='block';setTimeout(()=>el.style.display='none',3500);}
-function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='dashboard')renderDashboard();if(nombre==='m3')renderM3();if(nombre==='torre'){cargarTorre();}if(nombre==='config'){renderConfigProyectosTC();poblarSelectProyectos();}}
+function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='dashboard')renderDashboard();if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='torre'){cargarTorre();}if(nombre==='config'){renderConfigProyectosTC();poblarSelectProyectos();}}
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
@@ -1986,7 +1986,286 @@ window.confirmarTicketSobrecarga=confirmarTicketSobrecarga;window.renderDashboar
 window.registrarTiempo=registrarTiempo;window.resetTiempo=resetTiempo;
 window.abrirIncidencia=abrirIncidencia;window.cerrarIncidencia=cerrarIncidencia;window.guardarIncidencia=guardarIncidencia;
 window.renderHist=renderHist;window.exportarExcel=exportarExcel;
-window.renderKanban=renderKanban;window.kanbanNavFecha=kanbanNavFecha;window.kanbanIrHoy=kanbanIrHoy;window.setKanbanVista=setKanbanVista;
+// ===== PLANIFICACIÓN — GANTT SEMANAL =====
+let planVista = 'areas'; // 'areas' | 'ofs'
+let ganttSemanaOffset = 0;
+
+function setPlanVista(v){
+  planVista = v;
+  const btnA = document.getElementById('plan-btn-areas');
+  const btnO = document.getElementById('plan-btn-ofs');
+  if(btnA&&btnO){
+    btnA.style.background = v==='areas'?'var(--text-primary)':'transparent';
+    btnA.style.color = v==='areas'?'var(--surface-2)':'var(--text-secondary)';
+    btnO.style.background = v==='ofs'?'var(--text-primary)':'transparent';
+    btnO.style.color = v==='ofs'?'var(--surface-2)':'var(--text-secondary)';
+  }
+  renderPlanificacion();
+}
+
+function cambiarSemanaGantt(dir){
+  ganttSemanaOffset += dir;
+  if(ganttSemanaOffset < -52) ganttSemanaOffset = -52;
+  renderPlanificacion();
+}
+
+function ganttIrHoy(){
+  ganttSemanaOffset = 0;
+  renderPlanificacion();
+}
+
+function semanasDelRango(inicioDate, finDate){
+  // Retorna array de semanas (lunes) entre dos fechas
+  const semanas = [];
+  const d = new Date(inicioDate);
+  d.setDate(d.getDate() - (d.getDay()===0?6:d.getDay()-1)); // ir al lunes
+  while(d <= finDate){
+    semanas.push(new Date(d));
+    d.setDate(d.getDate()+7);
+  }
+  return semanas;
+}
+
+function renderPlanificacion(){
+  const cont = document.getElementById('plan-content');
+  if(!cont) return;
+
+  // Rango: 8 semanas desde semanaOffset
+  const hoy = new Date();
+  const lunesBase = new Date(hoy);
+  lunesBase.setDate(hoy.getDate() - (hoy.getDay()===0?6:hoy.getDay()-1) + ganttSemanaOffset*7);
+  const numSemanas = 8;
+  const semanas = [];
+  for(let i=0;i<numSemanas;i++){
+    const lun = new Date(lunesBase);
+    lun.setDate(lunesBase.getDate()+i*7);
+    const sab = new Date(lun);
+    sab.setDate(lun.getDate()+5);
+    semanas.push({lun, sab,
+      label: `S${numeroSemanaISO(lun)}`,
+      rango: `${lun.getDate()}/${lun.getMonth()+1}`
+    });
+  }
+
+  const inicioRango = semanas[0].lun;
+  const finRango = semanas[semanas.length-1].sab;
+  const nroSem = numeroSemanaISO(lunesBase);
+  const meses = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+
+  // Actualizar label
+  const lbl = document.getElementById('plan-semana-label');
+  if(lbl) lbl.textContent = `Semana N° ${nroSem} · ${lunesBase.getDate()} ${meses[lunesBase.getMonth()]} — ${semanas[numSemanas-1].sab.getDate()} ${meses[semanas[numSemanas-1].sab.getMonth()]}`;
+
+  if(planVista === 'ofs'){
+    renderGanttOFs(cont, semanas, inicioRango, finRango);
+  } else {
+    renderGanttAreas(cont, semanas, inicioRango, finRango);
+  }
+}
+
+function fechaToSemanaIdx(fecha, semanas){
+  // Retorna índice de semana a la que pertenece una fecha
+  for(let i=0;i<semanas.length;i++){
+    if(fecha >= semanas[i].lun && fecha <= semanas[i].sab) return i;
+  }
+  return -1;
+}
+
+function renderGanttAreas(cont, semanas, inicioRango, finRango){
+  const AREAS = ['HABILITADO','ENSAMBLE','FIERRO','PINTURA DE FIERRO','EVA','ACABADO','MANTENIMIENTO'];
+  const areaColor = {'HABILITADO':'#7F77DD','ENSAMBLE':'#378ADD','FIERRO':'#D85A30','PINTURA DE FIERRO':'#D4537E','EVA':'#1D9E75','ACABADO':'#639922','MANTENIMIENTO':'#888780'};
+  const labelW = 130;
+  const colW = 80;
+  const rowH = 44;
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+
+  // Para cada área y semana, sumar horas de tickets
+  const horasPorAreaSemana = {};
+  AREAS.forEach(area => {
+    horasPorAreaSemana[area] = semanas.map(sem => {
+      const tickets = historial.filter(t => {
+        if(t.visibleTareo===false) return false;
+        const fej = t.fechaEjecucion||t.fecha;
+        if(!fej) return false;
+        const d = fechaStrToDate(fej);
+        if(d < sem.lun || d > sem.sab) return false;
+        const trab = trabajadores.find(w=>w.nombre===(t.nombres||[])[0]);
+        return (trab?.area||'') === area;
+      });
+      return tickets.reduce((s,t)=>s+t.tt,0);
+    });
+  });
+
+  // Capacidad por semana por área
+  const cargosProductivos = ['OPERARIO BASE','OPERARIO INTERMEDIO','OPERARIO SUPERIOR'];
+  const operariosPorArea = {};
+  AREAS.forEach(area => {
+    operariosPorArea[area] = trabajadores.filter(w=>
+      w.area===area &&
+      cargosProductivos.includes(w.cargo) &&
+      !w.nombre.includes('VILLAFUERTE NAVARRETE')
+    ).length;
+  });
+
+  let html = `<div style="overflow-x:auto"><div style="min-width:${labelW+colW*semanas.length}px">`;
+
+  // Header semanas
+  html += `<div style="display:flex;margin-bottom:6px">
+    <div style="width:${labelW}px;flex-shrink:0"></div>`;
+  semanas.forEach((sem,i) => {
+    const esActual = ganttSemanaOffset===0 && i===0;
+    html += `<div style="width:${colW}px;flex-shrink:0;text-align:center;font-size:10px;font-weight:${esActual?'700':'500'};color:${esActual?'var(--text-accent)':'var(--text-secondary)'};padding:0 2px">
+      <div>${sem.label}</div>
+      <div style="font-size:9px;color:var(--text-muted)">${sem.rango}</div>
+    </div>`;
+  });
+  html += `</div>`;
+
+  // Filas por área
+  AREAS.forEach(area => {
+    const color = areaColor[area]||'#888';
+    const numOps = operariosPorArea[area]||0;
+    html += `<div style="display:flex;align-items:center;margin-bottom:6px">
+      <div style="width:${labelW}px;flex-shrink:0;padding-right:8px">
+        <div style="font-size:11px;font-weight:500;color:var(--text-primary)">${area}</div>
+        <div style="font-size:9px;color:var(--text-secondary)">${numOps} operario${numOps!==1?'s':''}</div>
+      </div>`;
+
+    semanas.forEach((sem,i) => {
+      const horas = horasPorAreaSemana[area][i];
+      // Capacidad: numOps × jornada (8.5h L-J promedio × 5.5 días ≈ 46.75h/semana)
+      const capacidadSem = numOps * 46.75;
+      const pct = capacidadSem > 0 ? Math.min(100, (horas/capacidadSem)*100) : 0;
+      const esSemActual = new Date() >= sem.lun && new Date() <= sem.sab;
+      const bgColor = pct > 90 ? '#FCEBEB' : pct > 70 ? '#FAEEDA' : pct > 0 ? '#EAF3DE' : 'var(--surface-1)';
+      const txtColor = pct > 90 ? '#A32D2D' : pct > 70 ? '#854F0B' : pct > 0 ? '#3B6D11' : 'var(--text-muted)';
+      const barColor = pct > 90 ? '#E24B4A' : pct > 70 ? '#EF9F27' : '#27ae60';
+
+      html += `<div style="width:${colW}px;flex-shrink:0;padding:0 3px">
+        <div style="background:${bgColor};border:${esSemActual?'1.5px solid '+color:'0.5px solid var(--border)'};border-radius:6px;padding:5px 6px;height:${rowH}px;box-sizing:border-box;display:flex;flex-direction:column;justify-content:space-between" title="${area} · ${sem.label}: ${horas.toFixed(1)}h de ${capacidadSem.toFixed(0)}h capacidad (${pct.toFixed(0)}%)">
+          <div style="font-size:10px;font-weight:600;color:${txtColor}">${horas>0?horas.toFixed(1)+'h':'—'}</div>
+          <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden">
+            <div style="height:100%;width:${pct}%;background:${barColor};border-radius:2px"></div>
+          </div>
+          <div style="font-size:9px;color:var(--text-muted)">${pct>0?pct.toFixed(0)+'%':''}</div>
+        </div>
+      </div>`;
+    });
+    html += `</div>`;
+  });
+
+  // Leyenda
+  html += `<div style="margin-top:10px;display:flex;gap:12px;font-size:10px;color:var(--text-secondary)">
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#EAF3DE;border:0.5px solid #3B6D11;display:inline-block"></span>Normal (&lt;70%)</span>
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#FAEEDA;border:0.5px solid #EF9F27;display:inline-block"></span>Carga alta (70-90%)</span>
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#FCEBEB;border:0.5px solid #E24B4A;display:inline-block"></span>Sobrecarga (&gt;90%)</span>
+  </div>`;
+
+  html += `</div></div>`;
+  cont.innerHTML = html;
+}
+
+function renderGanttOFs(cont, semanas, inicioRango, finRango){
+  const labelW = 200;
+  const colW = 80;
+  const rowH = 36;
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+
+  if(!proyectosTC.length){
+    cont.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-secondary);font-size:13px">Sin proyectos activos en la Torre de Control.</div>';
+    return;
+  }
+
+  let html = `<div style="overflow-x:auto"><div style="min-width:${labelW+colW*semanas.length+20}px">`;
+
+  // Header semanas
+  html += `<div style="display:flex;margin-bottom:6px">
+    <div style="width:${labelW}px;flex-shrink:0"></div>`;
+  semanas.forEach((sem,i) => {
+    const esActual = ganttSemanaOffset===0 && i===0;
+    html += `<div style="width:${colW}px;flex-shrink:0;text-align:center;font-size:10px;font-weight:${esActual?'700':'500'};color:${esActual?'var(--text-accent)':'var(--text-secondary)'}">
+      <div>${sem.label}</div>
+      <div style="font-size:9px;color:var(--text-muted)">${sem.rango}</div>
+    </div>`;
+  });
+  html += `</div>`;
+
+  // Filas por proyecto
+  proyectosTC.forEach(p => {
+    const entregaInt = p.entregaInterna ? new Date(p.entregaInterna) : null;
+    const entregaCont = p.entregaContrato ? new Date(p.entregaContrato) : null;
+    const diasRestantes = entregaInt ? Math.ceil((entregaInt-hoy)/(1000*60*60*24)) : null;
+    const riesgo = diasRestantes !== null ? (diasRestantes<7?'rojo':diasRestantes<15?'amarillo':'verde') : 'gris';
+    const riesgoColor = riesgo==='rojo'?'#E24B4A':riesgo==='amarillo'?'#EF9F27':riesgo==='verde'?'#27ae60':'#888';
+
+    // Header del proyecto
+    html += `<div style="display:flex;align-items:center;margin-bottom:2px;margin-top:8px">
+      <div style="width:${labelW}px;flex-shrink:0;padding-right:8px">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="width:10px;height:10px;border-radius:50%;background:${p.color};flex-shrink:0"></span>
+          <span style="font-size:11px;font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.nombre}</span>
+        </div>
+        ${entregaInt?`<div style="font-size:9px;margin-left:16px;color:${riesgoColor};font-weight:500">Entrega: ${entregaInt.toLocaleDateString('es-PE')} · ${diasRestantes<0?'VENCIDO':diasRestantes+'d'}</div>`:''}
+      </div>`;
+
+    // Barra del proyecto a lo largo de las semanas
+    semanas.forEach((sem,i) => {
+      const inicioProyecto = p.entregaInterna ? new Date(p.entregaInterna) : null;
+      // Detectar si el proyecto tiene actividad esta semana (tickets)
+      const ticketsSem = historial.filter(t => {
+        const cod = t.proyectoCodigo||(t.proyecto||'').split(' · ')[0];
+        if(cod !== p.codigo) return false;
+        const fej = t.fechaEjecucion||t.fecha;
+        if(!fej) return false;
+        const d = fechaStrToDate(fej);
+        return d >= sem.lun && d <= sem.sab;
+      });
+      const horasSem = ticketsSem.reduce((s,t)=>s+t.tt,0);
+      const tieneActividad = horasSem > 0;
+
+      // ¿Esta semana está dentro del rango del proyecto?
+      const dentroRango = entregaInt ? sem.lun <= entregaInt : true;
+      const esEntrega = entregaInt && entregaInt >= sem.lun && entregaInt <= sem.sab;
+      const esSemActual = hoy >= sem.lun && hoy <= sem.sab;
+
+      let cellBg = 'transparent';
+      let cellBorder = '0.5px solid var(--border)';
+      let cellContent = '';
+
+      if(esEntrega){
+        cellBg = '#FCEBEB';
+        cellBorder = `1.5px solid ${riesgoColor}`;
+        cellContent = `<span style="font-size:9px;font-weight:700;color:${riesgoColor}">🏁 ENTREGA</span>`;
+      } else if(tieneActividad){
+        cellBg = p.color+'22';
+        cellBorder = `1px solid ${p.color}`;
+        cellContent = `<span style="font-size:9px;color:var(--text-primary)">${horasSem.toFixed(0)}h</span>`;
+      } else if(dentroRango){
+        cellBg = p.color+'11';
+        cellBorder = `0.5px dashed ${p.color}`;
+      }
+
+      html += `<div style="width:${colW}px;flex-shrink:0;padding:0 3px">
+        <div style="background:${cellBg};border:${cellBorder};border-radius:6px;height:${rowH}px;display:flex;align-items:center;justify-content:center;${esSemActual?'box-shadow:0 0 0 1.5px '+p.color+';':''}" title="${p.nombre} · ${sem.label}: ${horasSem.toFixed(1)}h">
+          ${cellContent}
+        </div>
+      </div>`;
+    });
+    html += `</div>`;
+  });
+
+  // Leyenda
+  html += `<div style="margin-top:12px;display:flex;gap:16px;font-size:10px;color:var(--text-secondary)">
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#eee;border:1px solid #aaa;display:inline-block"></span>En rango sin tareos</span>
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#cce;border:1px solid #88a;display:inline-block"></span>Con tareos activos</span>
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#FCEBEB;border:1px solid #E24B4A;display:inline-block"></span>Semana de entrega</span>
+  </div>`;
+
+  html += `</div></div>`;
+  cont.innerHTML = html;
+}
+
+window.renderPlanificacion=renderPlanificacion;window.setPlanVista=setPlanVista;window.cambiarSemanaGantt=cambiarSemanaGantt;window.ganttIrHoy=ganttIrHoy;
 window.agregarProyecto=agregarProyecto;window.agregarProducto=agregarProducto;window.eliminarProducto=eliminarProducto;window.eliminarProyecto=eliminarProyecto;
 window.agregarTrabajador=agregarTrabajador;window.eliminarTrabajador=eliminarTrabajador;window.iniciarEdicion=iniciarEdicion;window.cerrarModal=cerrarModal;window.guardarEdicion=guardarEdicion;
 
@@ -2390,6 +2669,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     <div class="tab" onclick="showPage('andree')">Registro Andree</div>
     <div class="tab" onclick="showPage('kanban')">Kanban</div>
     <div class="tab" onclick="showPage('historial')">Historial</div>
+    <div class="tab" onclick="showPage('planificacion')">Planificación</div>
     <div class="tab" onclick="showPage('m3')">M³ Semanal</div>
     <div class="tab" onclick="showPage('dashboard')">Dashboard</div>
     <div class="tab" onclick="showPage('config')">Configuración</div>
@@ -2520,6 +2800,22 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     <div id="tc-alerta" style="display:none;background:var(--bg-danger);border:0.5px solid var(--border-danger);border-radius:8px;padding:7px 12px;margin-bottom:10px;font-size:12px;color:var(--text-danger);align-items:center;gap:6px"></div>
     <div id="tc-board"></div>
   </div>
+</div>
+
+<div class="page" id="page-planificacion">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:8px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <button onclick="cambiarSemanaGantt(-1)" style="height:32px;width:32px;border:0.5px solid var(--border);border-radius:6px;background:var(--surface-1);cursor:pointer;font-size:14px">&#9664;</button>
+      <span id="plan-semana-label" style="font-size:13px;font-weight:500;color:var(--text-primary);min-width:280px;text-align:center"></span>
+      <button onclick="cambiarSemanaGantt(1)" style="height:32px;width:32px;border:0.5px solid var(--border);border-radius:6px;background:var(--surface-1);cursor:pointer;font-size:14px">&#9654;</button>
+      <button onclick="ganttIrHoy()" style="height:32px;padding:0 12px;border:0.5px solid var(--border);border-radius:6px;background:var(--surface-1);cursor:pointer;font-size:12px;color:var(--text-secondary)">Hoy</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;background:var(--surface-1);border:0.5px solid var(--border);border-radius:8px;padding:3px">
+      <button id="plan-btn-areas" onclick="setPlanVista('areas')" style="height:28px;padding:0 14px;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;background:var(--text-primary);color:var(--surface-2)">Carga por area</button>
+      <button id="plan-btn-ofs" onclick="setPlanVista('ofs')" style="height:28px;padding:0 14px;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;background:transparent;color:var(--text-secondary)">Gantt por OF</button>
+    </div>
+  </div>
+  <div id="plan-content" style="overflow:hidden"></div>
 </div>
 
 <div class="page" id="page-m3">
