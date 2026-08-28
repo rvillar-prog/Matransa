@@ -244,18 +244,23 @@ async function agregarTicket(){
 
   const proyObj=proyectosTC.find(p=>p.codigo===proy);
   const proyNombre=proyObj?`${proy} · ${proyObj.nombre}`:proy;
+  // Extraer número de OF del producto (formato: "129738 | SILLA MB01-02 (18 und)")
+  const ofMatch=prod.match(/^(\d+)/);
+  const ofNumero=ofMatch?ofMatch[1]:'';
   const ticket={
     nombres:[t1,t2].filter(Boolean),
-    proyecto:proyNombre,producto:prod,tarea,n,tu,
+    proyecto:proyNombre,
+    proyectoCodigo:proy,
+    producto:prod,
+    ofNumero,
+    tarea,n,tu,
     tt:parseFloat((n*tu/60).toFixed(2)),
-    fechaCreacion:hoyStr(),
+    fechaCreacion:new Date().toISOString(),
     fechaEjecucion:fechaEjec,
-    // Estados independientes por vista
     visibleTareo:true,
     visibleAndree:true,
     tu_real:null,tt_real:null,completado:false,
-    incidencias:[],
-    guardado:new Date().toISOString()
+    incidencias:[]
   };
   try{
     setStatus('Guardando...');
@@ -270,9 +275,15 @@ async function confirmarTicketSobrecarga(){
   document.getElementById('alert-sobrecarga').style.display='none';
   const proyObj=proyectosTC.find(pr=>pr.codigo===p.proy);
   const proyNombre=proyObj?`${p.proy} · ${proyObj.nombre}`:p.proy;
+  const ofMatchS=p.prod.match(/^(\d+)/);
+  const ofNumeroS=ofMatchS?ofMatchS[1]:'';
   const ticket={
     nombres:[p.t1,p.t2].filter(Boolean),
-    proyecto:proyNombre,producto:p.prod,tarea:p.tarea,n:p.n,tu:p.tu,
+    proyecto:proyNombre,
+    proyectoCodigo:p.proy,
+    producto:p.prod,
+    ofNumero:ofNumeroS,
+    tarea:p.tarea,n:p.n,tu:p.tu,
     tt:parseFloat((p.n*p.tu/60).toFixed(2)),
     fechaCreacion:hoyStr(),fechaEjecucion:p.fechaEjec,
     visibleTareo:true,visibleAndree:true,
@@ -346,7 +357,7 @@ function ticketCardHTML(t){
       <button class="ticket-remove-btn no-print" onclick="ocultarDeTareo('${t.fbId}')" title="Quitar del tareo">×</button>
     </div>
     <div class="ticket-card-body">
-      <div class="ticket-field"><div class="ticket-field-label">Proyecto</div><div class="ticket-field-value">${t.proyecto}</div></div>
+      <div class="ticket-field"><div class="ticket-field-label">Proyecto</div><div class="ticket-field-value" style="font-size:11px">${t.proyectoCodigo?(proyectosTC.find(p=>p.codigo===t.proyectoCodigo)?.nombre||t.proyecto):t.proyecto}</div></div>
       <div class="ticket-field"><div class="ticket-field-label">Producto</div><div class="ticket-field-value" style="font-size:11px">${t.producto}</div></div>
       <div class="ticket-field"><div class="ticket-field-label">Tarea</div><div class="ticket-field-value">${t.tarea}</div></div>
       ${t.incidencias&&t.incidencias.length?`<div style="margin-top:6px;padding:4px 8px;background:#fff8e1;border-radius:6px;font-size:11px;color:#f57f17">⚠ ${t.incidencias.length} incidencia${t.incidencias.length>1?'s':''}</div>`:''}
@@ -400,13 +411,37 @@ function imprimirHoy(){
 }
 
 // ===== FIREBASE =====
+
+// ===== MIGRACIÓN: normalizar tickets antiguos =====
+async function migrarTicketsAntiguos() {
+  // Solo corre una vez — normaliza tickets sin proyectoCodigo
+  const sinCodigo = historial.filter(t => !t.proyectoCodigo && t.proyecto);
+  if(!sinCodigo.length) return;
+  console.log(`Migrando ${sinCodigo.length} tickets antiguos...`);
+  for(const t of sinCodigo) {
+    // Extraer código del nombre (ej: "P9" de "P9", o "P1" de "P1 · Hotel Sheraton")
+    const partes = (t.proyecto||'').split(' · ');
+    const cod = partes[0].trim();
+    // Verificar que sea un código válido (P1-P20)
+    const esCodigo = proyectosTC.find(p=>p.codigo===cod);
+    if(esCodigo) {
+      const ofMatch = (t.producto||'').match(/^(\d+)/);
+      await updateDoc(doc(db,'historial',t.fbId),{
+        proyectoCodigo: cod,
+        ofNumero: ofMatch?ofMatch[1]:''
+      });
+    }
+  }
+  console.log('Migración completada.');
+}
+
 function suscribirHistorial(){
   if(unsubHist)unsubHist();
   unsubHist=onSnapshot(collection(db,'historial'),snap=>{
     historial=snap.docs.map(d=>({fbId:d.id,...d.data()}));
     historial.sort((a,b)=>new Date(b.guardado||0)-new Date(a.guardado||0));
     setStatus('');
-    renderTicketsHoy();renderAndree();const ksel=document.getElementById('k-fecha');if(ksel)ksel.dataset.poblado='';renderKanban();poblarFiltrosHist();renderHist();renderDashboard();renderPendientes();
+    migrarTicketsAntiguos();renderTicketsHoy();renderAndree();const ksel=document.getElementById('k-fecha');if(ksel)ksel.dataset.poblado='';renderKanban();poblarFiltrosHist();renderHist();renderDashboard();renderPendientes();
   });
 }
 
@@ -636,20 +671,37 @@ function renderGanttDiario(){
       const horaInicioStr=`${Math.floor(b.inicio)}:${String(Math.round((b.inicio%1)*60)).padStart(2,'0')}`;
       const horaFinStr=`${Math.floor(b.fin)}:${String(Math.round((b.fin%1)*60)).padStart(2,'0')}`;
       const done=!!b.t.tu_real;
-      const proy=b.t.proyecto||'';
+      const proy=b.t.proyectoCodigo||(b.t.proyecto||'').split(' · ')[0]||'';
       const prod=b.t.producto||'';
       const tarea=b.t.tarea||'—';
-      const tooltipTxt=`${proy} · ${prod} · ${tarea} | ${horaInicioStr}–${horaFinStr} (${b.t.tt}h)`;
-      // Texto visible según ancho del bloque (en px aproximado)
+      // Calcular tiempo real si existe
+      const ttReal=b.t.tu_real?parseFloat((b.t.n*b.t.tu_real/60).toFixed(2)):null;
+      const wReal=ttReal?((ttReal)/duracionTotal)*100:null;
+      const excede=ttReal&&ttReal>b.t.tt;
+      const dentroTiempo=ttReal&&ttReal<=b.t.tt;
+      const pctReal=ttReal?Math.min(100,(ttReal/b.t.tt)*100):0;
+      const tooltipTxt=`${proy} · ${tarea} | ${horaInicioStr}–${horaFinStr} | Plan: ${b.t.tt}h${ttReal?` · Real: ${ttReal}h ${excede?'⚠ EXCEDE':'✓'}` : ' · Sin registrar'}`;
       const wPx=(b.fin-b.inicio)/duracionTotal*(ganttW);
       let textoVisible='';
       if(wPx>200) textoVisible=`${proy} · ${tarea.length>18?tarea.substring(0,16)+'…':tarea}`;
       else if(wPx>100) textoVisible=tarea.length>14?tarea.substring(0,12)+'…':tarea;
       else if(wPx>50) textoVisible=tarea.length>8?tarea.substring(0,6)+'…':tarea;
       else textoVisible='';
-      html+=`<div title="${tooltipTxt}" style="position:absolute;left:${x}%;width:${w}%;top:4px;bottom:4px;background:${done?color+'cc':color};border-radius:4px;display:flex;align-items:center;padding:0 6px;box-sizing:border-box;overflow:hidden;cursor:default;${done?'opacity:0.7':''}">
-        <span style="font-size:10px;font-weight:500;color:${colorText};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${textoVisible}${done?' ✓':''}</span>
+      // Bloque planificado
+      html+=`<div title="${tooltipTxt}" style="position:absolute;left:${x}%;width:${w}%;top:4px;bottom:4px;background:${color};border-radius:4px;overflow:hidden;cursor:default;border:${excede?'2px solid #E24B4A':dentroTiempo?'2px solid #27ae60':'none'}">
+        ${ttReal?`<div style="position:absolute;bottom:0;left:0;height:4px;width:${pctReal}%;background:${excede?'#E24B4A':'#27ae60'};border-radius:0 0 0 4px"></div>`:''}
+        <div style="position:absolute;inset:0;display:flex;align-items:center;padding:0 6px;overflow:hidden">
+          <span style="font-size:10px;font-weight:500;color:${colorText};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${textoVisible}${done?(excede?' ⚠':' ✓'):''}</span>
+        </div>
       </div>`;
+      // Si el real excede el planificado, mostrar extensión en rojo
+      if(excede){
+        const xExtra=x+w;
+        const wExtra=Math.min((ttReal-b.t.tt)/duracionTotal*100, (horaFin-b.fin)/duracionTotal*100);
+        if(wExtra>0) html+=`<div title="Tiempo extra: ${(ttReal-b.t.tt).toFixed(2)}h sobre lo planificado" style="position:absolute;left:${xExtra}%;width:${wExtra}%;top:4px;bottom:4px;background:#FCEBEB;border:1.5px solid #E24B4A;border-radius:0 4px 4px 0;display:flex;align-items:center;justify-content:center;box-sizing:border-box">
+          <span style="font-size:9px;color:#A32D2D;font-weight:600">+${(ttReal-b.t.tt).toFixed(1)}h</span>
+        </div>`;
+      }
     });
 
     // Bloque horas libres
@@ -807,7 +859,8 @@ function poblarFiltrosHist(){
   const trabs=[...new Set(historial.flatMap(t=>t.nombres||[]))].sort();
   const tS=document.getElementById('h-trab');const ctv=tS.value;
   tS.innerHTML='<option value="">Todos los trabajadores</option>';trabs.forEach(w=>tS.add(new Option(w.split(' ').slice(0,2).join(' '),w)));if(ctv)tS.value=ctv;
-  const proys=[...new Set(historial.map(t=>t.proyecto))];
+  // Normalizar proyectos para el filtro — usar proyectoCodigo si existe
+  const proys=[...new Set(historial.map(t=>t.proyectoCodigo||(t.proyecto&&t.proyecto.split(' · ')[0])||t.proyecto).filter(Boolean))];
   const pS=document.getElementById('h-proy');const cpv=pS.value;
   pS.innerHTML='<option value="">Todos los proyectos</option>';proys.forEach(p=>pS.add(new Option(p,p)));if(cpv)pS.value=cpv;
 }
@@ -820,7 +873,11 @@ function renderHist(){
     const fej=t.fechaEjecucion||t.fecha;
     if(ff&&fej!==ff)return false;
     if(ft&&!(t.nombres||[]).includes(ft))return false;
-    if(fp&&t.proyecto!==fp)return false;
+    if(fp){
+      // Normalizar: comparar con código directo o extraer del nombre compuesto
+      const cod = t.proyectoCodigo || (t.proyecto&&t.proyecto.split(' · ')[0]) || t.proyecto;
+      if(cod!==fp) return false;
+    }
     return true;
   });
   // Ordenar por fecha de ejecución descendente (más reciente primero)
@@ -834,7 +891,7 @@ function renderHist(){
   const cont=document.getElementById('hist-content');
   if(!datos.length){cont.innerHTML='<div class="empty"><div class="empty-icon">📊</div><div>Sin registros.</div></div>';return;}
   cont.innerHTML=`<table><thead><tr>
-    <th>Fecha ejec.</th><th>Trabajador</th><th>Área</th><th>Proyecto</th><th>Tarea</th>
+    <th>Fecha ejec.</th><th>Trabajador</th><th>Área</th><th>Proyecto</th><th>OF</th><th>Tarea</th>
     <th style="text-align:center">N°</th><th style="text-align:center">t.u. plan</th>
     <th style="text-align:center">t.u. real</th><th style="text-align:center">Dif.</th>
     <th style="text-align:center">T.T.</th><th>Incidencias</th><th></th>
@@ -848,7 +905,8 @@ function renderHist(){
       <td style="white-space:nowrap">${t.fechaEjecucion||t.fecha}</td>
       <td style="font-weight:600">${names}</td>
       <td style="font-size:11px;color:#888">${area}</td>
-      <td>${t.proyecto}</td>
+      <td style="font-size:11px">${t.proyectoCodigo||(t.proyecto||'').split(' · ')[0]||t.proyecto}</td>
+      <td style="font-size:11px;color:#888">${t.ofNumero||'—'}</td>
       <td style="font-size:11px;color:#666">${t.tarea}</td>
       <td style="text-align:center">${t.n}</td>
       <td style="text-align:center">${t.tu}'</td>
@@ -1144,7 +1202,7 @@ async function guardarM3() {
   const h=parseFloat(document.getElementById('m3-h').value)||0;
   const c=parseFloat(document.getElementById('m3-cant').value)||1;
   const dia = document.getElementById('m3-dia').value;
-  if(!of||!l||!a||!h) { alert('Completa OF y las tres dimensiones.'); return; }
+  if(!of||!l||!a||!h) { showAlert('config','Completa OF y las tres dimensiones.','warn'); return; }
   const m3 = parseFloat((l*a*h*c).toFixed(3));
   const precioSoles = parseFloat(document.getElementById('m3-precio-soles').value)||0;
   const precioDolares = parseFloat(document.getElementById('m3-precio-usd').value)||0;
@@ -1152,7 +1210,7 @@ async function guardarM3() {
   try {
     await addDoc(collection(db,'planM3'), entrada);
     cerrarM3();
-  } catch(e) { alert('Error al guardar.'); }
+  } catch(e) { showAlert('torre','Error al guardar la OF.','warn'); }
 }
 function actualizarMetaM3() {
   metaM3 = parseFloat(document.getElementById('meta-m3-input').value)||35;
@@ -1174,7 +1232,7 @@ async function registrarM3Real(fbId) {
 }
 
 async function eliminarM3(fbId) {
-  if(!confirm('¿Eliminar esta entrada?')) return;
+  if(!confirm('¿Eliminar esta OF del plan semanal?')) return;
   await deleteDoc(doc(db,'planM3',fbId));
 }
 
