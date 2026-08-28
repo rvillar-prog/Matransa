@@ -1580,28 +1580,28 @@ function renderTorre() {
       const bloqueado = of.bloqueada;
       const ticketsHoy = historial.filter(t=>t.fechaEjecucion===hoy&&t.visibleTareo!==false&&(t.ofNumero===of.numero||(t.nombres||[]).length>0)).length;
 
-      return `<div style="border-radius:8px;border:${bloqueado?'1.5px solid #EF9F27':'0.5px solid var(--border)'};background:${bloqueado?'#fffbeb':'var(--surface-2)'};overflow:hidden">
-        <div style="height:4px;background:${pColor}"></div>
-        <div style="padding:6px 8px">
-          <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:3px">
-            <span style="font-size:9px;font-weight:500;padding:2px 6px;border-radius:8px;color:#fff;background:${pColor};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:115px">${pNombre}</span>
-            <div style="display:flex;align-items:center;gap:3px;flex-shrink:0;margin-left:4px">
-              ${bloqueado?'<span style="font-size:10px;color:#f57f17">⚠</span>':''}
-              <div style="width:7px;height:7px;border-radius:50%;background:${prioDot}"></div>
-            </div>
+      const prioLabel = of.prioridad==='alta'?'ALTA':of.prioridad==='media'?'MEDIA':'BAJA';
+      const prioBg = of.prioridad==='alta'?'#FCEBEB':of.prioridad==='media'?'#FAEEDA':'#EAF3DE';
+      const prioTxt = of.prioridad==='alta'?'#A32D2D':of.prioridad==='media'?'#854F0B':'#3B6D11';
+      return `<div style="border-radius:10px;border:1.5px solid ${bloqueado?'#EF9F27':pColor};background:var(--surface-2);overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.06)">
+        <div style="height:5px;background:${pColor}"></div>
+        <div style="padding:8px 10px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
+            <span style="font-size:9px;font-weight:600;padding:2px 8px;border-radius:10px;color:#fff;background:${pColor};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px">${pNombre}</span>
+            <span style="font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;background:${prioBg};color:${prioTxt};flex-shrink:0;margin-left:4px">${prioLabel}</span>
           </div>
-          <div style="font-size:11px;font-weight:500;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${of.numero||'—'}</div>
-          <div style="font-size:10px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px">${of.descripcion||'—'}</div>
-          ${bloqueado?`<div style="font-size:9px;color:#f57f17;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">⚠ ${of.bloqueoTipo}</div>`:''}
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;margin-top:5px">
-            <span style="font-size:8px;padding:2px 4px;border-radius:3px;background:var(--surface-1);color:var(--text-secondary);text-align:center">${of.gate||'—'}</span>
-            <span style="font-size:8px;padding:2px 4px;border-radius:3px;background:var(--surface-1);color:var(--text-secondary);text-align:center">${diasAqui}d aquí</span>
-            <span style="font-size:8px;padding:2px 4px;border-radius:3px;background:${diasEntBg};color:${diasEntColor};font-weight:600;text-align:center">${diasEntChip}</span>
+          <div style="font-size:13px;font-weight:700;color:var(--text-primary);margin-bottom:1px">${of.numero||'—'}</div>
+          <div style="font-size:11px;color:var(--text-secondary);margin-bottom:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${of.descripcion||'—'}</div>
+          ${bloqueado?`<div style="font-size:10px;color:#f57f17;margin-bottom:5px;background:#fff8e1;padding:3px 6px;border-radius:4px">⚠ ${of.bloqueoTipo}</div>`:''}
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;margin-bottom:6px">
+            <span style="font-size:9px;padding:3px 4px;border-radius:4px;background:var(--surface-1);color:var(--text-secondary);text-align:center;border:0.5px solid var(--border)">${of.gate||'—'}</span>
+            <span style="font-size:9px;padding:3px 4px;border-radius:4px;background:var(--surface-1);color:var(--text-secondary);text-align:center;border:0.5px solid var(--border)">${diasAqui}d aquí</span>
+            <span style="font-size:9px;padding:3px 4px;border-radius:4px;background:${diasEntBg};color:${diasEntColor};font-weight:700;text-align:center">${diasEntChip}</span>
           </div>
-          <div style="display:flex;gap:3px;margin-top:5px">
-            <button onclick="abrirMoverOF('${of.fbId}')" style="flex:1;height:22px;font-size:9px;border:0.5px solid var(--border);border-radius:4px;background:var(--surface-1);cursor:pointer;color:var(--text-secondary)">Mover →</button>
-            <button onclick="abrirBloqueo('${of.fbId}')" style="height:22px;width:22px;font-size:10px;border:0.5px solid #ffe082;border-radius:4px;background:${bloqueado?'#fef3c7':'var(--surface-1)'};cursor:pointer" title="Inconveniente">⚠</button>
-            <button onclick="abrirEditarOF('${of.fbId}')" style="height:22px;width:22px;font-size:10px;border:0.5px solid var(--border);border-radius:4px;background:var(--surface-1);cursor:pointer" title="Editar">✎</button>
+          <div style="display:flex;gap:4px">
+            <button onclick="abrirMoverOF('${of.fbId}')" style="flex:1;height:26px;font-size:10px;font-weight:500;border:0.5px solid var(--border);border-radius:6px;background:var(--surface-1);cursor:pointer;color:var(--text-primary)">Mover →</button>
+            <button onclick="abrirBloqueo('${of.fbId}')" style="height:26px;width:28px;font-size:12px;border:0.5px solid #ffe082;border-radius:6px;background:${bloqueado?'#fef3c7':'var(--surface-1)'};cursor:pointer" title="Inconveniente">⚠</button>
+            <button onclick="abrirEditarOF('${of.fbId}')" style="height:26px;width:28px;font-size:12px;border:0.5px solid var(--border);border-radius:6px;background:var(--surface-1);cursor:pointer" title="Editar">✎</button>
           </div>
         </div>
       </div>`;
@@ -1628,9 +1628,37 @@ function renderTorre() {
 }
 
 // ===== CREAR/EDITAR OF =====
+
+function poblarOFsModal(){
+  const cod = document.getElementById('of-proyecto-tc').value;
+  const sel = document.getElementById('of-selector');
+  sel.innerHTML = '<option value="">Seleccionar OF del proyecto...</option>';
+  if(cod && proyectos[cod]) {
+    proyectos[cod].forEach(of => {
+      sel.add(new Option(of, of));
+    });
+  }
+  document.getElementById('of-num').value = '';
+  document.getElementById('of-desc').value = '';
+}
+
+function seleccionarOFModal(){
+  const val = document.getElementById('of-selector').value;
+  if(!val) return;
+  // Extraer número y descripción del formato "129738 | SILLA MB01-02 (18 und)"
+  const partes = val.split('|');
+  if(partes.length >= 2) {
+    document.getElementById('of-num').value = partes[0].trim();
+    document.getElementById('of-desc').value = partes.slice(1).join('|').trim();
+  } else {
+    document.getElementById('of-num').value = val;
+    document.getElementById('of-desc').value = val;
+  }
+}
+
 function abrirCrearOF() {
   fbIdOFEditar = null;
-  document.getElementById('modal-of-title').textContent = 'Nueva orden de fabricación';
+  document.getElementById('modal-of-title').textContent = 'Registrar OF en el flujo';
   document.getElementById('of-num').value='';
   document.getElementById('of-desc').value='';
   document.getElementById('of-prio').value='alta';
@@ -1880,7 +1908,7 @@ function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classL
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
-window.confirmarTicketSobrecarga=confirmarTicketSobrecarga;window.renderDashboard=renderDashboard;window.abrirReasignar=abrirReasignar;window.cerrarReasignar=cerrarReasignar;window.confirmarReasignar=confirmarReasignar;window.abrirPosponer=abrirPosponer;window.cerrarPosponer=cerrarPosponer;window.confirmarPosponer=confirmarPosponer;window.asignarPendiente=asignarPendiente;window.abrirCrearOF=abrirCrearOF;window.abrirEditarOF=abrirEditarOF;window.cerrarOF=cerrarOF;window.guardarOF=guardarOF;window.abrirMoverOF=abrirMoverOF;window.cerrarMoverOF=cerrarMoverOF;window.confirmarMoverOF=confirmarMoverOF;window.abrirBloqueo=abrirBloqueo;window.cerrarBloqueo=cerrarBloqueo;window.guardarBloqueo=guardarBloqueo;window.abrirCrearProyectoTC=abrirCrearProyectoTC;window.cerrarProyectoTC=cerrarProyectoTC;window.selColor=selColor;window.guardarProyectoTC=guardarProyectoTC;window.renderTorre=renderTorre;window.toggleEtapa=toggleEtapa;window.editarProyectoTC=editarProyectoTC;window.agregarProductoUnif=agregarProductoUnif;window.eliminarProductoUnif=eliminarProductoUnif;window.eliminarProyectoTC=eliminarProyectoTC;window.renderConfigProyectosTC=renderConfigProyectosTC;window.cambiarSemana=cambiarSemana;window.moverM3Dia=moverM3Dia;window.abrirM3=abrirM3;window.cerrarM3=cerrarM3;window.calcM3=calcM3;window.guardarM3=guardarM3;window.actualizarMetaM3=actualizarMetaM3;window.registrarM3Real=registrarM3Real;window.eliminarM3=eliminarM3;window.imprimirM3=imprimirM3;window.ocultarDeTareo=ocultarDeTareo;window.ocultarDeAndree=ocultarDeAndree;window.eliminarPermanente=eliminarPermanente;
+window.confirmarTicketSobrecarga=confirmarTicketSobrecarga;window.renderDashboard=renderDashboard;window.abrirReasignar=abrirReasignar;window.cerrarReasignar=cerrarReasignar;window.confirmarReasignar=confirmarReasignar;window.abrirPosponer=abrirPosponer;window.cerrarPosponer=cerrarPosponer;window.confirmarPosponer=confirmarPosponer;window.asignarPendiente=asignarPendiente;window.poblarOFsModal=poblarOFsModal;window.seleccionarOFModal=seleccionarOFModal;window.abrirCrearOF=abrirCrearOF;window.abrirEditarOF=abrirEditarOF;window.cerrarOF=cerrarOF;window.guardarOF=guardarOF;window.abrirMoverOF=abrirMoverOF;window.cerrarMoverOF=cerrarMoverOF;window.confirmarMoverOF=confirmarMoverOF;window.abrirBloqueo=abrirBloqueo;window.cerrarBloqueo=cerrarBloqueo;window.guardarBloqueo=guardarBloqueo;window.abrirCrearProyectoTC=abrirCrearProyectoTC;window.cerrarProyectoTC=cerrarProyectoTC;window.selColor=selColor;window.guardarProyectoTC=guardarProyectoTC;window.renderTorre=renderTorre;window.toggleEtapa=toggleEtapa;window.editarProyectoTC=editarProyectoTC;window.agregarProductoUnif=agregarProductoUnif;window.eliminarProductoUnif=eliminarProductoUnif;window.eliminarProyectoTC=eliminarProyectoTC;window.renderConfigProyectosTC=renderConfigProyectosTC;window.cambiarSemana=cambiarSemana;window.moverM3Dia=moverM3Dia;window.abrirM3=abrirM3;window.cerrarM3=cerrarM3;window.calcM3=calcM3;window.guardarM3=guardarM3;window.actualizarMetaM3=actualizarMetaM3;window.registrarM3Real=registrarM3Real;window.eliminarM3=eliminarM3;window.imprimirM3=imprimirM3;window.ocultarDeTareo=ocultarDeTareo;window.ocultarDeAndree=ocultarDeAndree;window.eliminarPermanente=eliminarPermanente;
 window.registrarTiempo=registrarTiempo;window.resetTiempo=resetTiempo;
 window.abrirIncidencia=abrirIncidencia;window.cerrarIncidencia=cerrarIncidencia;window.guardarIncidencia=guardarIncidencia;
 window.renderHist=renderHist;window.exportarExcel=exportarExcel;
@@ -2055,12 +2083,17 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 <!-- MODAL CREAR/EDITAR OF -->
 <div class="modal-overlay" id="modal-of">
   <div class="modal" style="width:560px;max-height:90vh;overflow-y:auto">
-    <div class="modal-title" id="modal-of-title">Nueva orden de fabricación</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.875rem;margin-bottom:0.875rem">
-      <div class="field"><label>N° OF (Soret)</label><input type="text" id="of-num" placeholder="Ej: 129746"/></div>
-      <div class="field"><label>Proyecto</label><select id="of-proyecto-tc" onchange="actualizarColorTC()"><option value="">Seleccionar...</option></select></div>
+    <div class="modal-title" id="modal-of-title">Registrar OF en el flujo</div>
+    <div class="field" style="margin-bottom:0.875rem">
+      <label>Proyecto</label>
+      <select id="of-proyecto-tc" onchange="actualizarColorTC();poblarOFsModal()"><option value="">Seleccionar proyecto...</option></select>
     </div>
-    <div class="field" style="margin-bottom:0.875rem"><label>Descripción del producto</label><input type="text" id="of-desc" placeholder="Ej: Mesa Comunal · 02 und"/></div>
+    <div class="field" style="margin-bottom:0.875rem">
+      <label>OF / Producto</label>
+      <select id="of-selector" onchange="seleccionarOFModal()" style="margin-bottom:6px"><option value="">Seleccionar OF del proyecto...</option></select>
+      <input type="text" id="of-num" placeholder="N° OF (se completa automático)" style="margin-bottom:4px"/>
+      <input type="text" id="of-desc" placeholder="Descripción (se completa automático)"/>
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.875rem;margin-bottom:0.875rem">
       <div class="field"><label>Prioridad</label>
         <select id="of-prio">
@@ -2394,7 +2427,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 
   <!-- ACCIONES -->
   <div style="display:flex;gap:0.75rem;margin-bottom:1rem;flex-wrap:wrap;align-items:center">
-    <button class="btn btn-amber" onclick="abrirCrearOF()">+ Nueva OF</button>
+    <button class="btn btn-amber" onclick="abrirCrearOF()">+ Registrar OF</button>
     <button class="btn" onclick="abrirCrearProyectoTC()">+ Proyecto</button>
     <div style="flex:1"></div>
     <select id="tc-filtro-proy" onchange="renderTorre()" style="height:34px;border:0.5px solid #ccc;border-radius:8px;padding:0 10px;font-size:13px;background:var(--surface-2)">
