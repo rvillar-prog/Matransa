@@ -1092,11 +1092,6 @@ function diasSemana(offsetSemanas=0) {
 let semanaOffset = 0;
 
 function diasSemanaActiva() {
-  // Si hoy es viernes(5) o sábado(6), mostrar semana actual Y siguiente
-  const dow = new Date().getDay();
-  if((dow===5||dow===6) && semanaOffset===0) {
-    return [...diasSemana(0), ...diasSemana(1)];
-  }
   return diasSemana(semanaOffset);
 }
 
@@ -1180,9 +1175,13 @@ function renderM3() {
   document.getElementById('m3-pct-val').textContent = pct+'%';
   document.getElementById('m3-meta-val').textContent = metaM3.toFixed(1);
 
-  // Semana label
+  // Semana label con número ISO
   const diasActivos = diasSemanaActiva();
-  const semLabel = semanaOffset===0 ? 'Semana actual' : semanaOffset===1 ? 'Semana siguiente' : `Semana +${semanaOffset}`;
+  const _primerDia = diasActivos[0].date;
+  const _ultimoDia = diasActivos[diasActivos.length-1].date;
+  const _nroSem = numeroSemanaISO(_primerDia);
+  const _mesesR = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  const semLabel = `Semana N° ${_nroSem} · ${_primerDia.getDate()} al ${_ultimoDia.getDate()} de ${_mesesR[_ultimoDia.getMonth()]}`;
 
   const grid = document.getElementById('m3-semana-grid');
   grid.innerHTML = `
@@ -1413,7 +1412,7 @@ function imprimirM3() {
     <span style="font-weight:700;color:#1a1a18">META: ${metaM3} m³ mínimos · ¡Vamos equipo!</span>
     <span>Para pegar en todas las áreas · ${new Date().toLocaleDateString('es-PE')}</span>
   </div>
-  </body></html>\`);
+  </body></html>`);
   w.document.close();
   w.print();
 }
