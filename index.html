@@ -223,18 +223,21 @@ async function agregarTicket(){
   const n=parseInt(document.getElementById('t-n').value);
   const tu=parseInt(document.getElementById('t-tu').value);
   const fechaEjec=document.getElementById('t-fecha-ejec').value;
-  if(!t1||!proy||!prod||!tarea||!n||!tu){showAlert('tareo','Completa todos los campos.','warn');return;}
-
-  // Verificar sobrecarga
+  if(!t1||!proy||!prod||!tarea||!n||!tu||n<1||tu<1){showAlert('tareo','Completa todos los campos. Unidades y tiempo deben ser mayores a 0.','warn');return;}
   const ttNuevo=parseFloat((n*tu/60).toFixed(2));
   const nombresNuevo=[t1,t2].filter(Boolean);
-  const ticketsExist=historial.filter(t=>t.visibleTareo!==false&&t.fechaEjecucion===fechaEjec&&(t.nombres||[]).some(nom=>nombresNuevo.includes(nom)));
-  const horasYa=ticketsExist.reduce((s,t)=>s+t.tt,0);
-  const horasTotal=horasYa+ttNuevo;
-  if(horasTotal>8){
+
+  // Verificar sobrecarga para ambos trabajadores
+  const sobrecargaMsg=[];
+  nombresNuevo.forEach(nom=>{
+    const ticketsNom=historial.filter(t=>t.visibleTareo!==false&&t.fechaEjecucion===fechaEjec&&(t.nombres||[]).includes(nom));
+    const horasNom=ticketsNom.reduce((s,t)=>s+t.tt,0)+ttNuevo;
+    if(horasNom>8) sobrecargaMsg.push(`${nom.split(' ').slice(0,2).join(' ')} tendrá <strong>${horasNom.toFixed(1)}h</strong>`);
+  });
+  if(sobrecargaMsg.length>0){
     window._ticketPendiente={t1,t2,proy,prod,tarea,n,tu,fechaEjec};
     const al=document.getElementById('alert-sobrecarga');
-    al.innerHTML=`<strong>⚠ Sobrecarga detectada</strong><br>${t1.split(' ').slice(0,2).join(' ')} tendrá <strong>${horasTotal.toFixed(1)}h</strong> asignadas para ${fechaEjec} (máximo recomendado: 8h).<div style="margin-top:8px;display:flex;gap:8px"><button onclick="confirmarTicketSobrecarga()" class="btn btn-xs btn-amber">Guardar igual</button><button onclick="document.getElementById('alert-sobrecarga').style.display='none'" class="btn btn-xs">Cancelar</button></div>`;
+    al.innerHTML=`<strong>⚠ Sobrecarga detectada</strong><br>${sobrecargaMsg.join(' / ')} asignadas para ${fechaEjec} (máx. recomendado: 8h).<div style="margin-top:8px;display:flex;gap:8px"><button onclick="confirmarTicketSobrecarga()" class="btn btn-xs btn-amber">Guardar igual</button><button onclick="document.getElementById('alert-sobrecarga').style.display='none'" class="btn btn-xs">Cancelar</button></div>`;
     al.style.display='block';
     return;
   }
@@ -399,7 +402,7 @@ function suscribirHistorial(){
     historial=snap.docs.map(d=>({fbId:d.id,...d.data()}));
     historial.sort((a,b)=>new Date(b.guardado||0)-new Date(a.guardado||0));
     setStatus('');
-    renderTicketsHoy();renderAndree();renderKanban();poblarFiltrosHist();renderHist();renderDashboard();renderPendientes();
+    renderTicketsHoy();renderAndree();const ksel=document.getElementById('k-fecha');if(ksel)ksel.dataset.poblado='';renderKanban();poblarFiltrosHist();renderHist();renderDashboard();renderPendientes();
   });
 }
 
@@ -691,7 +694,19 @@ function renderKanban(){
   const fechaActiva=sel?sel.value:hoyStr();
   const ticketsHoy=historial.filter(t=>t.visibleTareo!==false&&t.fechaEjecucion===fechaActiva);
   document.getElementById('k-total').textContent=ticketsHoy.length;
-  document.getElementById('k-horas').textContent=ticketsHoy.reduce((s,t)=>s+t.tt,0).toFixed(1)+'h';
+  const horasPlan=ticketsHoy.reduce((s,t)=>s+t.tt,0);
+  document.getElementById('k-horas').textContent=horasPlan.toFixed(1)+'h';
+  // Capacidad del día según horario
+  const jornada=horaFinJornada(fechaActiva)-8;
+  const totalTrab=trabajadores.filter(w=>w.area!=='PROD-ADMIN').length;
+  const capacidad=totalTrab*jornada;
+  const libre=Math.max(0,capacidad-horasPlan);
+  const pctPlan=capacidad>0?Math.round((horasPlan/capacidad)*100):0;
+  document.getElementById('k-horas-sub').textContent=`de ${capacidad.toFixed(1)}h capacidad (${pctPlan}%)`;
+  const elLibre=document.getElementById('k-libre');
+  elLibre.textContent=libre.toFixed(1)+'h';
+  elLibre.style.color=libre>capacidad*0.3?'#EF9F27':libre>0?'#27ae60':'#27ae60';
+  document.getElementById('k-libre-sub').textContent=`${totalTrab} trab. × ${jornada}h jornada`;
   document.getElementById('k-comp').textContent=ticketsHoy.filter(t=>t.tu_real).length;
   const cont=document.getElementById('kanban-board');
   cont.innerHTML=AREAS_LIST.map(area=>{
@@ -2223,7 +2238,8 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
   </div>
   <div class="kanban-metrics metrics">
     <div class="metric"><div class="metric-label">Tickets del día</div><div class="metric-value" id="k-total">0</div><div class="metric-sub">en todas las áreas</div></div>
-    <div class="metric"><div class="metric-label">Horas planificadas</div><div class="metric-value" id="k-horas">0h</div><div class="metric-sub">carga total del día</div></div>
+    <div class="metric"><div class="metric-label">Horas planificadas</div><div class="metric-value" id="k-horas">0h</div><div class="metric-sub" id="k-horas-sub">de capacidad total</div></div>
+    <div class="metric"><div class="metric-label">Horas sin planificar</div><div class="metric-value" id="k-libre" style="color:#EF9F27">0h</div><div class="metric-sub" id="k-libre-sub">capacidad disponible</div></div>
     <div class="metric"><div class="metric-label">Completados</div><div class="metric-value" id="k-comp" style="color:#27ae60">0</div><div class="metric-sub">con tiempo registrado</div></div>
   </div>
   <div class="kanban-scroll"><div class="kanban-board" id="kanban-board"></div></div>
