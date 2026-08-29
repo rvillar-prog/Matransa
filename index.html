@@ -95,9 +95,10 @@ async function init() {
   fe.value = fechaEjecucionDefecto();
   setStatus('Conectando...');
   await cargarTrabajadores();
+  suscribirTrabajadores();
   await cargarProyectos();
   await cargarTorre();
-  suscribirHistorial();suscribirM3();
+  suscribirHistorial();suscribirM3();suscribirAusencias();
 }
 
 function setStatus(msg){const el=document.getElementById('db-status');el.textContent=msg;el.style.display=msg?'block':'none';}
@@ -108,9 +109,18 @@ async function cargarTrabajadores() {
     const snap=await getDocs(collection(db,'trabajadores'));
     if(snap.empty){for(const t of TRABAJADORES_BASE)await setDoc(doc(collection(db,'trabajadores')),t);trabajadores=[...TRABAJADORES_BASE];}
     else trabajadores=snap.docs.map(d=>({id:d.id,...d.data()}));
-    trabajadores.sort((a,b)=>a.area.localeCompare(b.area)||a.nombre.localeCompare(b.nombre));
+    trabajadores.sort((a,b)=>getAreaIndex(a.area)-getAreaIndex(b.area)||a.nombre.localeCompare(b.nombre));
     poblarSelectTrabajadores();renderConfigTrabajadores();
   }catch(e){console.error(e);}
+}
+function suscribirTrabajadores(){
+  onSnapshot(collection(db,'trabajadores'), snap=>{
+    trabajadores=snap.docs.map(d=>({id:d.id,...d.data()}));
+    trabajadores.sort((a,b)=>getAreaIndex(a.area)-getAreaIndex(b.area)||a.nombre.localeCompare(b.nombre));
+    poblarSelectTrabajadores();renderConfigTrabajadores();
+    renderTicketsHoy();
+    if(document.getElementById('page-personal')?.classList.contains('active')) renderPersonal();
+  });
 }
 
 async function agregarTrabajador(){
@@ -253,6 +263,7 @@ async function agregarTicket(){
     proyectoCodigo:proy,
     producto:prod,
     ofNumero,
+    areaEjecucion:document.getElementById('t-area-ejec')?.value||null,
     tarea,n,tu,
     tt:parseFloat((n*tu/60).toFixed(2)),
     fechaCreacion:new Date().toISOString(),
@@ -300,6 +311,7 @@ function limpiarForm(){
   ['t-t1','t-t2','t-proyecto'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('t-producto').innerHTML='<option value="">Seleccionar proyecto primero</option>';
   document.getElementById('t-tarea').value='';
+  if(document.getElementById('t-area-ejec')) document.getElementById('t-area-ejec').value='';
   document.getElementById('t-n').value='1';document.getElementById('t-tu').value='';document.getElementById('t-tt').value='';
   document.getElementById('t-fecha-ejec').value=fechaEjecucionDefecto();
 }
@@ -333,11 +345,23 @@ function renderTicketsHoy(){
   // Agrupar por fecha de ejecución
   const porFecha={};
   tickets.forEach(t=>{const f=t.fechaEjecucion||t.fecha;if(!porFecha[f])porFecha[f]=[];porFecha[f].push(t);});
-  const grupos=Object.keys(porFecha).sort((a,b)=>fechaStrToDate(a)-fechaStrToDate(b));
+  // Ocultar automáticamente tickets de días anteriores después de las 17:00
+  const ahora=new Date();
+  const hora=ahora.getHours()+(ahora.getMinutes()/60);
+  const ticketsFiltrados=tickets.filter(t=>{
+    const fej=t.fechaEjecucion||t.fecha;
+    const d=fechaStrToDate(fej);
+    const esAnterior=d<fechaStrToDate(hoy);
+    if(esAnterior&&hora>=17) return false; // ocultar pasado las 17h
+    return true;
+  });
+  const grupos=Object.keys(Object.fromEntries(ticketsFiltrados.map(t=>[t.fechaEjecucion||t.fecha,true]))).sort((a,b)=>fechaStrToDate(a)-fechaStrToDate(b));
   wrap.innerHTML=grupos.map(fecha=>{
     const esHoy=fecha===hoy;
-    const label=esHoy?`Hoy — ${fecha}`:`Mañana — ${fecha}`;
-    const grupo=porFecha[fecha];
+    const mañana=new Date();mañana.setDate(mañana.getDate()+1);
+    const manStr2=mañana.toLocaleDateString('es-PE');
+    const label=esHoy?`Hoy — ${fecha}`:fecha===manStr2?`Mañana — ${fecha}`:fecha;
+    const grupo=sortTicketsByArea(ticketsFiltrados.filter(t=>(t.fechaEjecucion||t.fecha)===fecha));
     return `<div class="tickets-section-header no-print">
       <div class="tickets-section-title">${label}</div>
       <span class="tickets-count">${grupo.length} ticket${grupo.length>1?'s':''}</span>
@@ -347,7 +371,7 @@ function renderTicketsHoy(){
 }
 
 function ticketCardHTML(t){
-  const area=t.nombres&&t.nombres.length>0?(trabajadores.find(w=>w.nombre===t.nombres[0])?.area||'PROD-ADMIN'):'PENDIENTE';
+  const area=t.nombres&&t.nombres.length>0?getAreaEjecucion(t):'PENDIENTE';
   const aClass=area==='PENDIENTE'?'area-pendiente':(AREA_CLASS[area]||'area-prod');
   const nClass=area==='PENDIENTE'?'num-pendiente':(NUM_CLASS[area]||'num-prod');
   const names=t.nombres&&t.nombres.length>0?t.nombres.map(n=>n.split(' ').slice(0,2).join(' ')).join(' / '):'Sin asignar';
@@ -468,11 +492,44 @@ function imprimirHoy(fechaFiltro){
 
 // ===== FIREBASE =====
 
+
+// ===== HELPERS CENTRALIZADOS =====
+const ORDEN_AREAS_GLOBAL = ['HABILITADO','ENSAMBLE','FIERRO','PINTURA DE FIERRO','EVA','ACABADO','MANTENIMIENTO','PROD-ADMIN'];
+
+function getAreaIndex(area) {
+  const idx = ORDEN_AREAS_GLOBAL.indexOf(area);
+  return idx === -1 ? 99 : idx;
+}
+
+function getAreaEjecucion(ticket) {
+  // Retorna el área donde realmente trabaja el ticket ese día
+  // Si tiene areaEjecucion definida, usa esa; si no, usa el área base del trabajador principal
+  if(ticket.areaEjecucion) return ticket.areaEjecucion;
+  const nombre = (ticket.nombres||[])[0];
+  if(!nombre) return 'PROD-ADMIN';
+  return trabajadores.find(w=>w.nombre===nombre)?.area || 'PROD-ADMIN';
+}
+
+function sortTicketsByArea(tickets) {
+  return [...tickets].sort((a,b) => {
+    const iA = getAreaIndex(getAreaEjecucion(a));
+    const iB = getAreaIndex(getAreaEjecucion(b));
+    if(iA !== iB) return iA - iB;
+    const nA = (a.nombres||[])[0]||'';
+    const nB = (b.nombres||[])[0]||'';
+    return nA.localeCompare(nB);
+  });
+}
+
+// Flag para migración — solo corre una vez por sesión
+let migrationDone = false;
+
 // ===== MIGRACIÓN: normalizar tickets antiguos =====
 async function migrarTicketsAntiguos() {
-  // Solo corre una vez — normaliza tickets sin proyectoCodigo
+  // Solo corre una vez por sesión
+  if(migrationDone) return;
   const sinCodigo = historial.filter(t => !t.proyectoCodigo && t.proyecto);
-  if(!sinCodigo.length) return;
+  if(!sinCodigo.length) { migrationDone=true; return; }
   console.log(`Migrando ${sinCodigo.length} tickets antiguos...`);
   for(const t of sinCodigo) {
     // Extraer código del nombre (ej: "P9" de "P9", o "P1" de "P1 · Hotel Sheraton")
@@ -489,6 +546,7 @@ async function migrarTicketsAntiguos() {
     }
   }
   console.log('Migración completada.');
+  migrationDone=true;
 }
 
 function suscribirHistorial(){
@@ -506,8 +564,15 @@ function renderAndree(){
   const hoy=hoyStr();
   const mañana=new Date();mañana.setDate(mañana.getDate()+1);
   const manStr=mañana.toLocaleDateString('es-PE');
-  const hoyT=historial.filter(t=>t.visibleAndree!==false&&t.fechaEjecucion===hoy);
-  const manT=historial.filter(t=>t.visibleAndree!==false&&t.fechaEjecucion===manStr);
+  const ahora17=new Date();const hora17=ahora17.getHours()+(ahora17.getMinutes()/60);
+  // Ocultar tickets completados después de las 17h; mantener incompletos con alerta roja
+  const hoyT=sortTicketsByArea(historial.filter(t=>{
+    if(t.visibleAndree===false) return false;
+    if(t.fechaEjecucion!==hoy) return false;
+    if(hora17>=17&&t.tu_real) return false; // completado + pasó 17h = ocultar
+    return true;
+  }));
+  const manT=sortTicketsByArea(historial.filter(t=>t.visibleAndree!==false&&t.fechaEjecucion===manStr));
   document.getElementById('m-total').textContent=hoyT.length;
   const comp=hoyT.filter(t=>t.tu_real);
   document.getElementById('m-comp').textContent=comp.length;
@@ -522,7 +587,12 @@ function renderAndree(){
       const names=t.nombres.map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
       const done=!!t.tu_real;
       const incHTML=t.incidencias&&t.incidencias.length?`<div style="margin-top:6px">${t.incidencias.map(inc=>`<div style="padding:4px 8px;background:#fff8e1;border-radius:6px;font-size:11px;color:#f57f17;margin-top:3px">⚠ ${inc.hora} — ${inc.descripcion}</div>`).join('')}</div>`:'';
-      return `<div class="andree-item ${done?'done':''}">
+      const ahora=new Date();const hora=ahora.getHours()+(ahora.getMinutes()/60);
+      const esAnterior=fechaStrToDate(t.fechaEjecucion||t.fecha||hoyStr())<fechaStrToDate(hoyStr());
+      const pendienteVencido=!done&&hora>=17;
+      const alertaRojo=pendienteVencido||(!done&&esAnterior);
+      return `<div class="andree-item ${done?'done':''}" style="${alertaRojo?'border:1.5px solid #E24B4A;background:#fff8f8;':''}">
+        ${alertaRojo?`<div style="background:#E24B4A;color:#fff;font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px 4px 0 0;margin:-8px -8px 8px -8px">⚠ PENDIENTE DE REGISTRAR TIEMPO</div>`:''}
         <div class="status-dot ${done?'dot-done':'dot-pending'}"></div>
         <div class="andree-info">
           <div class="andree-name">${names} <span style="font-size:10px;color:#aaa;font-weight:400">· ${area}</span></div>
@@ -690,7 +760,7 @@ function renderGanttDiario(){
   trabajadoresOrdenados.forEach(nom=>{
     const tks=porTrab[nom];
     const trab=trabajadores.find(w=>w.nombre===nom);
-    const area=trab?.area||'PROD-ADMIN';
+    const area=getAreaEjecucion({nombres:[nom]});
     const color=areaColor[area]||'#888';
     const colorText=areaColorText[area]||'#222';
     const nomCorto=nom.split(' ').slice(0,2).join(' ');
@@ -851,9 +921,17 @@ function renderKanban(){
   elLibre.style.color=libre>capacidad*0.3?'#EF9F27':libre>0?'#27ae60':'#27ae60';
   document.getElementById('k-libre-sub').textContent=`${totalTrab} operarios × ${jornada}h jornada`;
   document.getElementById('k-comp').textContent=ticketsHoy.filter(t=>t.tu_real).length;
+  // Calcular operarios sin tareo
+  const cargosP=['OPERARIO BASE','OPERARIO INTERMEDIO','OPERARIO SUPERIOR'];
+  const opsDisp=trabajadores.filter(w=>cargosP.includes(w.cargo)&&!w.nombre.includes('VILLAFUERTE NAVARRETE'));
+  const ausenciasFecha=getAusenciasDelDia(fechaActiva);
+  const ausentes=new Set(ausenciasFecha.map(a=>a.trabajador));
+  const sinTareoK=opsDisp.filter(w=>!ausentes.has(w.nombre)&&!ticketsHoy.some(t=>(t.nombres||[]).includes(w.nombre))).length;
+  const elST=document.getElementById('k-sin-tareo');
+  if(elST){elST.textContent=sinTareoK;elST.style.color=sinTareoK>0?'#E24B4A':'#27ae60';}
   const cont=document.getElementById('kanban-board');
   cont.innerHTML=AREAS_LIST.map(area=>{
-    const tarjetas=ticketsHoy.filter(t=>(t.nombres&&t.nombres.length>0?(trabajadores.find(w=>w.nombre===t.nombres[0])?.area||'PROD-ADMIN'):'PENDIENTE')===area);
+    const tarjetas=ticketsHoy.filter(t=>getAreaEjecucion(t)===area);
     const aClass=AREA_CLASS[area]||'area-prod';
     const horasArea=tarjetas.reduce((s,t)=>s+t.tt,0);
     const compArea=tarjetas.filter(t=>t.tu_real).length;
@@ -1715,7 +1793,7 @@ function renderTorre() {
       const prioLabel = of.prioridad==='alta'?'ALTA':of.prioridad==='media'?'MEDIA':'BAJA';
       const prioBg = of.prioridad==='alta'?'#FCEBEB':of.prioridad==='media'?'#FAEEDA':'#EAF3DE';
       const prioTxt = of.prioridad==='alta'?'#A32D2D':of.prioridad==='media'?'#854F0B':'#3B6D11';
-      return `<div style="border-radius:10px;border:1.5px solid ${bloqueado?'#EF9F27':pColor};background:var(--surface-2);overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.06)">
+      return `<div style="border-radius:10px;border:1.5px solid ${bloqueado?'#EF9F27':pColor};background:${pColor}11;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.06)">
         <div style="height:5px;background:${pColor}"></div>
         <div style="padding:8px 10px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
@@ -2211,7 +2289,7 @@ async function eliminarProyectoTC(id, nombre) {
 }
 
 function showAlert(pagina,msg,tipo){const el=document.getElementById(`alert-${pagina}`);el.className=`alert alert-${tipo}`;el.textContent=msg;el.style.display='block';setTimeout(()=>el.style.display='none',3500);}
-function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='dashboard')renderDashboard();if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='torre'){cargarTorre();}if(nombre==='config'){renderConfigProyectosTC();poblarSelectProyectos();}}
+function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='dashboard')renderDashboard();if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='torre'){cargarTorre();}if(nombre==='config'){renderConfigProyectosTC();poblarSelectProyectos();}}
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
@@ -2220,6 +2298,124 @@ window.registrarTiempo=registrarTiempo;window.resetTiempo=resetTiempo;
 window.abrirIncidencia=abrirIncidencia;window.cerrarIncidencia=cerrarIncidencia;window.guardarIncidencia=guardarIncidencia;
 window.renderHist=renderHist;window.exportarExcel=exportarExcel;
 window.renderKanban=renderKanban;window.kanbanNavFecha=kanbanNavFecha;window.kanbanIrHoy=kanbanIrHoy;window.setKanbanVista=setKanbanVista;
+// ===== PESTAÑA PERSONAL =====
+let ausencias = [];
+let personalFechaOffset = 0;
+
+function personalFechaActiva() {
+  const d = new Date();
+  d.setDate(d.getDate() + personalFechaOffset);
+  return d.toLocaleDateString('es-PE');
+}
+function cambiarFechaPersonal(dir) { personalFechaOffset += dir; renderPersonal(); }
+function irHoyPersonal() { personalFechaOffset = 0; renderPersonal(); }
+
+function suscribirAusencias() {
+  onSnapshot(collection(db,'ausencias'), snap=>{
+    ausencias = snap.docs.map(d=>({fbId:d.id,...d.data()}));
+    if(document.getElementById('page-personal')?.classList.contains('active')) renderPersonal();
+    renderKanban();
+  });
+}
+
+function getAusenciasDelDia(fechaStr) {
+  return ausencias.filter(a => {
+    const partes = fechaStr.split('/');
+    const fecha = new Date(partes[2], partes[1]-1, partes[0]);
+    const inicio = new Date(a.inicio); const fin = new Date(a.fin||a.inicio);
+    fin.setHours(23,59,59);
+    return fecha >= inicio && fecha <= fin;
+  });
+}
+
+function renderPersonal() {
+  const fechaActiva = personalFechaActiva();
+  const hoy = hoyStr();
+  const manana = new Date(); manana.setDate(manana.getDate()+1);
+  const manStr = manana.toLocaleDateString('es-PE');
+  const lbl = fechaActiva===hoy?`Hoy — ${fechaActiva}`:fechaActiva===manStr?`Manana — ${fechaActiva}`:fechaActiva;
+  document.getElementById('p-fecha-label').textContent = lbl;
+  const cargosProductivos = ['OPERARIO BASE','OPERARIO INTERMEDIO','OPERARIO SUPERIOR'];
+  const operarios = trabajadores.filter(w=>cargosProductivos.includes(w.cargo)&&!w.nombre.includes('VILLAFUERTE NAVARRETE'));
+  const ausenciasDia = getAusenciasDelDia(fechaActiva);
+  const ticketsDia = historial.filter(t=>t.visibleTareo!==false&&t.fechaEjecucion===fechaActiva);
+  const jornada = jornadaProductiva(fechaActiva);
+  const TIPO_LABELS = {'descanso_medico':'🏥 Descanso medico','obra_externa':'🔧 Obra externa','vacaciones':'🏖️ Vacaciones','falta':'❌ Falta','otro':'📋 Otro'};
+  let conTareo=0, sinTareo=0, ausentesCount=0;
+  const filas = ORDEN_AREAS_GLOBAL.flatMap(area => {
+    const ops = operarios.filter(w=>w.area===area);
+    if(!ops.length) return [];
+    const header = `<div style="font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;padding:8px 4px 4px;margin-top:8px">${area}</div>`;
+    const rows = ops.map(op => {
+      const ausencia = ausenciasDia.find(a=>a.trabajador===op.nombre);
+      const tickets = ticketsDia.filter(t=>(t.nombres||[]).includes(op.nombre));
+      const horasAsig = tickets.reduce((s,t)=>s+t.tt,0);
+      const pct = jornada>0?Math.min(100,(horasAsig/jornada)*100):0;
+      const barColor = pct>90?'#E24B4A':pct>70?'#EF9F27':'#27ae60';
+      let estado, estadoBg, estadoColor;
+      if(ausencia){ausentesCount++;estado=TIPO_LABELS[ausencia.tipo]||ausencia.tipo;estadoBg='#FCEBEB';estadoColor='#A32D2D';}
+      else if(horasAsig>0){conTareo++;estado=`✅ ${horasAsig.toFixed(1)}h`;estadoBg='#EAF3DE';estadoColor='#3B6D11';}
+      else{sinTareo++;estado='⚠ Sin tareo';estadoBg='#FAEEDA';estadoColor='#854F0B';}
+      const nomCorto = op.nombre.split(' ').slice(0,2).join(' ');
+      return `<div style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--surface-2);border-radius:8px;border:0.5px solid var(--border)">
+        <div style="width:150px;flex-shrink:0"><div style="font-size:12px;font-weight:500;color:var(--text-primary)">${nomCorto}</div><div style="font-size:10px;color:var(--text-secondary)">${op.cargo}</div></div>
+        <div style="flex:1">${ausencia?'':horasAsig>0?`<div style="height:5px;background:var(--border);border-radius:3px;overflow:hidden;margin-bottom:3px"><div style="height:100%;width:${pct}%;background:${barColor};border-radius:3px"></div></div><div style="font-size:9px;color:var(--text-muted)">${horasAsig.toFixed(1)}h / ${jornada}h</div>`:''}</div>
+        <div style="font-size:11px;font-weight:500;padding:3px 10px;border-radius:6px;background:${estadoBg};color:${estadoColor}">${estado}</div>
+        ${ausencia?`<button onclick="eliminarAusencia('${ausencia.fbId}')" style="height:24px;width:24px;border:none;border-radius:4px;background:#FCEBEB;color:#E24B4A;cursor:pointer;font-size:14px">×</button>`:`<button onclick="preRegistrarAusencia('${op.nombre}')" style="height:24px;padding:0 8px;border:0.5px solid var(--border);border-radius:4px;background:var(--surface-1);color:var(--text-secondary);cursor:pointer;font-size:10px">+ Ausencia</button>`}
+      </div>`;
+    });
+    return [header, ...rows];
+  });
+  document.getElementById('p-disponibles').textContent = conTareo;
+  document.getElementById('p-sin-tareo').textContent = sinTareo;
+  document.getElementById('p-ausentes').textContent = ausentesCount;
+  const dispTotal = operarios.length - ausentesCount;
+  document.getElementById('p-capacidad').textContent = (dispTotal*jornada).toFixed(1)+'h';
+  document.getElementById('p-capacidad-sub').textContent = `${dispTotal} operarios disponibles`;
+  document.getElementById('personal-lista').innerHTML = filas.join('');
+}
+
+function abrirRegistrarAusencia() {
+  const sel = document.getElementById('aus-trabajador');
+  const cargosProductivos = ['OPERARIO BASE','OPERARIO INTERMEDIO','OPERARIO SUPERIOR'];
+  const ops = trabajadores.filter(w=>cargosProductivos.includes(w.cargo)&&!w.nombre.includes('VILLAFUERTE NAVARRETE'));
+  sel.innerHTML = '<option value="">Seleccionar...</option>' + ops.map(w=>`<option value="${w.nombre}">${w.nombre.split(' ').slice(0,2).join(' ')} — ${w.area}</option>`).join('');
+  const fa = personalFechaActiva().split('/');
+  const isoDate = `${fa[2]}-${fa[1].padStart(2,'0')}-${fa[0].padStart(2,'0')}`;
+  document.getElementById('aus-inicio').value = isoDate;
+  document.getElementById('aus-fin').value = isoDate;
+  document.getElementById('aus-nota').value = '';
+  document.getElementById('modal-ausencia').style.display = 'flex';
+}
+function preRegistrarAusencia(nombre) { abrirRegistrarAusencia(); setTimeout(()=>document.getElementById('aus-trabajador').value=nombre,50); }
+function cerrarAusencia() { document.getElementById('modal-ausencia').style.display = 'none'; }
+async function guardarAusencia() {
+  const trabajador = document.getElementById('aus-trabajador').value;
+  const tipo = document.getElementById('aus-tipo').value;
+  const inicio = document.getElementById('aus-inicio').value;
+  const fin = document.getElementById('aus-fin').value || inicio;
+  const nota = document.getElementById('aus-nota').value.trim();
+  if(!trabajador||!inicio){showAlert('torre','Selecciona trabajador y fecha.','warn');return;}
+  await addDoc(collection(db,'ausencias'),{trabajador,tipo,inicio,fin,nota,fechaRegistro:new Date().toISOString()});
+  cerrarAusencia();
+  showAlert('torre','Ausencia registrada.','success');
+}
+async function eliminarAusencia(fbId) {
+  if(!confirm('Eliminar esta ausencia?')) return;
+  await deleteDoc(doc(db,'ausencias',fbId));
+}
+window.irPersonalSinTareo=function(){
+  const sel=document.getElementById('k-fecha');
+  if(sel&&sel.value){
+    const parts=sel.value.split('/');
+    const d=new Date(parts[2],parts[1]-1,parts[0]);
+    const hoy=new Date();hoy.setHours(0,0,0,0);
+    personalFechaOffset=Math.round((d-hoy)/(1000*60*60*24));
+  }
+  showPage('personal');
+};
+window.renderPersonal=renderPersonal;window.cambiarFechaPersonal=cambiarFechaPersonal;window.irHoyPersonal=irHoyPersonal;window.abrirRegistrarAusencia=abrirRegistrarAusencia;window.preRegistrarAusencia=preRegistrarAusencia;window.cerrarAusencia=cerrarAusencia;window.guardarAusencia=guardarAusencia;window.eliminarAusencia=eliminarAusencia;
+
 // ===== PLANIFICACIÓN — GANTT SEMANAL =====
 let planVista = 'areas'; // 'areas' | 'ofs'
 let ganttSemanaOffset = 0;
@@ -2911,6 +3107,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 <nav>
   <div class="logo">MAT<span>RANSA</span></div>
   <div class="tabs">
+    <div class="tab" onclick="showPage('personal')">Personal</div>
     <div class="tab" onclick="showPage('torre')">Torre de Control</div>
     <div class="tab active" onclick="showPage('tareo')">Generar tareo</div>
     <div class="tab" onclick="showPage('andree')">Registro Andree</div>
@@ -2934,6 +3131,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
       <div class="field"><label>Segundo trabajador (opcional)</label><select id="t-t2"><option value="">— (ninguno)</option></select></div>
       <div class="field"><label>Proyecto</label><select id="t-proyecto" onchange="actualizarProductos()"><option value="">Cargando...</option></select></div>
       <div class="field"><label>Producto</label><select id="t-producto"><option value="">Seleccionar proyecto primero</option></select></div>
+      <div class="field field-full"><label>Área de ejecución <span style="font-size:10px;color:var(--text-muted)">(solo si trabaja fuera de su área base)</span></label><select id="t-area-ejec"><option value="">— Usar área del trabajador —</option><option>HABILITADO</option><option>ENSAMBLE</option><option>FIERRO</option><option>PINTURA DE FIERRO</option><option>EVA</option><option>ACABADO</option><option>MANTENIMIENTO</option></select></div>
       <div class="field field-full"><label>Descripción de la tarea</label><input type="text" id="t-tarea" placeholder="Ej: Habilitar y pegar estructura base..." /></div>
     </div>
     <div class="form-grid-3" style="margin-top:0.875rem">
@@ -2993,6 +3191,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     <div class="metric"><div class="metric-label">Tickets del día</div><div class="metric-value" id="k-total">0</div><div class="metric-sub">en todas las áreas</div></div>
     <div class="metric"><div class="metric-label">Horas planificadas</div><div class="metric-value" id="k-horas">0h</div><div class="metric-sub" id="k-horas-sub">de capacidad total</div></div>
     <div class="metric"><div class="metric-label">Horas sin planificar</div><div class="metric-value" id="k-libre" style="color:#EF9F27">0h</div><div class="metric-sub" id="k-libre-sub">capacidad disponible</div></div>
+    <div class="metric" style="cursor:pointer" onclick="irPersonalSinTareo()" title="Ver en pestaña Personal"><div class="metric-label">Sin tareo asignado</div><div class="metric-value" id="k-sin-tareo" style="color:#E24B4A">0</div><div class="metric-sub">operarios disponibles</div></div>
     <div class="metric"><div class="metric-label">Completados</div><div class="metric-value" id="k-comp" style="color:#27ae60">0</div><div class="metric-sub">con tiempo registrado</div></div>
   </div>
   <div class="kanban-scroll"><div class="kanban-board" id="kanban-board"></div></div>
@@ -3014,6 +3213,58 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 </div>
 
 <!-- M3 SEMANAL -->
+<div class="page" id="page-personal">
+  <div class="metrics" style="margin-bottom:1rem">
+    <div class="metric"><div class="metric-label">Operarios disponibles</div><div class="metric-value" id="p-disponibles">0</div><div class="metric-sub">con tareo asignado</div></div>
+    <div class="metric"><div class="metric-label">Sin tareo</div><div class="metric-value" id="p-sin-tareo" style="color:#EF9F27">0</div><div class="metric-sub">disponibles sin asignar</div></div>
+    <div class="metric"><div class="metric-label">Ausentes</div><div class="metric-value" id="p-ausentes" style="color:#E24B4A">0</div><div class="metric-sub">no disponibles hoy</div></div>
+    <div class="metric"><div class="metric-label">Capacidad real</div><div class="metric-value" id="p-capacidad">0h</div><div class="metric-sub" id="p-capacidad-sub">operarios disponibles</div></div>
+  </div>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:8px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <button onclick="cambiarFechaPersonal(-1)" style="height:32px;width:32px;border:0.5px solid var(--border);border-radius:6px;background:var(--surface-1);cursor:pointer;font-size:14px">&#9664;</button>
+      <span id="p-fecha-label" style="font-size:13px;font-weight:500;color:var(--text-primary);min-width:200px;text-align:center"></span>
+      <button onclick="cambiarFechaPersonal(1)" style="height:32px;width:32px;border:0.5px solid var(--border);border-radius:6px;background:var(--surface-1);cursor:pointer;font-size:14px">&#9654;</button>
+      <button onclick="irHoyPersonal()" style="height:32px;padding:0 12px;border:0.5px solid var(--border);border-radius:6px;background:var(--surface-1);cursor:pointer;font-size:12px;color:var(--text-secondary)">Hoy</button>
+    </div>
+    <button onclick="abrirRegistrarAusencia()" style="height:32px;padding:0 14px;border:none;border-radius:6px;background:var(--amber);color:#fff;cursor:pointer;font-size:12px;font-weight:500">+ Registrar ausencia</button>
+  </div>
+  <div id="personal-lista" style="display:flex;flex-direction:column;gap:6px"></div>
+</div>
+
+<!-- Modal registrar ausencia -->
+<div class="modal-overlay" id="modal-ausencia" style="display:none">
+  <div class="modal" style="width:480px">
+    <div class="modal-title">Registrar ausencia</div>
+    <div class="field" style="margin-bottom:0.875rem">
+      <label>Trabajador</label>
+      <select id="aus-trabajador"><option value="">Seleccionar...</option></select>
+    </div>
+    <div class="field" style="margin-bottom:0.875rem">
+      <label>Tipo de ausencia</label>
+      <select id="aus-tipo">
+        <option value="descanso_medico">🏥 Descanso médico</option>
+        <option value="obra_externa">🔧 Obra externa</option>
+        <option value="vacaciones">🏖️ Vacaciones</option>
+        <option value="falta">❌ Falta</option>
+        <option value="otro">📋 Otro</option>
+      </select>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.875rem;margin-bottom:0.875rem">
+      <div class="field"><label>Fecha inicio</label><input type="date" id="aus-inicio"/></div>
+      <div class="field"><label>Fecha fin</label><input type="date" id="aus-fin"/></div>
+    </div>
+    <div class="field" style="margin-bottom:0.875rem">
+      <label>Nota <span style="font-size:10px;color:var(--text-muted)">(opcional)</span></label>
+      <input type="text" id="aus-nota" placeholder="Ej: Clínica San Pablo, Obra Miraflores..."/>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="cerrarAusencia()">Cancelar</button>
+      <button class="btn btn-primary" onclick="guardarAusencia()">Guardar</button>
+    </div>
+  </div>
+</div>
+
 <div class="page" id="page-torre">
   <div id="alert-torre" style="display:none" class="alert"></div>
 
