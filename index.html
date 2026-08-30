@@ -226,7 +226,11 @@ async function agregarProyecto(){ abrirCrearProyectoTC(); }
 async function agregarProducto(proy){const inp=document.getElementById(`np-${proy}`);const nombre=inp.value.trim();if(!nombre)return;proyectos[proy].push(nombre);await setDoc(doc(db,'proyectos',proy),{productos:proyectos[proy]});inp.value='';renderConfigProyectos();actualizarProductos();showAlert('config','Producto agregado.','success');}
 async function eliminarProducto(proy,idx){if(!confirm('¿Eliminar?'))return;proyectos[proy].splice(idx,1);await setDoc(doc(db,'proyectos',proy),{productos:proyectos[proy]});renderConfigProyectos();}
 async function eliminarProyecto(proy){if(!confirm(`¿Eliminar "${proy}"?`))return;await deleteDoc(doc(db,'proyectos',proy));delete proyectos[proy];poblarSelectProyectos();renderConfigProyectos();}
-function renderConfigProyectos(){ renderConfigProyectosTC(); }
+function renderConfigProyectos(){
+  if(document.getElementById('page-config')?.classList.contains('active')){
+    if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();
+  }
+}
 
 // ===== TICKETS =====
 function calcTT(){const n=parseFloat(document.getElementById('t-n').value)||0;const tu=parseFloat(document.getElementById('t-tu').value)||0;document.getElementById('t-tt').value=n&&tu?(n*tu/60).toFixed(2)+' h':'';}
@@ -367,7 +371,8 @@ function renderTicketsHoy(){
     const esHoy=fecha===hoy;
     const mañana=new Date();mañana.setDate(mañana.getDate()+1);
     const manStr2=mañana.toLocaleDateString('es-PE');
-    const label=esHoy?`Hoy — ${fecha}`:fecha===manStr2?`Mañana — ${fecha}`:fecha;
+    const diaNombre=getJornadaLabel(fecha);
+    const label=esHoy?`Hoy — ${fecha}`:fecha===manStr2?`Mañana — ${fecha}`:`${diaNombre} — ${fecha}`;
     const grupo=sortTicketsByArea(ticketsFiltrados.filter(t=>(t.fechaEjecucion||t.fecha)===fecha));
     return `<div class="tickets-section-header no-print">
       <div class="tickets-section-title">${label}</div>
@@ -2327,7 +2332,7 @@ async function guardarProyectoTC() {
     }
     poblarSelectProyectoTC();
     poblarFiltroProyectoTC();
-    renderConfigProyectosTC();
+    if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();
     cerrarProyectoTC();
   } catch(e) { showAlert('torre','Error al guardar.','warn'); }
 }
@@ -2380,7 +2385,7 @@ async function agregarProductoUnif(codigo) {
   await setDoc(doc(db,'proyectos',codigo),{productos:proyectos[codigo]});
   inp.value='';
   actualizarProductos();
-  renderConfigProyectosTC();
+  if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();
   showAlert('config','Producto agregado.','success');
 }
 
@@ -2388,7 +2393,7 @@ async function eliminarProductoUnif(codigo, idx) {
   if(!confirm('¿Eliminar este producto?')) return;
   proyectos[codigo].splice(idx,1);
   await setDoc(doc(db,'proyectos',codigo),{productos:proyectos[codigo]});
-  renderConfigProyectosTC();
+  if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();
 }
 
 function formatFecha(f) {
@@ -2419,14 +2424,14 @@ async function eliminarProyectoTC(id, nombre) {
   try {
     await deleteDoc(doc(db,'proyectosTC',id));
     proyectosTC = proyectosTC.filter(x=>x.id!==id);
-    renderConfigProyectosTC();
+    if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();
     poblarFiltroProyectoTC();
     poblarSelectProyectoTC();
   } catch(e) { showAlert('hist','Error al eliminar el ticket.','warn'); }
 }
 
 function showAlert(pagina,msg,tipo){const el=document.getElementById(`alert-${pagina}`);el.className=`alert alert-${tipo}`;el.textContent=msg;el.style.display='block';setTimeout(()=>el.style.display='none',3500);}
-function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='dashboard')renderDashboard();if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();}if(nombre==='config'){renderConfigProyectosTC();poblarSelectProyectos();}}
+function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='dashboard')renderDashboard();if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
@@ -3816,9 +3821,8 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     </div>
   </div>
   </div><!-- /config-admin-section -->
-    </div>
-  </div>
-
+  <div class="card">
+    <div class="card-title">Proyectos</div>
     <div id="config-proyectos-unificado"></div>
     <div style="border-top:0.5px solid #eee;padding-top:1rem;margin-top:0.5rem">
       <button class="btn btn-amber btn-sm" onclick="abrirCrearProyectoTC()">+ Nuevo proyecto</button>
