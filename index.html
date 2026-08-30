@@ -93,12 +93,19 @@ async function init() {
   const manL = mañana.toLocaleDateString('es-PE');
   fe.innerHTML=`<option value="${hoyL}">Hoy — ${hoyL}</option><option value="${manL}">Mañana — ${manL}</option>`;
   fe.value = fechaEjecucionDefecto();
+  // Cargar perfil guardado — si no hay perfil, mostrar selector obligatorio
+  if(!cargarPerfil()) {
+    // Sin perfil: mostrar selector y esperar selección antes de continuar
+    mostrarSelectorPerfil();
+  } else {
+    aplicarPerfil();
+  }
   setStatus('Conectando...');
   await cargarTrabajadores();
   suscribirTrabajadores();
   await cargarProyectos();
   await cargarTorre();
-  suscribirHistorial();suscribirM3();suscribirAusencias();
+  suscribirHistorial();suscribirM3();suscribirAusencias();suscribirNotas();
 }
 
 function setStatus(msg){const el=document.getElementById('db-status');el.textContent=msg;el.style.display=msg?'block':'none';}
@@ -167,7 +174,7 @@ function poblarSelectTrabajadores(){
   const s1=document.getElementById('t-t1'),s2=document.getElementById('t-t2');
   const v1=s1.value,v2=s2.value;
   s1.innerHTML='<option value="">Seleccionar...</option>';
-  s2.innerHTML='<option value="">— (ninguno)</option>';
+  s2.innerHTML='<option value="">Seleccionar...</option>';
   trabajadores.forEach(t=>{const short=t.nombre.split(' ').slice(0,2).join(' ');s1.add(new Option(`${short} — ${t.area}`,t.nombre));s2.add(new Option(`${short} — ${t.area}`,t.nombre));});
   if(v1)s1.value=v1;if(v2)s2.value=v2;
 }
@@ -437,7 +444,7 @@ function imprimirFechaSeleccionada(){
 }
 
 function imprimirHoy(fechaFiltro){
-  const ORDEN_AREAS_PRINT=['HABILITADO','ENSAMBLE','FIERRO','PINTURA DE FIERRO','EVA','ACABADO','MANTENIMIENTO','PROD-ADMIN'];
+  // ORDEN_AREAS_PRINT = ORDEN_AREAS_GLOBAL
   const fechaImprimir = fechaFiltro || hoyStr();
   const tickets=historial.filter(t=>t.visibleTareo!==false && t.fechaEjecucion===fechaImprimir);
   if(!tickets.length){showAlert('tareo','No hay tickets para esa fecha.','warn');return;}
@@ -445,7 +452,7 @@ function imprimirHoy(fechaFiltro){
   tickets.sort((a,b)=>{
     const areaA=trabajadores.find(w=>w.nombre===(a.nombres||[])[0])?.area||'PROD-ADMIN';
     const areaB=trabajadores.find(w=>w.nombre===(b.nombres||[])[0])?.area||'PROD-ADMIN';
-    const iA=ORDEN_AREAS_PRINT.indexOf(areaA); const iB=ORDEN_AREAS_PRINT.indexOf(areaB);
+    const iA=ORDEN_AREAS_GLOBAL.indexOf(areaA); const iB=ORDEN_AREAS_GLOBAL.indexOf(areaB);
     if(iA!==iB) return iA-iB;
     return (a.nombres||[])[0]?.localeCompare((b.nombres||[])[0])||0;
   });
@@ -492,6 +499,108 @@ function imprimirHoy(fechaFiltro){
 
 // ===== FIREBASE =====
 
+
+
+
+// ===== SISTEMA DE PERFILES =====
+const PERFILES = {
+  'ricardo': {
+    nombre: 'Ricardo Villar',
+    rol: 'Admin',
+    icono: '👤',
+    color: '#1a1a18',
+    pestanas: ['personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','config'],
+    admin: true
+  },
+  'pablo': {
+    nombre: 'Pablo Arce',
+    rol: 'Operaciones',
+    icono: '📋',
+    color: '#2563eb',
+    pestanas: ['personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','config'],
+    admin: false
+  },
+  'andree': {
+    nombre: 'Andree Villafuerte',
+    rol: 'Registro',
+    icono: '⏱',
+    color: '#059669',
+    pestanas: ['personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','config'],
+    admin: false
+  },
+  'neicer': {
+    nombre: 'Neicer Calampa',
+    rol: 'Supervisión',
+    icono: '👁',
+    color: '#7c3aed',
+    pestanas: ['personal','torre','kanban','historial'],
+    admin: false
+  }
+};
+
+let perfilActivo = null;
+
+function getPerfil() {
+  return perfilActivo;
+}
+
+function cargarPerfil() {
+  const guardado = localStorage.getItem('matransa_perfil');
+  if(guardado && PERFILES[guardado]) {
+    perfilActivo = guardado;
+    return true;
+  }
+  return false;
+}
+
+function guardarPerfil(key) {
+  localStorage.setItem('matransa_perfil', key);
+  perfilActivo = key;
+}
+
+function aplicarPerfil() {
+  const perfil = PERFILES[perfilActivo];
+  if(!perfil) return;
+  document.querySelectorAll('.tab[data-page]').forEach(tab => {
+    const page = tab.dataset.page;
+    tab.style.display = perfil.pestanas.includes(page) ? '' : 'none';
+  });
+  const adminSection = document.getElementById('config-admin-section');
+  if(adminSection) adminSection.style.display = perfil.admin ? '' : 'none';
+  const indicator = document.getElementById('perfil-indicator');
+  if(indicator) indicator.textContent = perfil.icono + ' ' + perfil.nombre.split(' ')[0];
+}
+
+function mostrarSelectorPerfil() {
+  document.getElementById('modal-perfil').style.display = 'flex';
+}
+
+function seleccionarPerfil(key) {
+  guardarPerfil(key);
+  document.getElementById('modal-perfil').style.display = 'none';
+  aplicarPerfil();
+  // Ir a primera pestaña disponible
+  const perfil = PERFILES[key];
+  if(perfil.pestanas.length) showPage(perfil.pestanas[0]);
+}
+window.mostrarSelectorPerfil = mostrarSelectorPerfil;
+window.seleccionarPerfil = seleccionarPerfil;
+
+// ===== CONSTANTES GLOBALES CENTRALIZADAS =====
+const CARGOS_PRODUCTIVOS = ['OPERARIO BASE', 'OPERARIO INTERMEDIO', 'OPERARIO SUPERIOR'];
+const CARGOS_COORDINADOR = ['COORDINADOR'];
+const ES_ANALISTA_DATA = (w) => w.esAnalistaData === true || w.nombre?.includes('VILLAFUERTE NAVARRETE');
+
+function getOperariosProductivos() {
+  return trabajadores.filter(w => CARGOS_PRODUCTIVOS.includes(w.cargo) && !ES_ANALISTA_DATA(w));
+}
+
+function getJornadaLabel(fechaStr) {
+  const dias = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+  const partes = fechaStr.split('/');
+  const d = new Date(partes[2], partes[1]-1, partes[0]);
+  return dias[d.getDay()];
+}
 
 // ===== HELPERS CENTRALIZADOS =====
 const ORDEN_AREAS_GLOBAL = ['HABILITADO','ENSAMBLE','FIERRO','PINTURA DE FIERRO','EVA','ACABADO','MANTENIMIENTO','PROD-ADMIN'];
@@ -555,7 +664,7 @@ function suscribirHistorial(){
     historial=snap.docs.map(d=>({fbId:d.id,...d.data()}));
     historial.sort((a,b)=>new Date(b.guardado||0)-new Date(a.guardado||0));
     setStatus('');
-    migrarTicketsAntiguos();renderTicketsHoy();renderAndree();const ksel=document.getElementById('k-fecha');if(ksel)ksel.dataset.poblado='';renderKanban();poblarFiltrosHist();renderHist();renderDashboard();renderPendientes();
+    migrarTicketsAntiguos();aplicarPerfil();renderTicketsHoy();renderAndree();const ksel=document.getElementById('k-fecha');if(ksel)ksel.dataset.poblado='';renderKanban();poblarFiltrosHist();renderHist();renderDashboard();renderPendientes();
   });
 }
 
@@ -721,12 +830,12 @@ function renderGanttDiario(){
     });
   });
 
-  const ORDEN_AREAS=['HABILITADO','ENSAMBLE','FIERRO','PINTURA DE FIERRO','EVA','ACABADO','MANTENIMIENTO','PROD-ADMIN'];
+  // ORDEN_AREAS definido en ORDEN_AREAS_GLOBAL
   const trabajadoresOrdenados=Object.keys(porTrab).sort((a,b)=>{
     const tA=trabajadores.find(w=>w.nombre===a);
     const tB=trabajadores.find(w=>w.nombre===b);
-    const iA=ORDEN_AREAS.indexOf(tA?.area||'PROD-ADMIN');
-    const iB=ORDEN_AREAS.indexOf(tB?.area||'PROD-ADMIN');
+    const iA=ORDEN_AREAS_GLOBAL.indexOf(tA?.area||'PROD-ADMIN');
+    const iB=ORDEN_AREAS_GLOBAL.indexOf(tB?.area||'PROD-ADMIN');
     if(iA!==iB) return iA-iB;
     return a.localeCompare(b);
   });
@@ -879,7 +988,7 @@ function renderGanttDiario(){
 
 function poblarSelectorKanban(){
   const sel=document.getElementById('k-fecha');
-  if(!sel||sel.dataset.poblado==='1') return; // solo poblar una vez
+  if(!sel||sel.dataset.poblado==='1') return;
   const hoy=hoyStr();
   const mañana=new Date();mañana.setDate(mañana.getDate()+1);
   const manStr=mañana.toLocaleDateString('es-PE');
@@ -887,8 +996,26 @@ function poblarSelectorKanban(){
   const todasFechas=[...new Set([...fechasConTickets,hoy,manStr])].sort((a,b)=>{
     const pa=a.split('/').reverse().join('');const pb=b.split('/').reverse().join('');return pb.localeCompare(pa);
   });
-  sel.innerHTML=todasFechas.map(f=>`<option value="${f}">${f===hoy?`Hoy — ${f}`:f===manStr?`Mañana — ${f}`:f}</option>`).join('');
-  sel.value=hoy;
+  // Etiqueta correcta por fecha
+  const meses=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  sel.innerHTML=todasFechas.map(f=>{
+    const partes=f.split('/');
+    const d=new Date(partes[2],partes[1]-1,partes[0]);
+    const dias=['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+    const label=f===hoy?`Hoy — ${f}`:f===manStr?`Mañana — ${f}`:`${dias[d.getDay()]} ${f}`;
+    return `<option value="${f}">${label}</option>`;
+  }).join('');
+  // Inicializar en la fecha con más tickets (no necesariamente hoy)
+  const fechaConMasTickets = fechasConTickets.sort((a,b)=>{
+    const ca=historial.filter(t=>(t.fechaEjecucion||t.fecha)===a).length;
+    const cb=historial.filter(t=>(t.fechaEjecucion||t.fecha)===b).length;
+    return cb-ca;
+  })[0] || hoy;
+  // Si hay tickets de mañana, mostrar mañana; si hay tickets de hoy, mostrar hoy; sino la fecha con más tickets
+  const ticketsHoy=historial.filter(t=>(t.fechaEjecucion||t.fecha)===hoy).length;
+  const ticketsManana=historial.filter(t=>(t.fechaEjecucion||t.fecha)===manStr).length;
+  const fechaInicial = ticketsManana>0&&ticketsHoy===0 ? manStr : ticketsHoy>0 ? hoy : fechaConMasTickets;
+  sel.value=todasFechas.includes(fechaInicial)?fechaInicial:todasFechas[0]||hoy;
   sel.dataset.poblado='1';
 }
 function kanbanNavFecha(dir){
@@ -916,10 +1043,10 @@ function renderKanban(){
   // Capacidad del día según horario
   const jornada=jornadaProductiva(fechaActiva);
   // Solo operarios productivos: OPERARIO BASE/INTERMEDIO/SUPERIOR, excluye coordinadores, ADM y Andree
-  const cargosProductivos=['OPERARIO BASE','OPERARIO INTERMEDIO','OPERARIO SUPERIOR'];
+  const cargosProductivos = CARGOS_PRODUCTIVOS;
   const operariosProductivos=trabajadores.filter(w=>
     cargosProductivos.includes(w.cargo) &&
-    !w.nombre.includes('VILLAFUERTE NAVARRETE') // Andree: analista, no operario
+    !ES_ANALISTA_DATA(w) // Andree: analista, no operario
   );
   const totalTrab=operariosProductivos.length;
   const capacidad=totalTrab*jornada;
@@ -933,7 +1060,7 @@ function renderKanban(){
   document.getElementById('k-comp').textContent=ticketsHoy.filter(t=>t.tu_real).length;
   // Calcular operarios sin tareo
   const cargosP=['OPERARIO BASE','OPERARIO INTERMEDIO','OPERARIO SUPERIOR'];
-  const opsDisp=trabajadores.filter(w=>cargosP.includes(w.cargo)&&!w.nombre.includes('VILLAFUERTE NAVARRETE'));
+  const opsDisp=trabajadores.filter(w=>cargosP.includes(w.cargo)&&!ES_ANALISTA_DATA(w));
   const ausenciasFecha=getAusenciasDelDia(fechaActiva);
   const ausentes=new Set(ausenciasFecha.map(a=>a.trabajador));
   const sinTareoK=opsDisp.filter(w=>!ausentes.has(w.nombre)&&!ticketsHoy.some(t=>(t.nombres||[]).includes(w.nombre))).length;
@@ -2299,7 +2426,7 @@ async function eliminarProyectoTC(id, nombre) {
 }
 
 function showAlert(pagina,msg,tipo){const el=document.getElementById(`alert-${pagina}`);el.className=`alert alert-${tipo}`;el.textContent=msg;el.style.display='block';setTimeout(()=>el.style.display='none',3500);}
-function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='dashboard')renderDashboard();if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='torre'){cargarTorre();}if(nombre==='config'){renderConfigProyectosTC();poblarSelectProyectos();}}
+function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='dashboard')renderDashboard();if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();}if(nombre==='config'){renderConfigProyectosTC();poblarSelectProyectos();}}
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
@@ -2464,6 +2591,99 @@ async function normalizarProyectosFirebase() {
 }
 window.normalizarProyectosFirebase = normalizarProyectosFirebase;
 
+// ===== PESTAÑA NOTAS =====
+let notas = [];
+
+function suscribirNotas() {
+  onSnapshot(collection(db,'notas'), snap=>{
+    notas = snap.docs.map(d=>({fbId:d.id,...d.data()}));
+    if(document.getElementById('page-notas')?.classList.contains('active')) renderNotas();
+  });
+}
+
+const NOTA_CONFIG = {
+  'idea':        {emoji:'💡', label:'Idea',        bg:'#EFF6FF', border:'#2563eb', color:'#1e40af'},
+  'problema':    {emoji:'⚠️', label:'Problema',    bg:'#FAEEDA', border:'#EF9F27', color:'#854F0B'},
+  'observacion': {emoji:'📋', label:'Observacion', bg:'#F5F5F5', border:'#888',    color:'#444'},
+  'urgente':     {emoji:'🚨', label:'Urgente',     bg:'#FCEBEB', border:'#E24B4A', color:'#A32D2D'},
+};
+
+const ESTADO_CONFIG = {
+  'nueva':      {label:'Nueva',       bg:'#EAF3DE', color:'#3B6D11'},
+  'revision':   {label:'En revision', bg:'#FAEEDA', color:'#854F0B'},
+  'resuelta':   {label:'Resuelta',    bg:'#EAF3DE', color:'#059669'},
+  'descartada': {label:'Descartada',  bg:'#F5F5F5', color:'#888'},
+};
+
+function renderNotas() {
+  const cat = document.getElementById('notas-filtro-cat')?.value||'';
+  const estado = document.getElementById('notas-filtro-estado')?.value||'';
+  let filtradas = notas.filter(n=>(!cat||n.categoria===cat)&&(!estado||n.estado===estado));
+  filtradas.sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
+  const grid = document.getElementById('notas-grid');
+  if(!grid) return;
+  if(!filtradas.length){
+    grid.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:3rem;color:var(--text-muted)"><div style="font-size:48px;margin-bottom:12px">📝</div><div>No hay notas. ¡Agrega la primera!</div></div>';
+    return;
+  }
+  const esAdmin = perfilActivo==='ricardo';
+  grid.innerHTML = filtradas.map(n=>{
+    const cfg = NOTA_CONFIG[n.categoria]||NOTA_CONFIG['observacion'];
+    const est = ESTADO_CONFIG[n.estado||'nueva']||ESTADO_CONFIG['nueva'];
+    const fecha = new Date(n.fecha).toLocaleDateString('es-PE',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+    return '<div style="background:'+cfg.bg+';border:1px solid '+cfg.border+';border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:8px">'
+      +'<div style="display:flex;align-items:center;justify-content:space-between">'
+      +'<span style="font-size:11px;font-weight:600;color:'+cfg.color+';padding:2px 8px;border-radius:4px;border:0.5px solid '+cfg.border+'">'+cfg.emoji+' '+cfg.label+'</span>'
+      +'<span style="font-size:11px;font-weight:500;padding:2px 8px;border-radius:4px;background:'+est.bg+';color:'+est.color+'">'+est.label+'</span>'
+      +'</div>'
+      +'<div style="font-size:13px;color:var(--text-primary);line-height:1.5;flex:1">'+n.texto+'</div>'
+      +'<div style="font-size:10px;color:var(--text-muted);display:flex;justify-content:space-between;align-items:center">'
+      +'<span>'+(n.autor||'—')+' · '+fecha+'</span>'
+      +'<div style="display:flex;gap:4px">'
+      +(esAdmin?'<select onchange="cambiarEstadoNota(\''+n.fbId+'\',this.value)" style="font-size:10px;padding:2px 4px;border:0.5px solid var(--border);border-radius:4px;background:var(--surface-1)">'
+        +'<option value="nueva"'+(n.estado==='nueva'?' selected':'')+'>Nueva</option>'
+        +'<option value="revision"'+(n.estado==='revision'?' selected':'')+'>En revision</option>'
+        +'<option value="resuelta"'+(n.estado==='resuelta'?' selected':'')+'>Resuelta</option>'
+        +'<option value="descartada"'+(n.estado==='descartada'?' selected':'')+'>Descartada</option>'
+        +'</select>'
+        +'<button onclick="eliminarNota(\''+n.fbId+'\')" style="height:22px;width:22px;border:none;border-radius:4px;background:#FCEBEB;color:#E24B4A;cursor:pointer;font-size:12px">×</button>'
+        :'')
+      +'</div></div></div>';
+  }).join('');
+}
+
+function abrirNuevaNota() {
+  document.getElementById('nota-texto').value='';
+  document.getElementById('nota-categoria').value='idea';
+  document.getElementById('modal-nota').style.display='flex';
+  setTimeout(()=>document.getElementById('nota-texto').focus(),100);
+}
+function cerrarNota() { document.getElementById('modal-nota').style.display='none'; }
+
+async function guardarNota() {
+  const texto = document.getElementById('nota-texto').value.trim();
+  const categoria = document.getElementById('nota-categoria').value;
+  if(!texto){showAlert('config','Escribe algo antes de guardar.','warn');return;}
+  const perfil = PERFILES[perfilActivo];
+  await addDoc(collection(db,'notas'),{
+    texto, categoria, estado:'nueva',
+    autor: perfil?perfil.nombre.split(' ')[0]:'—',
+    fecha: new Date().toISOString()
+  });
+  cerrarNota();
+}
+
+async function cambiarEstadoNota(fbId, estado) {
+  await updateDoc(doc(db,'notas',fbId),{estado});
+}
+
+async function eliminarNota(fbId) {
+  if(!confirm('Eliminar esta nota?')) return;
+  await deleteDoc(doc(db,'notas',fbId));
+}
+
+window.renderNotas=renderNotas;window.abrirNuevaNota=abrirNuevaNota;window.cerrarNota=cerrarNota;window.guardarNota=guardarNota;window.cambiarEstadoNota=cambiarEstadoNota;window.eliminarNota=eliminarNota;
+
 // ===== PESTAÑA PERSONAL =====
 let ausencias = [];
 let personalFechaOffset = 0;
@@ -2501,8 +2721,8 @@ function renderPersonal() {
   const manStr = manana.toLocaleDateString('es-PE');
   const lbl = fechaActiva===hoy?`Hoy — ${fechaActiva}`:fechaActiva===manStr?`Manana — ${fechaActiva}`:fechaActiva;
   document.getElementById('p-fecha-label').textContent = lbl;
-  const cargosProductivos = ['OPERARIO BASE','OPERARIO INTERMEDIO','OPERARIO SUPERIOR'];
-  const operarios = trabajadores.filter(w=>cargosProductivos.includes(w.cargo)&&!w.nombre.includes('VILLAFUERTE NAVARRETE'));
+  const cargosProductivos = CARGOS_PRODUCTIVOS;
+  const operarios = trabajadores.filter(w=>cargosProductivos.includes(w.cargo)&&!ES_ANALISTA_DATA(w));
   const ausenciasDia = getAusenciasDelDia(fechaActiva);
   const ticketsDia = historial.filter(t=>t.visibleTareo!==false&&t.fechaEjecucion===fechaActiva);
   const jornada = jornadaProductiva(fechaActiva);
@@ -2543,8 +2763,8 @@ function renderPersonal() {
 
 function abrirRegistrarAusencia() {
   const sel = document.getElementById('aus-trabajador');
-  const cargosProductivos = ['OPERARIO BASE','OPERARIO INTERMEDIO','OPERARIO SUPERIOR'];
-  const ops = trabajadores.filter(w=>cargosProductivos.includes(w.cargo)&&!w.nombre.includes('VILLAFUERTE NAVARRETE'));
+  const cargosProductivos = CARGOS_PRODUCTIVOS;
+  const ops = trabajadores.filter(w=>cargosProductivos.includes(w.cargo)&&!ES_ANALISTA_DATA(w));
   sel.innerHTML = '<option value="">Seleccionar...</option>' + ops.map(w=>`<option value="${w.nombre}">${w.nombre.split(' ').slice(0,2).join(' ')} — ${w.area}</option>`).join('');
   const fa = personalFechaActiva().split('/');
   const isoDate = `${fa[2]}-${fa[1].padStart(2,'0')}-${fa[0].padStart(2,'0')}`;
@@ -2693,13 +2913,13 @@ function renderGanttAreas(cont, semanas, inicioRango, finRango){
   });
 
   // Capacidad por semana por área
-  const cargosProductivos = ['OPERARIO BASE','OPERARIO INTERMEDIO','OPERARIO SUPERIOR'];
+  const cargosProductivos = CARGOS_PRODUCTIVOS;
   const operariosPorArea = {};
   AREAS.forEach(area => {
     operariosPorArea[area] = trabajadores.filter(w=>
       w.area===area &&
       cargosProductivos.includes(w.cargo) &&
-      !w.nombre.includes('VILLAFUERTE NAVARRETE')
+      !ES_ANALISTA_DATA(w)
     ).length;
   });
 
@@ -3271,21 +3491,70 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 </div>
 
 <nav>
-  <div class="logo">MAT<span>RANSA</span></div>
-  <div class="tabs">
-    <div class="tab" onclick="showPage('personal')">Personal</div>
-    <div class="tab" onclick="showPage('torre')">Torre de Control</div>
-    <div class="tab active" onclick="showPage('tareo')">Generar tareo</div>
-    <div class="tab" onclick="showPage('andree')">Registro Andree</div>
-    <div class="tab" onclick="showPage('kanban')">Kanban</div>
-    <div class="tab" onclick="showPage('historial')">Historial</div>
-    <div class="tab" onclick="showPage('planificacion')">Planificación</div>
-    <div class="tab" onclick="showPage('m3')">M³ Semanal</div>
-    <div class="tab" onclick="showPage('dashboard')">Dashboard</div>
-    <div class="tab" onclick="showPage('config')">Configuración</div>
+  <div class="logo" style="display:flex;align-items:center;gap:8px;cursor:default">
+    <svg width="24" height="24" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0">
+      <rect width="100" height="100" rx="10" fill="#1B6B35"/>
+      <text x="50" y="70" font-family="system-ui,sans-serif" font-size="58" font-weight="800" fill="white" text-anchor="middle">M</text>
+    </svg>
+    MAT<span>RANSA</span>
   </div>
-  <div class="right"><span id="db-status"></span><div class="fecha-nav" id="fecha-nav"></div></div>
+  <div class="tabs">
+    <div class="tab" data-page="personal" onclick="showPage('personal')">Personal</div>
+    <div class="tab" data-page="torre" onclick="showPage('torre')">Torre de Control</div>
+    <div class="tab active" data-page="tareo" onclick="showPage('tareo')">Generar tareo</div>
+    <div class="tab" data-page="andree" onclick="showPage('andree')">Registro Andree</div>
+    <div class="tab" data-page="kanban" onclick="showPage('kanban')">Kanban</div>
+    <div class="tab" data-page="historial" onclick="showPage('historial')">Historial</div>
+    <div class="tab" data-page="planificacion" onclick="showPage('planificacion')">Planificación</div>
+    <div class="tab" data-page="m3" onclick="showPage('m3')">M³ Semanal</div>
+    <div class="tab" data-page="dashboard" onclick="showPage('dashboard')">Dashboard</div>
+    <div class="tab" data-page="config" onclick="showPage('config')">Configuración</div>
+    <div class="tab" data-page="notas" onclick="showPage('notas')">Notas</div>
+  </div>
+  <div class="right" style="display:flex;align-items:center;gap:12px">
+    <div id="perfil-indicator" onclick="mostrarSelectorPerfil()" style="cursor:pointer;font-size:11px;color:var(--text-secondary);white-space:nowrap;padding:4px 8px;border:0.5px solid var(--border);border-radius:6px" title="Cambiar perfil">👤 Perfil</div>
+    <span id="db-status"></span>
+    <div class="fecha-nav" id="fecha-nav"></div>
+  </div>
 </nav>
+
+<!-- Modal selector de perfil -->
+<div class="modal-overlay" id="modal-perfil" style="display:none">
+  <div class="modal" style="width:480px;text-align:center">
+    <div style="margin-bottom:1.5rem">
+      <svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin:0 auto 12px">
+        <rect width="100" height="100" rx="10" fill="#1B6B35"/>
+        <text x="50" y="70" font-family="system-ui,sans-serif" font-size="58" font-weight="800" fill="white" text-anchor="middle">M</text>
+      </svg>
+      <div style="font-size:20px;font-weight:700;color:var(--text-primary)">MATRANSA</div>
+      <div style="font-size:13px;color:var(--text-secondary);margin-top:4px">Sistema de Tareos de Producción</div>
+    </div>
+    <div style="font-size:13px;font-weight:500;color:var(--text-primary);margin-bottom:12px">¿Quién eres en este dispositivo?</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:1rem">
+      <button onclick="seleccionarPerfil('ricardo')" style="padding:16px;border:1.5px solid var(--border);border-radius:10px;background:var(--surface-1);cursor:pointer;text-align:center;transition:all 0.15s" onmouseover="this.style.borderColor='#1B6B35'" onmouseout="this.style.borderColor='var(--border)'">
+        <div style="font-size:28px;margin-bottom:6px">👤</div>
+        <div style="font-size:13px;font-weight:600;color:var(--text-primary)">Ricardo</div>
+        <div style="font-size:11px;color:var(--text-secondary)">Admin</div>
+      </button>
+      <button onclick="seleccionarPerfil('pablo')" style="padding:16px;border:1.5px solid var(--border);border-radius:10px;background:var(--surface-1);cursor:pointer;text-align:center" onmouseover="this.style.borderColor='#2563eb'" onmouseout="this.style.borderColor='var(--border)'">
+        <div style="font-size:28px;margin-bottom:6px">📋</div>
+        <div style="font-size:13px;font-weight:600;color:var(--text-primary)">Pablo</div>
+        <div style="font-size:11px;color:var(--text-secondary)">Operaciones</div>
+      </button>
+      <button onclick="seleccionarPerfil('andree')" style="padding:16px;border:1.5px solid var(--border);border-radius:10px;background:var(--surface-1);cursor:pointer;text-align:center" onmouseover="this.style.borderColor='#059669'" onmouseout="this.style.borderColor='var(--border)'">
+        <div style="font-size:28px;margin-bottom:6px">⏱</div>
+        <div style="font-size:13px;font-weight:600;color:var(--text-primary)">Andree</div>
+        <div style="font-size:11px;color:var(--text-secondary)">Registro</div>
+      </button>
+      <button onclick="seleccionarPerfil('neicer')" style="padding:16px;border:1.5px solid var(--border);border-radius:10px;background:var(--surface-1);cursor:pointer;text-align:center" onmouseover="this.style.borderColor='#7c3aed'" onmouseout="this.style.borderColor='var(--border)'">
+        <div style="font-size:28px;margin-bottom:6px">👁</div>
+        <div style="font-size:13px;font-weight:600;color:var(--text-primary)">Neicer</div>
+        <div style="font-size:11px;color:var(--text-secondary)">Supervisión</div>
+      </button>
+    </div>
+    <div style="font-size:11px;color:var(--text-muted)">Tu elección se guardará en este dispositivo</div>
+  </div>
+</div>
 
 <!-- TAREO -->
 <div class="page active" id="page-tareo">
@@ -3294,7 +3563,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     <div id="alert-tareo" style="display:none" class="alert"></div>
     <div class="form-grid">
       <div class="field"><label>Trabajador principal</label><select id="t-t1"><option value="">Cargando...</option></select></div>
-      <div class="field"><label>Segundo trabajador (opcional)</label><select id="t-t2"><option value="">— (ninguno)</option></select></div>
+      <div class="field"><label>Segundo trabajador (opcional)</label><select id="t-t2"><option value="">Seleccionar...</option></select></div>
       <div class="field"><label>Proyecto</label><select id="t-proyecto" onchange="actualizarProductos()"><option value="">Cargando...</option></select></div>
       <div class="field"><label>Producto</label><select id="t-producto"><option value="">Seleccionar proyecto primero</option></select></div>
       <div class="field field-full"><label>Área de ejecución <span style="font-size:10px;color:var(--text-muted)">(solo si trabaja fuera de su área base)</span></label><select id="t-area-ejec"><option value="">— Usar área del trabajador —</option><option>HABILITADO</option><option>ENSAMBLE</option><option>FIERRO</option><option>PINTURA DE FIERRO</option><option>EVA</option><option>ACABADO</option><option>MANTENIMIENTO</option></select></div>
@@ -3528,8 +3797,9 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
       </div>
     </div>
   </div>
+  <div id="config-admin-section">
   <div class="card">
-    <div class="card-title">Herramientas de mantenimiento</div>
+    <div class="card-title">⚙️ Administración (solo Ricardo)</div>
     <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0">
       <div>
         <div style="font-size:13px;font-weight:500;color:var(--text-primary)">Normalizar nombres de proyectos</div>
@@ -3543,6 +3813,9 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
         <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">Descarga todas las colecciones en un archivo JSON — úsalo como respaldo o para compartir con Claude para análisis</div>
       </div>
       <button class="btn btn-primary" onclick="exportarBackupCompleto()" style="flex-shrink:0;margin-left:16px">⬇ Descargar backup</button>
+    </div>
+  </div>
+  </div><!-- /config-admin-section -->
     </div>
   </div>
 
@@ -3561,5 +3834,54 @@ const srT=document.getElementById('reasignar-trabajador');if(srT)srT.innerHTML='
 ['nt-area','edit-area'].forEach(id=>{const s=document.getElementById(id);AL.forEach(a=>s.add(new Option(a,a)));});
 ['nt-cargo','edit-cargo'].forEach(id=>{const s=document.getElementById(id);CL.forEach(c=>s.add(new Option(c,c)));});
 </script>
+
+<!-- NOTAS -->
+<div class="page" id="page-notas">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:8px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <select id="notas-filtro-cat" onchange="renderNotas()" style="height:32px;padding:0 10px;border:0.5px solid var(--border);border-radius:6px;background:var(--surface-1);font-size:12px">
+        <option value="">Todas las categorías</option>
+        <option value="idea">💡 Ideas</option>
+        <option value="problema">⚠️ Problemas</option>
+        <option value="observacion">📋 Observaciones</option>
+        <option value="urgente">🚨 Urgente</option>
+      </select>
+      <select id="notas-filtro-estado" onchange="renderNotas()" style="height:32px;padding:0 10px;border:0.5px solid var(--border);border-radius:6px;background:var(--surface-1);font-size:12px">
+        <option value="">Todos los estados</option>
+        <option value="nueva">Nueva</option>
+        <option value="revision">En revisión</option>
+        <option value="resuelta">Resuelta</option>
+        <option value="descartada">Descartada</option>
+      </select>
+    </div>
+    <button onclick="abrirNuevaNota()" style="height:32px;padding:0 16px;border:none;border-radius:6px;background:var(--amber);color:#fff;cursor:pointer;font-size:12px;font-weight:500">+ Nueva nota</button>
+  </div>
+  <div id="notas-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
+</div>
+
+<!-- Modal nueva nota -->
+<div class="modal-overlay" id="modal-nota" style="display:none">
+  <div class="modal" style="width:480px">
+    <div class="modal-title">Nueva nota</div>
+    <div class="field" style="margin-bottom:0.875rem">
+      <label>Categoría</label>
+      <select id="nota-categoria">
+        <option value="idea">💡 Idea</option>
+        <option value="problema">⚠️ Problema</option>
+        <option value="observacion">📋 Observación</option>
+        <option value="urgente">🚨 Urgente</option>
+      </select>
+    </div>
+    <div class="field" style="margin-bottom:0.875rem">
+      <label>Nota</label>
+      <textarea id="nota-texto" rows="4" placeholder="Describe tu idea, problema u observación..." style="width:100%;padding:8px;border:0.5px solid var(--border);border-radius:6px;background:var(--surface-1);font-size:13px;resize:vertical"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="cerrarNota()">Cancelar</button>
+      <button class="btn btn-primary" onclick="guardarNota()">Guardar nota</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
