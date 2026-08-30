@@ -2308,6 +2308,95 @@ window.registrarTiempo=registrarTiempo;window.resetTiempo=resetTiempo;
 window.abrirIncidencia=abrirIncidencia;window.cerrarIncidencia=cerrarIncidencia;window.guardarIncidencia=guardarIncidencia;
 window.renderHist=renderHist;window.exportarExcel=exportarExcel;
 window.renderKanban=renderKanban;window.kanbanNavFecha=kanbanNavFecha;window.kanbanIrHoy=kanbanIrHoy;window.setKanbanVista=setKanbanVista;
+
+// ===== NORMALIZACIÓN DE PROYECTOS =====
+const MAPA_PROYECTOS = {
+  // Sheraton
+  'SHERATON': 'P1',
+  'P1': 'P1',
+  'P1 · Hotel Sheraton - Mobiliario': 'P1',
+  // Dagos II-III Cadenas
+  'P2': 'P2',
+  // Dagos IV
+  'P3': 'P3',
+  'P3 · Dagos IV': 'P3',
+  'DAGOS': 'P3', // la mayoría de DAGOS sin código era Dagos IV
+  // Dagos V
+  'P4': 'P4',
+  'P4 · Dagos V': 'P4',
+  // Dagos VII - Puerta Ingreso
+  'P5': 'P5',
+  'P5 · Dagos VII - Puerta Ingreso': 'P5',
+  // Dagos VI - Cortinas
+  'P6': 'P6',
+  // Celi
+  'CELI': 'P7',
+  'P7': 'P7',
+  // BCP
+  'BCP': 'P8',
+  'P8': 'P8',
+  // Tribeca
+  'TRIBECA': 'P9',
+  'P9': 'P9',
+  'P9 · Tribeca - Mesas II': 'P9',
+  // Tribeca Adicionales
+  'P10': 'P10',
+  // Amor Amar
+  'AMOR AMAR': 'P11',
+  'P11': 'P11',
+  'P11 · Amor Amar - Mant. Bancos': 'P11',
+  // Mantenimiento (código especial 123)
+  '123': '123',
+  '123 · Mantenimiento': '123',
+  'MANTENIMIENTO': '123',
+};
+
+async function normalizarProyectosFirebase() {
+  if(!confirm('Esto normalizará los nombres de proyectos en todos los tickets de Firebase. ¿Continuar?')) return;
+  
+  setStatus('Normalizando proyectos...');
+  let actualizados = 0;
+  let errores = 0;
+  
+  for(const t of historial) {
+    const proyActual = t.proyecto || '';
+    const codigoActual = t.proyectoCodigo || '';
+    
+    // Determinar el código correcto
+    const codigoCorrecto = MAPA_PROYECTOS[proyActual] || MAPA_PROYECTOS[codigoActual] || codigoActual;
+    if(!codigoCorrecto) continue;
+    
+    // Buscar el proyecto en proyectosTC para obtener el nombre completo
+    const proyObj = proyectosTC.find(p => p.codigo === codigoCorrecto);
+    if(!proyObj) continue;
+    
+    const proyNombreCorrecto = `${codigoCorrecto} · ${proyObj.nombre}`;
+    
+    // Solo actualizar si hay algo que cambiar
+    const necesitaUpdate = 
+      t.proyectoCodigo !== codigoCorrecto || 
+      t.proyecto !== proyNombreCorrecto;
+    
+    if(necesitaUpdate) {
+      try {
+        await updateDoc(doc(db,'historial',t.fbId), {
+          proyectoCodigo: codigoCorrecto,
+          proyecto: proyNombreCorrecto
+        });
+        actualizados++;
+      } catch(e) {
+        errores++;
+        console.error('Error actualizando ticket', t.fbId, e);
+      }
+    }
+  }
+  
+  setStatus('');
+  migrationDone = false; // resetear para que la migración corra de nuevo
+  showAlert('config', `Normalización completada: ${actualizados} tickets actualizados${errores>0?' · '+errores+' errores':''}`, 'success');
+}
+window.normalizarProyectosFirebase = normalizarProyectosFirebase;
+
 // ===== PESTAÑA PERSONAL =====
 let ausencias = [];
 let personalFechaOffset = 0;
@@ -3373,7 +3462,16 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     </div>
   </div>
   <div class="card">
-    <div class="card-title">Proyectos</div>
+    <div class="card-title">Herramientas de mantenimiento</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0">
+      <div>
+        <div style="font-size:13px;font-weight:500;color:var(--text-primary)">Normalizar nombres de proyectos</div>
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">Corrige tickets con nombres inconsistentes (SHERATON, DAGOS, TRIBECA, etc.) y los unifica con el código correcto</div>
+      </div>
+      <button class="btn" onclick="normalizarProyectosFirebase()" style="background:#854F0B;color:#fff;border:none;flex-shrink:0;margin-left:16px">🔧 Normalizar proyectos</button>
+    </div>
+  </div>
+
     <div id="config-proyectos-unificado"></div>
     <div style="border-top:0.5px solid #eee;padding-top:1rem;margin-top:0.5rem">
       <button class="btn btn-amber btn-sm" onclick="abrirCrearProyectoTC()">+ Nuevo proyecto</button>
