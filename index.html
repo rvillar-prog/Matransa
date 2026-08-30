@@ -70,11 +70,29 @@ const NUM_CLASS={"HABILITADO":"num-habilitado","ENSAMBLE":"num-ensamble","FIERRO
 
 let trabajadores=[], proyectos={}, historial=[], unsubHist=null, editandoTrabajador=null;
 
-// Fecha de ejecución por defecto: si son >= 15:00 → mañana, si no → hoy
+// Fecha de ejecución por defecto
+// Sábado → lunes | Domingo → lunes | L-V <15h → hoy | L-V >=15h → mañana (salta domingo)
+function siguienteDiaHabil(fecha) {
+  const d = new Date(fecha);
+  if (d.getDay() === 0) d.setDate(d.getDate() + 1);
+  return d;
+}
 function fechaEjecucionDefecto() {
   const ahora = new Date();
+  const dow = ahora.getDay();
   const objetivo = new Date();
-  if (ahora.getHours() >= 15) objetivo.setDate(objetivo.getDate() + 1);
+  if (dow === 6) {
+    // Sábado → lunes
+    objetivo.setDate(objetivo.getDate() + 2);
+  } else if (dow === 0) {
+    // Domingo → lunes
+    objetivo.setDate(objetivo.getDate() + 1);
+  } else if (ahora.getHours() >= 15) {
+    // L-V después de 3pm → mañana (si mañana es domingo, salta a lunes)
+    objetivo.setDate(objetivo.getDate() + 1);
+    if (objetivo.getDay() === 0) objetivo.setDate(objetivo.getDate() + 1);
+  }
+  // L-V antes de 3pm → hoy
   return objetivo.toLocaleDateString('es-PE');
 }
 function hoyStr() { return new Date().toLocaleDateString('es-PE'); }
@@ -86,12 +104,27 @@ function fechaStrToDate(str) {
 async function init() {
   const hoy=new Date();
   document.getElementById('fecha-nav').textContent=hoy.toLocaleDateString('es-PE',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
-  // Poblar selector de fecha ejecución por defecto
+  // Poblar selector de fecha ejecución — nunca muestra domingo, sábado va directo a lunes
   const fe = document.getElementById('t-fecha-ejec');
+  const dow = hoy.getDay();
   const hoyL = hoy.toLocaleDateString('es-PE');
-  const mañana = new Date(); mañana.setDate(mañana.getDate()+1);
-  const manL = mañana.toLocaleDateString('es-PE');
-  fe.innerHTML=`<option value="${hoyL}">Hoy — ${hoyL}</option><option value="${manL}">Mañana — ${manL}</option>`;
+  const lunes = new Date(hoy);
+  if(dow === 6) lunes.setDate(hoy.getDate() + 2); // sábado → lunes
+  else if(dow === 0) lunes.setDate(hoy.getDate() + 1); // domingo → lunes
+  const manana = new Date(hoy); manana.setDate(hoy.getDate() + 1);
+  if(manana.getDay() === 0) manana.setDate(manana.getDate() + 1); // saltar domingo
+  const diasNombres = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+  if(dow === 6) {
+    // Sábado: solo mostrar lunes
+    fe.innerHTML = `<option value="${lunes.toLocaleDateString('es-PE')}">Lunes — ${lunes.toLocaleDateString('es-PE')}</option>`;
+  } else if(dow === 0) {
+    // Domingo: solo mostrar lunes
+    fe.innerHTML = `<option value="${lunes.toLocaleDateString('es-PE')}">Lunes — ${lunes.toLocaleDateString('es-PE')}</option>`;
+  } else {
+    // L-V: hoy y mañana (saltando domingo)
+    const labelMan = manana.getDay() === 1 ? `Lunes — ${manana.toLocaleDateString('es-PE')}` : `Mañana — ${manana.toLocaleDateString('es-PE')}`;
+    fe.innerHTML = `<option value="${hoyL}">Hoy — ${hoyL}</option><option value="${manana.toLocaleDateString('es-PE')}">${labelMan}</option>`;
+  }
   fe.value = fechaEjecucionDefecto();
   // Cargar perfil guardado — si no hay perfil, mostrar selector obligatorio
   if(!cargarPerfil()) {
