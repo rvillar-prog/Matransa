@@ -572,7 +572,7 @@ function renderAndree(){
     if(hora17>=17&&t.tu_real) return false; // completado + pasó 17h = ocultar
     return true;
   }));
-  const manT=sortTicketsByArea(historial.filter(t=>t.visibleAndree!==false&&t.fechaEjecucion===manStr));
+  const manT=sortTicketsByArea(historial.filter(t=>t.visibleAndree!==false&&fechaStrToDate(t.fechaEjecucion||t.fecha||hoy)>fechaStrToDate(hoy)));
   document.getElementById('m-total').textContent=hoyT.length;
   const comp=hoyT.filter(t=>t.tu_real);
   document.getElementById('m-comp').textContent=comp.length;
@@ -588,8 +588,11 @@ function renderAndree(){
       const done=!!t.tu_real;
       const incHTML=t.incidencias&&t.incidencias.length?`<div style="margin-top:6px">${t.incidencias.map(inc=>`<div style="padding:4px 8px;background:#fff8e1;border-radius:6px;font-size:11px;color:#f57f17;margin-top:3px">⚠ ${inc.hora} — ${inc.descripcion}</div>`).join('')}</div>`:'';
       const ahora=new Date();const hora=ahora.getHours()+(ahora.getMinutes()/60);
-      const esAnterior=fechaStrToDate(t.fechaEjecucion||t.fecha||hoyStr())<fechaStrToDate(hoyStr());
-      const pendienteVencido=!done&&hora>=17;
+      const fechaTkt=t.fechaEjecucion||t.fecha||hoyStr();
+      const esHoyTkt=fechaTkt===hoyStr();
+      const esAnterior=fechaStrToDate(fechaTkt)<fechaStrToDate(hoyStr());
+      const esFuturo=fechaStrToDate(fechaTkt)>fechaStrToDate(hoyStr());
+      const pendienteVencido=!done&&esHoyTkt&&hora>=17;
       const alertaRojo=pendienteVencido||(!done&&esAnterior);
       return `<div class="andree-item ${done?'done':''}" style="${alertaRojo?'border:1.5px solid #E24B4A;background:#fff8f8;':''}">
         ${alertaRojo?`<div style="background:#E24B4A;color:#fff;font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px 4px 0 0;margin:-8px -8px 8px -8px">⚠ PENDIENTE DE REGISTRAR TIEMPO</div>`:''}
@@ -617,7 +620,14 @@ function renderAndree(){
   }
   let html='';
   if(hoyT.length) html+=`<div style="margin-bottom:16px"><div style="font-size:11px;font-weight:700;color:#fff;background:#2563eb;padding:5px 14px;border-radius:6px;margin-bottom:8px;display:inline-block">📋 HOY — ${hoyT.length} ticket${hoyT.length!==1?'s':''}</div><div class="andree-list">${renderTickets(hoyT)}</div></div>`;
-  if(manT.length) html+=`<div><div style="font-size:11px;font-weight:700;color:#fff;background:#7c3aed;padding:5px 14px;border-radius:6px;margin-bottom:8px;display:inline-block">📅 MAÑANA — ${manT.length} ticket${manT.length!==1?'s':''}</div><div class="andree-list">${renderTickets(manT)}</div></div>`;
+  if(manT.length){
+    const fechaManT=manT[0]?.fechaEjecucion||manStr;
+    const partesFM=fechaManT.split('/');
+    const diaManT=new Date(partesFM[2],partesFM[1]-1,partesFM[0]);
+    const diasSemana=['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+    const labelMan=fechaManT===manStr?`📅 MAÑANA`:`📅 ${diasSemana[diaManT.getDay()].toUpperCase()}`;
+    html+=`<div><div style="font-size:11px;font-weight:700;color:#fff;background:#7c3aed;padding:5px 14px;border-radius:6px;margin-bottom:8px;display:inline-block">${labelMan} — ${fechaManT} · ${manT.length} ticket${manT.length!==1?'s':''}</div><div class="andree-list">${renderTickets(manT)}</div></div>`;
+  }
   lista.innerHTML=html;
 }
 
