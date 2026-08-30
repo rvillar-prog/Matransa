@@ -2309,6 +2309,73 @@ window.abrirIncidencia=abrirIncidencia;window.cerrarIncidencia=cerrarIncidencia;
 window.renderHist=renderHist;window.exportarExcel=exportarExcel;
 window.renderKanban=renderKanban;window.kanbanNavFecha=kanbanNavFecha;window.kanbanIrHoy=kanbanIrHoy;window.setKanbanVista=setKanbanVista;
 
+
+// ===== BACKUP COMPLETO =====
+async function exportarBackupCompleto() {
+  setStatus('Exportando backup...');
+  try {
+    const fecha = new Date().toLocaleDateString('es-PE').replace(/\//g,'-');
+    const hora = new Date().toLocaleTimeString('es-PE',{hour:'2-digit',minute:'2-digit'}).replace(/:/g,'-');
+
+    // Leer todas las colecciones
+    const [
+      snapHistorial,
+      snapTrabajadores,
+      snapProyectosTC,
+      snapProyectos,
+      snapOfs,
+      snapPlanM3,
+      snapAusencias
+    ] = await Promise.all([
+      getDocs(collection(db,'historial')),
+      getDocs(collection(db,'trabajadores')),
+      getDocs(collection(db,'proyectosTC')),
+      getDocs(collection(db,'proyectos')),
+      getDocs(collection(db,'ofs')),
+      getDocs(collection(db,'planM3')),
+      getDocs(collection(db,'ausencias'))
+    ]);
+
+    const backup = {
+      version: '1.0',
+      fecha: new Date().toISOString(),
+      proyecto: 'MATRANSA',
+      colecciones: {
+        historial: snapHistorial.docs.map(d=>({id:d.id,...d.data()})),
+        trabajadores: snapTrabajadores.docs.map(d=>({id:d.id,...d.data()})),
+        proyectosTC: snapProyectosTC.docs.map(d=>({id:d.id,...d.data()})),
+        proyectos: snapProyectos.docs.map(d=>({id:d.id,...d.data()})),
+        ofs: snapOfs.docs.map(d=>({id:d.id,...d.data()})),
+        planM3: snapPlanM3.docs.map(d=>({id:d.id,...d.data()})),
+        ausencias: snapAusencias.docs.map(d=>({id:d.id,...d.data()}))
+      },
+      resumen: {
+        tickets: snapHistorial.size,
+        trabajadores: snapTrabajadores.size,
+        proyectos: snapProyectosTC.size,
+        ofs: snapOfs.size,
+        ausencias: snapAusencias.size
+      }
+    };
+
+    // Descargar como JSON
+    const blob = new Blob([JSON.stringify(backup, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `MATRANSA_backup_${fecha}_${hora}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setStatus('');
+    showAlert('config', `Backup completo descargado: ${snapHistorial.size} tickets, ${snapTrabajadores.size} trabajadores, ${snapOfs.size} OFs`, 'success');
+  } catch(e) {
+    setStatus('');
+    console.error('Error en backup:', e);
+    showAlert('config', 'Error al exportar backup: ' + e.message, 'warn');
+  }
+}
+window.exportarBackupCompleto = exportarBackupCompleto;
+
 // ===== NORMALIZACIÓN DE PROYECTOS =====
 const MAPA_PROYECTOS = {
   // Sheraton
@@ -3469,6 +3536,13 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
         <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">Corrige tickets con nombres inconsistentes (SHERATON, DAGOS, TRIBECA, etc.) y los unifica con el código correcto</div>
       </div>
       <button class="btn" onclick="normalizarProyectosFirebase()" style="background:#854F0B;color:#fff;border:none;flex-shrink:0;margin-left:16px">🔧 Normalizar proyectos</button>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-top:0.5px solid var(--border)">
+      <div>
+        <div style="font-size:13px;font-weight:500;color:var(--text-primary)">Backup completo de Firebase</div>
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">Descarga todas las colecciones en un archivo JSON — úsalo como respaldo o para compartir con Claude para análisis</div>
+      </div>
+      <button class="btn btn-primary" onclick="exportarBackupCompleto()" style="flex-shrink:0;margin-left:16px">⬇ Descargar backup</button>
     </div>
   </div>
 
