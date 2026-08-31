@@ -2909,10 +2909,10 @@ async function guardarAusencia() {
   const inicio = document.getElementById('aus-inicio').value;
   const fin = document.getElementById('aus-fin').value || inicio;
   const nota = document.getElementById('aus-nota').value.trim();
-  if(!trabajador||!inicio){showAlert('torre','Selecciona trabajador y fecha.','warn');return;}
+  if(!trabajador||!inicio){showAlert('personal','Selecciona trabajador y fecha.','warn');return;}
   await addDoc(collection(db,'ausencias'),{trabajador,tipo,inicio,fin,nota,fechaRegistro:new Date().toISOString()});
   cerrarAusencia();
-  showAlert('torre','Ausencia registrada.','success');
+  showAlert('personal','Ausencia registrada.','success');
 }
 async function eliminarAusencia(fbId) {
   if(!confirm('Eliminar esta ausencia?')) return;
@@ -3919,6 +3919,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 
 <!-- M3 SEMANAL -->
 <div class="page" id="page-personal">
+  <div id="alert-personal" style="display:none" class="alert"></div>
   <div class="metrics" style="margin-bottom:1rem">
     <div class="metric"><div class="metric-label">Operarios disponibles</div><div class="metric-value" id="p-disponibles">0</div><div class="metric-sub">con tareo asignado</div></div>
     <div class="metric"><div class="metric-label">Sin tareo</div><div class="metric-value" id="p-sin-tareo" style="color:#EF9F27">0</div><div class="metric-sub">disponibles sin asignar</div></div>
