@@ -1316,16 +1316,16 @@ function renderDashboard(){
   const porOp={};
   historial.forEach(t=>{
     (t.nombres||[]).forEach(nom=>{
-      if(!porOp[nom])porOp[nom]={plan:0,real:0,tickets:0,completados:0,desv:[]};
+      if(!porOp[nom])porOp[nom]={plan:0,planCompletados:0,real:0,tickets:0,completados:0,desv:[]};
       porOp[nom].plan+=t.tt;porOp[nom].tickets++;
-      if(t.tu_real!=null){porOp[nom].real+=(t.n*t.tu_real/60);porOp[nom].completados++;porOp[nom].desv.push(t.tu_real-t.tu);}
+      if(t.tu_real!=null){porOp[nom].real+=(t.n*t.tu_real/60);porOp[nom].planCompletados+=t.tt;porOp[nom].completados++;porOp[nom].desv.push(t.tu_real-t.tu);}
     });
   });
 
   const opRows=Object.entries(porOp).sort((a,b)=>b[1].tickets-a[1].tickets).map(([nom,d])=>{
     const short=nom.split(' ').slice(0,3).join(' ');
     const area=trabajadores.find(w=>w.nombre===nom)?.area||'';
-    const ef=d.completados>0?((d.plan/Math.max(d.real,0.1))*100).toFixed(0):'-';
+    const ef=d.completados>0?((d.planCompletados/Math.max(d.real,0.1))*100).toFixed(0):'-';
     const promDesv=d.desv.length?(d.desv.reduce((a,b)=>a+b,0)/d.desv.length).toFixed(1):'-';
     const efNum=parseFloat(ef);
     const efColor=efNum>=100?'#27ae60':efNum>=80?'#e8a020':'#c0392b';
@@ -1938,7 +1938,7 @@ async function cargarTorre() {
     // Cargar proyectos TC
     const snapP = await getDocs(collection(db,'proyectosTC'));
     if(snapP.empty) {
-      for(const p of PROYECTOS_BASE_TC) await setDoc(doc(collection(db,'proyectosTC')),p);
+      for(const p of PROYECTOS_BASE_TC) await setDoc(doc(db,'proyectosTC',p.codigo),p);
       proyectosTC = [...PROYECTOS_BASE_TC];
     } else {
       proyectosTC = snapP.docs.map(d=>({id:d.id,...d.data()}));
@@ -2673,9 +2673,37 @@ const MAPA_PROYECTOS = {
   'MANTENIMIENTO': '123',
 };
 
+// Elimina proyectosTC duplicados (mismo código, creados por una carrera de inicialización)
+// Conserva el registro más antiguo (menor guardado/id) y borra el resto — las copias son clones exactos salvo el ID.
+async function eliminarProyectosDuplicadosTC() {
+  const porCodigo = {};
+  proyectosTC.forEach(p=>{ (porCodigo[p.codigo]=porCodigo[p.codigo]||[]).push(p); });
+  const aBorrar = [];
+  Object.values(porCodigo).forEach(lista=>{
+    if(lista.length<=1) return;
+    // Conservar el que tenga fecha 'guardado' más antigua (o el primero si no hay fecha)
+    lista.sort((a,b)=>new Date(a.guardado||0)-new Date(b.guardado||0));
+    aBorrar.push(...lista.slice(1));
+  });
+  if(!aBorrar.length){ showAlert('config','No se encontraron proyectos duplicados.','success'); return; }
+  if(!confirm(`Se encontraron ${aBorrar.length} registro(s) duplicado(s) de proyectos en Torre de Control (mismo código, copias exactas). Se eliminarán y se conservará solo 1 por código. ¿Continuar?`)) return;
+  setStatus('Eliminando duplicados...');
+  let errores=0;
+  for(const p of aBorrar){
+    try{ await deleteDoc(doc(db,'proyectosTC',p.id)); }catch(e){errores++;console.error(e);}
+  }
+  setStatus('');
+  proyectosTC = proyectosTC.filter(p=>!aBorrar.some(b=>b.id===p.id));
+  poblarSelectProyectos();
+  if(typeof poblarSelectProyectoTC==='function') poblarSelectProyectoTC();
+  if(typeof renderTorre==='function') renderTorre();
+  if(typeof renderConfigProyectosTC==='function') renderConfigProyectosTC();
+  showAlert('config',`Eliminados ${aBorrar.length-errores} duplicado(s).${errores?` ${errores} error(es).`:''}`,'success');
+}
+window.eliminarProyectosDuplicadosTC=eliminarProyectosDuplicadosTC;
+
 async function normalizarProyectosFirebase() {
   if(!confirm('Esto normalizará los nombres de proyectos en todos los tickets de Firebase. ¿Continuar?')) return;
-  
   setStatus('Normalizando proyectos...');
   let actualizados = 0;
   let errores = 0;
@@ -4077,6 +4105,13 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
         <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">Corrige tickets con nombres inconsistentes (SHERATON, DAGOS, TRIBECA, etc.) y los unifica con el código correcto</div>
       </div>
       <button class="btn" onclick="normalizarProyectosFirebase()" style="background:#854F0B;color:#fff;border:none;flex-shrink:0;margin-left:16px">🔧 Normalizar proyectos</button>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-top:0.5px solid var(--border)">
+      <div>
+        <div style="font-size:13px;font-weight:500;color:var(--text-primary)">Eliminar proyectos duplicados (Torre de Control)</div>
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">Detecta y borra copias exactas de un mismo proyecto (mismo código) creadas por una carrera de inicialización — conserva solo 1 por código</div>
+      </div>
+      <button class="btn" onclick="eliminarProyectosDuplicadosTC()" style="background:#854F0B;color:#fff;border:none;flex-shrink:0;margin-left:16px">🔧 Eliminar duplicados</button>
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-top:0.5px solid var(--border)">
       <div>
