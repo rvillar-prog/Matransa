@@ -2887,6 +2887,40 @@ window.irPersonalSinTareo=function(){
 };
 window.renderPersonal=renderPersonal;window.cambiarFechaPersonal=cambiarFechaPersonal;window.irHoyPersonal=irHoyPersonal;window.abrirRegistrarAusencia=abrirRegistrarAusencia;window.preRegistrarAusencia=preRegistrarAusencia;window.cerrarAusencia=cerrarAusencia;window.guardarAusencia=guardarAusencia;window.eliminarAusencia=eliminarAusencia;
 
+
+// ===== MENÚ MÓVIL =====
+function toggleMobileMenu() {
+  const panel = document.getElementById('mobile-menu-panel');
+  const overlay = document.getElementById('mobile-menu-overlay');
+  const isOpen = panel.classList.contains('open');
+  if(isOpen) {
+    closeMobileMenu();
+  } else {
+    // Poblar items según perfil activo
+    const perfil = PERFILES[perfilActivo];
+    const labels = {
+      'personal':'Personal','torre':'Torre de Control','tareo':'Generar tareo',
+      'andree':'Registro Andree','kanban':'Kanban','historial':'Historial',
+      'planificacion':'Planificación','m3':'M³ Semanal','dashboard':'Dashboard',
+      'notas':'Notas','config':'Configuración'
+    };
+    const items = document.getElementById('mobile-menu-items');
+    const paginaActiva = document.querySelector('.page.active')?.id?.replace('page-','');
+    items.innerHTML = (perfil?.pestanas||Object.keys(labels)).map(p=>`
+      <button class="mobile-menu-item ${p===paginaActiva?'active':''}" onclick="showPage('${p}');closeMobileMenu()">
+        ${labels[p]||p}
+      </button>`).join('');
+    panel.classList.add('open');
+    overlay.style.display = 'block';
+  }
+}
+function closeMobileMenu() {
+  document.getElementById('mobile-menu-panel').classList.remove('open');
+  document.getElementById('mobile-menu-overlay').style.display = 'none';
+}
+window.toggleMobileMenu = toggleMobileMenu;
+window.closeMobileMenu = closeMobileMenu;
+
 // ===== PLANIFICACIÓN — GANTT SEMANAL =====
 let planVista = 'areas'; // 'areas' | 'ofs'
 let ganttSemanaOffset = 0;
@@ -3333,6 +3367,18 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 .pt-num-label{font-size:7px;font-weight:800;color:#bbb;text-transform:uppercase;display:block;letter-spacing:0.3px;}
 .pt-num-val{font-size:18px;font-weight:900;display:block;line-height:1.1;margin-top:2px;}
 
+
+.hamburger-btn { display: none; align-items: center; justify-content: center; width: 36px; height: 36px; border: none; background: transparent; cursor: pointer; color: rgba(255,255,255,0.7); font-size: 20px; border-radius: 6px; flex-shrink: 0; }
+.hamburger-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+.mobile-menu-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 150; }
+.mobile-menu-panel { position: fixed; top: 0; left: 0; bottom: 0; width: 260px; background: #141413; z-index: 151; transform: translateX(-100%); transition: transform 0.25s ease; padding: 0; }
+.mobile-menu-panel.open { transform: translateX(0); }
+.mobile-menu-header { padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; align-items: center; gap: 10px; }
+.mobile-menu-items { padding: 8px 0; overflow-y: auto; }
+.mobile-menu-item { display: flex; align-items: center; padding: 12px 20px; font-size: 14px; font-weight: 500; color: rgba(255,255,255,0.6); cursor: pointer; transition: all 0.15s; border: none; background: none; width: 100%; text-align: left; }
+.mobile-menu-item:hover { background: rgba(255,255,255,0.06); color: #fff; }
+.mobile-menu-item.active { color: #e8a020; background: rgba(232,160,32,0.08); }
+
 /* ===== RESPONSIVE TABLET ===== */
 @media (max-width: 1024px) {
   nav { padding: 0 0.75rem; gap: 8px; }
@@ -3361,6 +3407,8 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 
 @media (max-width: 768px) {
   .tabs { display: none; }
+  .hamburger-btn { display: flex !important; }
+  .mobile-menu { display: block; }
   .tickets-grid { grid-template-columns: 1fr !important; }
   .metrics { grid-template-columns: 1fr !important; }
   .kanban-board { flex-direction: column !important; }
@@ -3678,12 +3726,24 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     <div class="tab" data-page="config" onclick="showPage('config')">Configuración</div>
     <div class="tab" data-page="notas" onclick="showPage('notas')">Notas</div>
   </div>
-  <div class="right" style="display:flex;align-items:center;gap:12px">
-    <div id="perfil-indicator" onclick="mostrarSelectorPerfil()" style="cursor:pointer;font-size:11px;color:var(--text-secondary);white-space:nowrap;padding:4px 8px;border:0.5px solid var(--border);border-radius:6px" title="Cambiar perfil">👤 Perfil</div>
+  <div class="right" style="display:flex;align-items:center;gap:10px">
+    <div id="perfil-indicator" onclick="mostrarSelectorPerfil()" style="cursor:pointer;font-size:11px;color:rgba(255,255,255,0.5);white-space:nowrap;padding:4px 8px;border:0.5px solid rgba(255,255,255,0.15);border-radius:6px" title="Cambiar perfil">👤 Perfil</div>
     <span id="db-status"></span>
     <div class="fecha-nav" id="fecha-nav"></div>
+    <button class="hamburger-btn" onclick="toggleMobileMenu()" aria-label="Menú">☰</button>
   </div>
 </nav>
+
+<!-- Menú móvil -->
+<div class="mobile-menu-overlay" id="mobile-menu-overlay" onclick="closeMobileMenu()"></div>
+<div class="mobile-menu-panel" id="mobile-menu-panel">
+  <div class="mobile-menu-header">
+    <svg width="20" height="20" viewBox="0 0 100 100" fill="none"><rect width="100" height="100" rx="10" fill="#1B6B35"/><text x="50" y="70" font-family="system-ui" font-size="58" font-weight="800" fill="white" text-anchor="middle">M</text></svg>
+    <span style="font-size:14px;font-weight:700;color:#fff">MATRANSA</span>
+    <button onclick="closeMobileMenu()" style="margin-left:auto;background:none;border:none;color:rgba(255,255,255,0.5);font-size:20px;cursor:pointer">×</button>
+  </div>
+  <div class="mobile-menu-items" id="mobile-menu-items"></div>
+</div>
 
 <!-- Modal selector de perfil -->
 <div class="modal-overlay" id="modal-perfil" style="display:none">
