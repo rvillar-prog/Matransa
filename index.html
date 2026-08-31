@@ -8,6 +8,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, setDoc, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBb0kvH9bRKUxCBkLD3FCUThDOarFn9UsU",
@@ -20,6 +21,7 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+const auth = getAuth(app);
 
 const AREAS_LIST = ["HABILITADO","ENSAMBLE","FIERRO","PINTURA DE FIERRO","EVA","ACABADO","MANTENIMIENTO","PROD-ADMIN"];
 const CARGOS_LIST = ["COORDINADOR SUPERIOR","COORDINADOR","COORDINADOR BASE","OPERARIO SUPERIOR","OPERARIO INTERMEDIO","OPERARIO BASE","ADM - ESPECIFICACIONES","ADM - MANTENIMIENTO","PRACTICANTE"];
@@ -99,6 +101,22 @@ function hoyStr() { return new Date().toLocaleDateString('es-PE'); }
 function fechaStrToDate(str) {
   const [d,m,y] = str.split('/');
   return new Date(y, m-1, d);
+}
+
+// Escapa HTML para insertar texto libre del usuario (tarea, notas, incidencias) de forma segura en innerHTML.
+// Uso obligatorio para cualquier campo de texto libre antes de interpolarlo en un template de innerHTML.
+function escapeHtml(str){
+  if(str==null) return '';
+  return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Barrera adicional (NO reemplaza seguridad real de Firestore Rules) para funciones administrativas
+// sensibles — evita que alguien dispare estas acciones por accidente o desde un perfil no-admin.
+// Cualquiera con la consola del navegador puede editar localStorage y saltarse esto: la protección
+// real depende de las Reglas de Seguridad de Firestore (Fase 3 del plan de auditoría).
+function requiereAdmin(){
+  if(perfilActivo!=='ricardo'){ alert('Esta acción es solo para el administrador (Ricardo).'); return false; }
+  return true;
 }
 
 async function init() {
@@ -417,6 +435,7 @@ async function ocultarDeAndree(fbId){
 
 // Eliminar permanentemente — solo desde historial con doble confirmación
 async function eliminarPermanente(fbId){
+  if(!requiereAdmin()) return;
   if(!confirm('¿Eliminar permanentemente este registro del historial? Esta acción NO se puede deshacer.'))return;
   if(!confirm('Segunda confirmación: ¿Seguro que quieres eliminar este registro para siempre?'))return;
   await deleteDoc(doc(db,'historial',fbId));
@@ -470,8 +489,8 @@ function ticketCardHTML(t){
     </div>
     <div class="ticket-card-body">
       <div class="ticket-field"><div class="ticket-field-label">Proyecto</div><div class="ticket-field-value" style="font-size:11px">${t.proyectoCodigo?(proyectosTC.find(p=>p.codigo===t.proyectoCodigo)?.nombre||t.proyecto):t.proyecto}</div></div>
-      <div class="ticket-field"><div class="ticket-field-label">Producto</div><div class="ticket-field-value" style="font-size:11px">${t.producto}</div></div>
-      <div class="ticket-field"><div class="ticket-field-label">Tarea</div><div class="ticket-field-value">${t.tarea}</div></div>
+      <div class="ticket-field"><div class="ticket-field-label">Producto</div><div class="ticket-field-value" style="font-size:11px">${escapeHtml(t.producto)}</div></div>
+      <div class="ticket-field"><div class="ticket-field-label">Tarea</div><div class="ticket-field-value">${escapeHtml(t.tarea)}</div></div>
       ${t.incidencias&&t.incidencias.length?`<div style="margin-top:6px;padding:4px 8px;background:#fff8e1;border-radius:6px;font-size:11px;color:#f57f17">⚠ ${t.incidencias.length} incidencia${t.incidencias.length>1?'s':''}</div>`:''}
     </div>
     <div class="ticket-nums-row">
@@ -565,8 +584,8 @@ function imprimirHoy(fechaFiltro){
       </div>
       <div class="pt-body">
         <div class="pt-row"><span class="pt-label">Ejecución</span><div class="pt-ejec">${t.fechaEjecucion}</div></div>
-        <div class="pt-row"><span class="pt-label">Producto</span><div class="pt-value">${t.producto}</div></div>
-        <div class="pt-row"><span class="pt-label">Tarea</span><div class="pt-tarea">${t.tarea}</div></div>
+        <div class="pt-row"><span class="pt-label">Producto</span><div class="pt-value">${escapeHtml(t.producto)}</div></div>
+        <div class="pt-row"><span class="pt-label">Tarea</span><div class="pt-tarea">${escapeHtml(t.tarea)}</div></div>
       </div>
       <div class="pt-nums">
         <div class="pt-num"><span class="pt-num-label">Unidades</span><span class="pt-num-val ${nClass}">${t.n}</span></div>
@@ -793,7 +812,7 @@ function renderAndree(){
         <div class="status-dot ${done?'dot-done':'dot-pending'}"></div>
         <div class="andree-info">
           <div class="andree-name">${names} <span style="font-size:10px;color:#aaa;font-weight:400">· ${area}</span></div>
-          <div class="andree-sub">${t.proyecto} · ${t.producto} · ${t.tarea}</div>
+          <div class="andree-sub">${escapeHtml(t.proyecto)} · ${escapeHtml(t.producto)} · ${escapeHtml(t.tarea)}</div>
           ${incHTML}
         </div>
         <div class="andree-right">
@@ -1177,8 +1196,8 @@ function renderKanban(){
           <span class="kanban-card-name">${names}</span>
           <span>${done?'<span class="kanban-done-badge">✓</span>':''} ${tieneInc?'<span style="color:#f57f17;font-size:10px;font-weight:800">⚠</span>':''}</span>
         </div>
-        <div class="kanban-card-proyecto">${t.proyecto}</div>
-        <div class="kanban-card-tarea">${t.tarea}</div>
+        <div class="kanban-card-proyecto">${escapeHtml(t.proyecto)}</div>
+        <div class="kanban-card-tarea">${escapeHtml(t.tarea)}</div>
         ${tieneInc?`<div style="font-size:9px;color:#f57f17;margin-top:3px">${t.incidencias[t.incidencias.length-1].descripcion}</div>`:''}
         <div class="kanban-card-nums"><span>${t.n} ud.</span><span>${t.tu}'</span><span class="kanban-card-tt">${t.tt}h</span></div>
       </div>`;
@@ -1258,14 +1277,14 @@ function renderHist(){
     const names=(t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
     let diff='—',dc='diff-ok';
     if(t.tu_real){const d=t.tu_real-t.tu;diff=(d>0?'+':'')+d+"'";dc=d>10?'diff-over':d<-5?'diff-under':'diff-ok';}
-    const incText=t.incidencias&&t.incidencias.length?`<span style="color:#f57f17;font-size:11px">⚠ ${t.incidencias.map(i=>i.descripcion).join(' / ')}</span>`:'—';
+    const incText=t.incidencias&&t.incidencias.length?`<span style="color:#f57f17;font-size:11px">⚠ ${t.incidencias.map(i=>escapeHtml(i.descripcion)).join(' / ')}</span>`:'—';
     return `<tr>
       <td style="white-space:nowrap">${t.fechaEjecucion||t.fecha}</td>
       <td style="font-weight:600">${names}</td>
       <td style="font-size:11px;color:#888">${area}</td>
       <td style="font-size:11px">${t.proyectoCodigo||(t.proyecto||'').split(' · ')[0]||t.proyecto}</td>
       <td style="font-size:11px;color:#888">${t.ofNumero||'—'}</td>
-      <td style="font-size:11px;color:#666">${t.tarea}</td>
+      <td style="font-size:11px;color:#666">${escapeHtml(t.tarea)}</td>
       <td style="text-align:center">${t.n}</td>
       <td style="text-align:center">${t.tu}'</td>
       <td style="text-align:center">${t.tu_real?t.tu_real+"'":'—'}</td>
@@ -1348,8 +1367,8 @@ function renderDashboard(){
   const tareaRows=tareasDesv.map(t=>{
     const dc=t.desv>10?'#c0392b':t.desv<-5?'#27ae60':'#888';
     return `<tr>
-      <td style="font-size:12px;font-weight:500">${t.tarea}</td>
-      <td style="font-size:11px;color:#888">${t.proyecto}</td>
+      <td style="font-size:12px;font-weight:500">${escapeHtml(t.tarea)}</td>
+      <td style="font-size:11px;color:#888">${escapeHtml(t.proyecto)}</td>
       <td style="text-align:center">${t.plan}'</td>
       <td style="text-align:center">${t.real}'</td>
       <td style="text-align:center;font-weight:700;color:${dc}">${t.desv>0?'+':''}${t.desv}'</td>
@@ -1397,7 +1416,7 @@ function abrirReasignar(fbId) {
   const t = historial.find(h=>h.fbId===fbId);
   if(!t) return;
   const names = (t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
-  document.getElementById('reasignar-info').innerHTML = `<strong>${names}</strong> · ${t.proyecto} · ${t.tarea}`;
+  document.getElementById('reasignar-info').innerHTML = `<strong>${escapeHtml(names)}</strong> · ${escapeHtml(t.proyecto)} · ${escapeHtml(t.tarea)}`;
   const sel = document.getElementById('reasignar-trabajador');
   sel.innerHTML = '<option value="">Seleccionar...</option>';
   trabajadores.forEach(w=>{
@@ -1431,7 +1450,7 @@ function abrirPosponer(fbId) {
   const t = historial.find(h=>h.fbId===fbId);
   if(!t) return;
   const names = (t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
-  document.getElementById('posponer-info').innerHTML = `<strong>${names}</strong> · ${t.proyecto} · ${t.tarea}`;
+  document.getElementById('posponer-info').innerHTML = `<strong>${escapeHtml(names)}</strong> · ${escapeHtml(t.proyecto)} · ${escapeHtml(t.tarea)}`;
   document.getElementById('posponer-nombre-actual').textContent = names || 'Sin asignar';
   document.getElementById('posponer-motivo').value = '';
   // Reset radio a "mismo trabajador"
@@ -1512,7 +1531,7 @@ function renderPendientes() {
     ${pendientes.map(t=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:0.5px solid #f5f4f0;gap:1rem">
       <div style="flex:1;min-width:0">
         <div style="font-size:13px;font-weight:500;color:var(--text-primary)">${t.proyecto||'—'} · ${t.producto||'—'}</div>
-        <div style="font-size:11px;color:#888;margin-top:2px">${t.tarea} · ${t.n} und · ${t.tu}' · ${t.tt}h</div>
+        <div style="font-size:11px;color:#888;margin-top:2px">${escapeHtml(t.tarea)} · ${t.n} und · ${t.tu}' · ${t.tt}h</div>
         <div style="font-size:11px;color:#2563eb;margin-top:2px">Ejecución: ${t.fechaEjecucion||'sin fecha'}</div>
         ${t.cambios&&t.cambios.length?`<div style="font-size:10px;color:#f57f17;margin-top:2px">Motivo: ${t.cambios[t.cambios.length-1].motivo}</div>`:''}
       </div>
@@ -1529,7 +1548,7 @@ async function asignarPendiente(fbId) {
   if(!t) return;
   // Abrir modal de reasignación reutilizando el mismo modal
   fbIdReasignar = fbId;
-  document.getElementById('reasignar-info').innerHTML = `<strong>Pendiente sin asignar</strong> · ${t.proyecto} · ${t.tarea}`;
+  document.getElementById('reasignar-info').innerHTML = `<strong>Pendiente sin asignar</strong> · ${escapeHtml(t.proyecto)} · ${escapeHtml(t.tarea)}`;
   const sel = document.getElementById('reasignar-trabajador');
   sel.innerHTML = '<option value="">Seleccionar...</option>';
   trabajadores.forEach(w=>{
@@ -2045,7 +2064,7 @@ function renderTorre() {
     const cards = etapaOfs.map(of=>{
       const p = proyectosTC.find(x=>x.codigo===of.proyectoCodigo);
       const pColor = p?.color||'#888';
-      const pNombre = p?`${p.codigo} · ${p.nombre}`:(of.proyectoCodigo||'—');
+      const pNombre = p?`${p.codigo} · ${escapeHtml(p.nombre)}`:(of.proyectoCodigo||'—');
       const diasAqui = diasEnEtapa(of);
       const diasEnt = diasAEntrega(of);
       const prioDot = of.prioridad==='alta'?'#E24B4A':of.prioridad==='media'?'#EF9F27':'#639922';
@@ -2474,7 +2493,7 @@ function renderConfigProyectosTC() {
         <div style="display:flex;align-items:center;gap:10px">
           <div style="width:18px;height:18px;border-radius:50%;background:${p.color||'#888'};flex-shrink:0"></div>
           <div>
-            <span style="font-size:13px;font-weight:600;color:var(--text-primary)">${p.codigo||'—'} · ${p.nombre}</span>
+            <span style="font-size:13px;font-weight:600;color:var(--text-primary)">${p.codigo||'—'} · ${escapeHtml(p.nombre)}</span>
             <div style="font-size:11px;color:#aaa;margin-top:1px">
               ${p.entregaInterna?'Entrega interna: '+formatFecha(p.entregaInterna):'Sin fecha interna'}
               ${p.entregaContrato?' · Contrato: '+formatFecha(p.entregaContrato):''}
@@ -2483,7 +2502,7 @@ function renderConfigProyectosTC() {
         </div>
         <div style="display:flex;gap:6px">
           <button class="btn btn-xs" onclick="editarProyectoTC('${p.id||''}')">Editar</button>
-          <button class="btn btn-xs btn-danger" onclick="eliminarProyectoTC('${p.id||''}','${p.nombre}')">Eliminar</button>
+          <button class="btn btn-xs btn-danger" onclick="eliminarProyectoTC('${p.id||''}')">Eliminar</button>
         </div>
       </div>
       <div style="margin-bottom:6px">
@@ -2537,7 +2556,8 @@ function editarProyectoTC(id) {
   document.getElementById('modal-proyecto-tc').style.display='flex';
 }
 
-async function eliminarProyectoTC(id, nombre) {
+async function eliminarProyectoTC(id) {
+  const nombre = proyectosTC.find(x=>x.id===id)?.nombre || '';
   const tieneOFs = ofs.filter(o=>o.proyectoCodigo===(proyectosTC.find(x=>x.id===id)?.codigo)).length;
   if(tieneOFs>0) {
     if(!confirm(`"${nombre}" tiene ${tieneOFs} OF activas. ¿Eliminar igual?`)) return;
@@ -2567,6 +2587,7 @@ window.renderKanban=renderKanban;window.kanbanNavFecha=kanbanNavFecha;window.kan
 
 // ===== BACKUP COMPLETO =====
 async function exportarBackupCompleto() {
+  if(!requiereAdmin()) return;
   setStatus('Exportando backup...');
   try {
     const fecha = new Date().toLocaleDateString('es-PE').replace(/\//g,'-');
@@ -2676,6 +2697,7 @@ const MAPA_PROYECTOS = {
 // Elimina proyectosTC duplicados (mismo código, creados por una carrera de inicialización)
 // Conserva el registro más antiguo (menor guardado/id) y borra el resto — las copias son clones exactos salvo el ID.
 async function eliminarProyectosDuplicadosTC() {
+  if(!requiereAdmin()) return;
   const porCodigo = {};
   proyectosTC.forEach(p=>{ (porCodigo[p.codigo]=porCodigo[p.codigo]||[]).push(p); });
   const aBorrar = [];
@@ -2703,6 +2725,7 @@ async function eliminarProyectosDuplicadosTC() {
 window.eliminarProyectosDuplicadosTC=eliminarProyectosDuplicadosTC;
 
 async function normalizarProyectosFirebase() {
+  if(!requiereAdmin()) return;
   if(!confirm('Esto normalizará los nombres de proyectos en todos los tickets de Firebase. ¿Continuar?')) return;
   setStatus('Normalizando proyectos...');
   let actualizados = 0;
@@ -2792,7 +2815,7 @@ function renderNotas() {
       +'<span style="font-size:11px;font-weight:600;color:'+cfg.color+';padding:2px 8px;border-radius:4px;border:0.5px solid '+cfg.border+'">'+cfg.emoji+' '+cfg.label+'</span>'
       +'<span style="font-size:11px;font-weight:500;padding:2px 8px;border-radius:4px;background:'+est.bg+';color:'+est.color+'">'+est.label+'</span>'
       +'</div>'
-      +'<div style="font-size:13px;color:var(--text-primary);line-height:1.5;flex:1">'+n.texto+'</div>'
+      +'<div style="font-size:13px;color:var(--text-primary);line-height:1.5;flex:1">'+escapeHtml(n.texto)+'</div>'
       +'<div style="font-size:10px;color:var(--text-muted);display:flex;justify-content:space-between;align-items:center">'
       +'<span>'+(n.autor||'—')+' · '+fecha+'</span>'
       +'<div style="display:flex;gap:4px">'
@@ -3208,7 +3231,7 @@ function renderGanttOFs(cont, semanas, inicioRango, finRango){
       <div style="width:${labelW}px;flex-shrink:0;padding-right:8px">
         <div style="display:flex;align-items:center;gap:6px">
           <span style="width:10px;height:10px;border-radius:50%;background:${p.color};flex-shrink:0"></span>
-          <span style="font-size:11px;font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.nombre}</span>
+          <span style="font-size:11px;font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(p.nombre)}</span>
         </div>
         ${entregaInt?`<div style="font-size:9px;margin-left:16px;color:${riesgoColor};font-weight:500">Entrega: ${entregaInt.toLocaleDateString('es-PE')} · ${diasRestantes<0?'VENCIDO':diasRestantes+'d'}</div>`:''}
       </div>`;
@@ -3251,7 +3274,7 @@ function renderGanttOFs(cont, semanas, inicioRango, finRango){
       }
 
       html += `<div style="width:${colW}px;flex-shrink:0;padding:0 3px">
-        <div style="background:${cellBg};border:${cellBorder};border-radius:6px;height:${rowH}px;display:flex;align-items:center;justify-content:center;${esSemActual?'box-shadow:0 0 0 1.5px '+p.color+';':''}" title="${p.nombre} · ${sem.label}: ${horasSem.toFixed(1)}h">
+        <div style="background:${cellBg};border:${cellBorder};border-radius:6px;height:${rowH}px;display:flex;align-items:center;justify-content:center;${esSemActual?'box-shadow:0 0 0 1.5px '+p.color+';':''}" title="${escapeHtml(p.nombre)} · ${sem.label}: ${horasSem.toFixed(1)}h">
           ${cellContent}
         </div>
       </div>`;
@@ -3274,7 +3297,20 @@ window.renderPlanificacion=renderPlanificacion;window.setPlanVista=setPlanVista;
 window.agregarProyecto=agregarProyecto;window.agregarProducto=agregarProducto;window.eliminarProducto=eliminarProducto;window.eliminarProyecto=eliminarProyecto;
 window.agregarTrabajador=agregarTrabajador;window.eliminarTrabajador=eliminarTrabajador;window.iniciarEdicion=iniciarEdicion;window.cerrarModal=cerrarModal;window.guardarEdicion=guardarEdicion;
 
-init();
+// Autenticación anónima de Firebase — necesaria antes de que las Reglas de Seguridad de Firestore
+// puedan exigir "request.auth != null" sin romper la app para los usuarios reales.
+// No agrega login visible: cada dispositivo se autentica solo, en silencio, igual que hoy.
+let appIniciada = false;
+signInAnonymously(auth).catch(err=>{
+  console.error('Error de autenticación con Firebase:', err);
+  document.body.innerHTML = '<div style="padding:2rem;text-align:center;font-family:sans-serif;color:#c0392b">No se pudo conectar con el servidor. Verifica tu conexión a internet y recarga la página.</div>';
+});
+onAuthStateChanged(auth, (user) => {
+  if(user && !appIniciada){
+    appIniciada = true;
+    init();
+  }
+});
 </script>
 <style>
 /* ===== DESIGN SYSTEM — Linear-inspired ===== */
