@@ -268,6 +268,48 @@ function renderConfigProyectos(){
 // ===== TICKETS =====
 function calcTT(){const n=parseFloat(document.getElementById('t-n').value)||0;const tu=parseFloat(document.getElementById('t-tu').value)||0;document.getElementById('t-tt').value=n&&tu?(n*tu/60).toFixed(2)+' h':'';}
 
+// Auto-repetir el último tareo registrado para el trabajador seleccionado
+function autocompletarUltimoTareo(){
+  const t1=document.getElementById('t-t1').value;
+  const aviso=document.getElementById('t-t1-repite-aviso');
+  if(!t1){aviso.style.display='none';return;}
+  const tickets=historial.filter(t=>(t.nombres||[]).includes(t1));
+  if(!tickets.length){aviso.style.display='none';return;}
+  tickets.sort((a,b)=>new Date(b.fechaCreacion||b.guardado||0)-new Date(a.fechaCreacion||a.guardado||0));
+  const ult=tickets[0];
+  document.getElementById('t-proyecto').value=ult.proyectoCodigo||'';
+  actualizarProductos();
+  const selProd=document.getElementById('t-producto');
+  if(ult.producto&&[...selProd.options].some(o=>o.value===ult.producto)) selProd.value=ult.producto;
+  document.getElementById('t-tarea').value=ult.tarea||'';
+  document.getElementById('t-tu').value=ult.tu||'';
+  if(document.getElementById('t-area-ejec')) document.getElementById('t-area-ejec').value=ult.areaEjecucion||'';
+  calcTT();
+  aviso.style.display='block';
+}
+window.autocompletarUltimoTareo=autocompletarUltimoTareo;
+
+// Muestra en vivo cuántas horas ya tiene asignadas el trabajador seleccionado para la fecha de ejecución elegida
+function actualizarHorasTrabajador(){
+  const div=document.getElementById('t-horas-trabajador');
+  if(!div) return;
+  const t1=document.getElementById('t-t1').value;
+  const fechaEjec=document.getElementById('t-fecha-ejec').value;
+  if(!t1||!fechaEjec){div.style.display='none';return;}
+  const jornada=jornadaProductiva(fechaEjec);
+  const ticketsDia=historial.filter(t=>t.visibleTareo!==false&&t.fechaEjecucion===fechaEjec&&(t.nombres||[]).includes(t1));
+  const horas=ticketsDia.reduce((s,t)=>s+t.tt,0);
+  const libres=Math.max(0,jornada-horas);
+  const nombreCorto=t1.split(' ').slice(0,2).join(' ');
+  const pct=jornada>0?(horas/jornada)*100:0;
+  const bg=pct>90?'#FCEBEB':pct>70?'#FAEEDA':'#EAF3DE';
+  const color=pct>90?'#A32D2D':pct>70?'#854F0B':'#3B6D11';
+  div.style.background=bg;div.style.color=color;
+  div.textContent=`${nombreCorto} — ${horas.toFixed(1)}h / ${jornada}h asignadas para ${fechaEjec} (${libres.toFixed(1)}h libres)`;
+  div.style.display='block';
+}
+window.actualizarHorasTrabajador=actualizarHorasTrabajador;
+
 async function agregarTicket(){
   const t1=document.getElementById('t-t1').value;
   const t2=document.getElementById('t-t2').value;
@@ -320,7 +362,7 @@ async function agregarTicket(){
   try{
     setStatus('Guardando...');
     await addDoc(collection(db,'historial'),ticket);
-    setStatus('');limpiarForm();
+    setStatus('');limpiarForm();actualizarHorasTrabajador();
     showAlert('tareo','Ticket guardado — visible para Andree.','success');
   }catch(e){setStatus('');showAlert('tareo','Error al guardar.','warn');}
 }
@@ -347,12 +389,13 @@ async function confirmarTicketSobrecarga(){
   };
   setStatus('Guardando...');
   await addDoc(collection(db,'historial'),ticket);
-  setStatus('');limpiarForm();window._ticketPendiente=null;
+  setStatus('');limpiarForm();actualizarHorasTrabajador();window._ticketPendiente=null;
   showAlert('tareo','Ticket guardado (con sobrecarga).','success');
 }
 
 function limpiarForm(){
   ['t-t1','t-t2','t-proyecto'].forEach(id=>document.getElementById(id).value='');
+  const aviso=document.getElementById('t-t1-repite-aviso');if(aviso)aviso.style.display='none';
   document.getElementById('t-producto').innerHTML='<option value="">Seleccionar proyecto primero</option>';
   document.getElementById('t-tarea').value='';
   if(document.getElementById('t-area-ejec')) document.getElementById('t-area-ejec').value='';
@@ -488,8 +531,8 @@ function imprimirHoy(fechaFiltro){
   if(!tickets.length){showAlert('tareo','No hay tickets para esa fecha.','warn');return;}
   // Ordenar por área según orden de planta
   tickets.sort((a,b)=>{
-    const areaA=trabajadores.find(w=>w.nombre===(a.nombres||[])[0])?.area||'PROD-ADMIN';
-    const areaB=trabajadores.find(w=>w.nombre===(b.nombres||[])[0])?.area||'PROD-ADMIN';
+    const areaA=getAreaEjecucion(a);
+    const areaB=getAreaEjecucion(b);
     const iA=ORDEN_AREAS_GLOBAL.indexOf(areaA); const iB=ORDEN_AREAS_GLOBAL.indexOf(areaB);
     if(iA!==iB) return iA-iB;
     return (a.nombres||[])[0]?.localeCompare((b.nombres||[])[0])||0;
@@ -501,7 +544,7 @@ function imprimirHoy(fechaFiltro){
   document.getElementById('print-fecha').textContent=fechaObj.toLocaleDateString('es-PE',{weekday:'long',year:'numeric',month:'long',day:'numeric'}).toUpperCase();
   document.getElementById('print-total').textContent=`${tickets.length} ticket${tickets.length>1?'s':''} — ${fecha.toLocaleTimeString('es-PE',{hour:'2-digit',minute:'2-digit'})}`;
   document.getElementById('print-grid').innerHTML=tickets.map(t=>{
-    const area=trabajadores.find(w=>w.nombre===(t.nombres||[])[0])?.area||'PROD-ADMIN';
+    const area=getAreaEjecucion(t);
     const aClass=AREA_CLASS[area]||'area-prod';
     const nClass=NUM_CLASS[area]||'num-prod';
     const names=t.nombres.map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
@@ -706,7 +749,7 @@ function suscribirHistorial(){
     historial=snap.docs.map(d=>({fbId:d.id,...d.data()}));
     historial.sort((a,b)=>new Date(b.guardado||0)-new Date(a.guardado||0));
     setStatus('');
-    migrarTicketsAntiguos();aplicarPerfil();renderTicketsHoy();renderAndree();const ksel=document.getElementById('k-fecha');if(ksel)ksel.dataset.poblado='';renderKanban();poblarFiltrosHist();renderHist();renderDashboard();renderPendientes();
+    migrarTicketsAntiguos();aplicarPerfil();renderTicketsHoy();renderAndree();const ksel=document.getElementById('k-fecha');if(ksel)ksel.dataset.poblado='';renderKanban();poblarFiltrosHist();renderHist();renderDashboard();renderPendientes();actualizarHorasTrabajador();
   });
 }
 
@@ -1211,7 +1254,7 @@ function renderHist(){
     <th style="text-align:center">t.u. real</th><th style="text-align:center">Dif.</th>
     <th style="text-align:center">T.T.</th><th>Incidencias</th><th></th>
   </tr></thead><tbody>${datos.map(t=>{
-    const area=trabajadores.find(w=>w.nombre===(t.nombres||[])[0])?.area||'';
+    const area=getAreaEjecucion(t);
     const names=(t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
     let diff='—',dc='diff-ok';
     if(t.tu_real){const d=t.tu_real-t.tu;diff=(d>0?'+':'')+d+"'";dc=d>10?'diff-over':d<-5?'diff-under':'diff-ok';}
@@ -1246,7 +1289,7 @@ function exportarExcel(){
   if(!datos.length){showAlert('hist','No hay datos para exportar.','warn');return;}
   const rows=[['Fecha ejecución','Fecha creación','Trabajador(es)','Área','Proyecto','Producto','Tarea','N°','t.u. plan','t.u. real','Diferencia','T.T. plan','T.T. real','Completado','Incidencias']];
   datos.forEach(t=>{
-    const area=trabajadores.find(w=>w.nombre===(t.nombres||[])[0])?.area||'';
+    const area=getAreaEjecucion(t);
     rows.push([t.fechaEjecucion||t.fecha,t.fechaCreacion||'',(t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / '),area,t.proyecto,t.producto,t.tarea,t.n,t.tu,t.tu_real||'',t.tu_real?(t.tu_real-t.tu):'',t.tt,t.tt_real||'',t.completado?'Sí':'Pendiente',(t.incidencias||[]).map(i=>`${i.hora}: ${i.descripcion}`).join(' | ')]);
   });
   const ws=XLSX.utils.aoa_to_sheet(rows);
@@ -3024,8 +3067,7 @@ function renderGanttAreas(cont, semanas, inicioRango, finRango){
         if(!fej) return false;
         const d = fechaStrToDate(fej);
         if(d < sem.lun || d > sem.sab) return false;
-        const trab = trabajadores.find(w=>w.nombre===(t.nombres||[])[0]);
-        return (trab?.area||'') === area;
+        return getAreaEjecucion(t) === area;
       });
       return tickets.reduce((s,t)=>s+t.tt,0);
     });
@@ -3789,7 +3831,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     <div class="card-title">Nuevo ticket</div>
     <div id="alert-tareo" style="display:none" class="alert"></div>
     <div class="form-grid">
-      <div class="field"><label>Trabajador principal</label><select id="t-t1"><option value="">Cargando...</option></select></div>
+      <div class="field"><label>Trabajador principal</label><select id="t-t1" onchange="autocompletarUltimoTareo();actualizarHorasTrabajador()"><option value="">Cargando...</option></select><div id="t-t1-repite-aviso" style="display:none;font-size:11px;color:#854F0B;margin-top:3px">↻ Repitiendo último tareo registrado — puedes modificar cualquier campo</div></div>
       <div class="field"><label>Segundo trabajador (opcional)</label><select id="t-t2"><option value="">Seleccionar...</option></select></div>
       <div class="field"><label>Proyecto</label><select id="t-proyecto" onchange="actualizarProductos()"><option value="">Cargando...</option></select></div>
       <div class="field"><label>Producto</label><select id="t-producto"><option value="">Seleccionar proyecto primero</option></select></div>
@@ -3804,9 +3846,10 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     <div style="margin-top:0.875rem">
       <div class="field">
         <label>Fecha de ejecución</label>
-        <select id="t-fecha-ejec" style="max-width:280px"></select>
+        <select id="t-fecha-ejec" style="max-width:280px" onchange="actualizarHorasTrabajador()"></select>
       </div>
       <div style="font-size:11px;color:#aaa;margin-top:4px">Si generas el tareo antes de las 3pm → hoy por defecto. Después de las 3pm → mañana por defecto.</div>
+      <div id="t-horas-trabajador" style="display:none;margin-top:8px;padding:8px 12px;border-radius:6px;font-size:12px;font-weight:600"></div>
     </div>
     <div id="alert-sobrecarga" style="display:none" class="alert alert-warn"></div>
     <div class="actions">
