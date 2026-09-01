@@ -71,6 +71,21 @@ function fechaStrToDate(str) {
   return new Date(y, m-1, d);
 }
 
+// El campo "fechaCreacion" de los tickets tiene formato mixto en la base (ISO en unos, dd/mm/aaaa
+// en otros — deuda técnica pendiente de unificar). new Date("31/8/2026") da fecha inválida en el
+// navegador, lo que rompía la comparación "más reciente" en varios lugares. Este parser entiende
+// ambos formatos correctamente.
+function parseFechaCreacion(str){
+  if(!str) return new Date(0);
+  if(typeof str!=='string') return new Date(str);
+  if(str.includes('T')) return new Date(str);
+  if(str.includes('/')){
+    const [d,m,y]=str.split('/');
+    return new Date(y,m-1,d);
+  }
+  return new Date(str);
+}
+
 // Escapa HTML para insertar texto libre del usuario (tarea, notas, incidencias) de forma segura en innerHTML.
 // Uso obligatorio para cualquier campo de texto libre antes de interpolarlo en un template de innerHTML.
 function escapeHtml(str){
@@ -261,7 +276,7 @@ function autocompletarUltimoTareo(){
   if(!t1){aviso.style.display='none';return;}
   const tickets=historial.filter(t=>(t.nombres||[]).includes(t1));
   if(!tickets.length){aviso.style.display='none';return;}
-  tickets.sort((a,b)=>new Date(b.fechaCreacion||b.guardado||0)-new Date(a.fechaCreacion||a.guardado||0));
+  tickets.sort((a,b)=>parseFechaCreacion(b.fechaCreacion||b.guardado)-parseFechaCreacion(a.fechaCreacion||a.guardado));
   const ult=tickets[0];
   document.getElementById('t-proyecto').value=ult.proyectoCodigo||'';
   actualizarProductos();
@@ -711,7 +726,7 @@ function gruposOrdenDia(nombrePrincipal, fecha){
       const oa = a.orden!=null ? a.orden : 9999;
       const ob = b.orden!=null ? b.orden : 9999;
       if(oa!==ob) return oa-ob;
-      return new Date(a.fechaCreacion||0) - new Date(b.fechaCreacion||0);
+      return parseFechaCreacion(a.fechaCreacion) - parseFechaCreacion(b.fechaCreacion);
     });
 }
 function numeroOrdenTicket(t){
@@ -979,8 +994,7 @@ function renderGanttDiario(){
       const oa=a.orden!=null?a.orden:9999;
       const ob=b.orden!=null?b.orden:9999;
       if(oa!==ob) return oa-ob;
-      const fa=a.fechaCreacion||'';const fb=b.fechaCreacion||'';
-      return fa.localeCompare(fb);
+      return parseFechaCreacion(a.fechaCreacion) - parseFechaCreacion(b.fechaCreacion);
     });
   });
 
