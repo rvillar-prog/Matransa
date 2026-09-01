@@ -972,9 +972,13 @@ function renderGanttDiario(){
     });
   });
 
-  // Ordenar tickets de cada trabajador por orden de creación (fechaCreacion)
+  // Ordenar tickets de cada trabajador: respeta el campo "orden" explícito (fijado al reordenar
+  // con ▲▼ en Kanban/Generar tareo); si no existe, cae de vuelta a fecha de creación como antes.
   Object.keys(porTrab).forEach(nom=>{
     porTrab[nom].sort((a,b)=>{
+      const oa=a.orden!=null?a.orden:9999;
+      const ob=b.orden!=null?b.orden:9999;
+      if(oa!==ob) return oa-ob;
       const fa=a.fechaCreacion||'';const fb=b.fechaCreacion||'';
       return fa.localeCompare(fb);
     });
@@ -1060,27 +1064,29 @@ function renderGanttDiario(){
     });
 
     // Bloques de tarea
-    bloques.forEach(b=>{
+    bloques.forEach((b,bIdx)=>{
+      const ordenNum=bIdx+1;
       const x=((b.inicio-horaInicio)/duracionTotal)*100;
       const w=((b.fin-b.inicio)/duracionTotal)*100;
       const horaInicioStr=`${Math.floor(b.inicio)}:${String(Math.round((b.inicio%1)*60)).padStart(2,'0')}`;
       const horaFinStr=`${Math.floor(b.fin)}:${String(Math.round((b.fin%1)*60)).padStart(2,'0')}`;
       const done=!!b.t.tu_real;
-      const proy=b.t.proyectoCodigo||(b.t.proyecto||'').split(' · ')[0]||'';
+      const proy=escapeHtml(b.t.proyectoCodigo||(b.t.proyecto||'').split(' · ')[0]||'');
       const prod=b.t.producto||'';
-      const tarea=b.t.tarea||'—';
+      const tarea=escapeHtml(b.t.tarea||'—');
       // Calcular tiempo real si existe
       const ttReal=b.t.tu_real?parseFloat((b.t.n*b.t.tu_real/60).toFixed(2)):null;
       const wReal=ttReal?((ttReal)/duracionTotal)*100:null;
       const excede=ttReal&&ttReal>b.t.tt;
       const dentroTiempo=ttReal&&ttReal<=b.t.tt;
       const pctReal=ttReal?Math.min(100,(ttReal/b.t.tt)*100):0;
-      const tooltipTxt=`${proy} · ${tarea} | ${horaInicioStr}–${horaFinStr} | Plan: ${b.t.tt}h${ttReal?` · Real: ${ttReal}h ${excede?'⚠ EXCEDE':'✓'}` : ' · Sin registrar'}`;
+      const tooltipTxt=`${ordenNum}° · ${proy} · ${tarea} | ${horaInicioStr}–${horaFinStr} | Plan: ${b.t.tt}h${ttReal?` · Real: ${ttReal}h ${excede?'⚠ EXCEDE':'✓'}` : ' · Sin registrar'}`;
       const wPx=(b.fin-b.inicio)/duracionTotal*(ganttW);
       let textoVisible='';
-      if(wPx>200) textoVisible=`${proy} · ${tarea.length>18?tarea.substring(0,16)+'…':tarea}`;
-      else if(wPx>100) textoVisible=tarea.length>14?tarea.substring(0,12)+'…':tarea;
-      else if(wPx>50) textoVisible=tarea.length>8?tarea.substring(0,6)+'…':tarea;
+      if(wPx>200) textoVisible=`${ordenNum}° ${proy} · ${tarea.length>18?tarea.substring(0,16)+'…':tarea}`;
+      else if(wPx>100) textoVisible=`${ordenNum}° ${tarea.length>12?tarea.substring(0,10)+'…':tarea}`;
+      else if(wPx>50) textoVisible=`${ordenNum}° ${tarea.length>4?tarea.substring(0,3)+'…':tarea}`;
+      else if(wPx>24) textoVisible=`${ordenNum}°`;
       else textoVisible='';
       // Bloque planificado
       html+=`<div title="${tooltipTxt}" style="position:absolute;left:${x}%;width:${w}%;top:4px;bottom:4px;background:${color};border-radius:4px;overflow:hidden;cursor:default;border:${excede?'2px solid #E24B4A':dentroTiempo?'2px solid #27ae60':'none'}">
