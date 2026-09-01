@@ -26,41 +26,9 @@ const auth = getAuth(app);
 const AREAS_LIST = ["HABILITADO","ENSAMBLE","FIERRO","PINTURA DE FIERRO","EVA","ACABADO","MANTENIMIENTO","PROD-ADMIN"];
 const CARGOS_LIST = ["COORDINADOR SUPERIOR","COORDINADOR","COORDINADOR BASE","OPERARIO SUPERIOR","OPERARIO INTERMEDIO","OPERARIO BASE","ADM - ESPECIFICACIONES","ADM - MANTENIMIENTO","PRACTICANTE"];
 
-const TRABAJADORES_BASE = [
-  {nombre:"LLONTOP GUTIERREZ LUIS MIGUEL ANGEL",area:"HABILITADO",cargo:"COORDINADOR"},
-  {nombre:"CAJO GERMAN JEFERSON YANLU",area:"HABILITADO",cargo:"OPERARIO BASE"},
-  {nombre:"RINZA MENDOZA EVARISTO",area:"ENSAMBLE",cargo:"COORDINADOR"},
-  {nombre:"CALLE VASQUEZ JOEL",area:"ENSAMBLE",cargo:"OPERARIO BASE"},
-  {nombre:"ESPINOZA ARCE RAFAEL",area:"ENSAMBLE",cargo:"OPERARIO INTERMEDIO"},
-  {nombre:"GUEVARA FLORES EDU ALEXANDER",area:"ENSAMBLE",cargo:"OPERARIO BASE"},
-  {nombre:"HUARACA GONZALES WILLIAMS AVELINO",area:"ENSAMBLE",cargo:"OPERARIO INTERMEDIO"},
-  {nombre:"PEREZ VALENCIA KARELT YURI",area:"ENSAMBLE",cargo:"OPERARIO SUPERIOR"},
-  {nombre:"REYES RAMOS JAIME JAVIER",area:"ENSAMBLE",cargo:"OPERARIO BASE"},
-  {nombre:"RODRIGUEZ CASANOVA JORGE LUIS",area:"ENSAMBLE",cargo:"OPERARIO BASE"},
-  {nombre:"RODRIGUEZ VILLAFUERTE CAMILO JOAQUIN",area:"ENSAMBLE",cargo:"OPERARIO BASE"},
-  {nombre:"ROMERO RODRIGUEZ ORESTES ALESSANDRO",area:"ENSAMBLE",cargo:"OPERARIO BASE"},
-  {nombre:"MARROQUIN QUISPE VALERIO CONSTANTINO",area:"FIERRO",cargo:"COORDINADOR"},
-  {nombre:"GALLARDO PUICON RAMON",area:"FIERRO",cargo:"OPERARIO SUPERIOR"},
-  {nombre:"GONZALEZ USHINAHUA CESAR ALIPIO",area:"FIERRO",cargo:"OPERARIO SUPERIOR"},
-  {nombre:"PACHECO FLORES ADRIAN ZACARIAS",area:"FIERRO",cargo:"OPERARIO BASE"},
-  {nombre:"VILLAFUERTE NAVARRETE LEONARDO ANDREE",area:"FIERRO",cargo:"OPERARIO BASE"},
-  {nombre:"SALAZAR DE LA CRUZ ONNYEL PATRICK",area:"PINTURA DE FIERRO",cargo:"COORDINADOR"},
-  {nombre:"GUZMAN VILLEGAS KEVIN VALENTIN",area:"PINTURA DE FIERRO",cargo:"OPERARIO BASE"},
-  {nombre:"GARCIA CHAVEZ RAUL ALFREDO",area:"EVA",cargo:"COORDINADOR"},
-  {nombre:"CHAINA MAMANI WILLAFAN HERNAN",area:"EVA",cargo:"OPERARIO INTERMEDIO"},
-  {nombre:"CHAMAY VARGAS ELVIS JHOEL",area:"EVA",cargo:"OPERARIO BASE"},
-  {nombre:"RAMOS ILLA JOSE LUIS",area:"EVA",cargo:"PRACTICANTE"},
-  {nombre:"MACHARE GARCIA FLOR DE MARIA",area:"ACABADO",cargo:"COORDINADOR"},
-  {nombre:"CORTEZ LUNA ASUNCION HIPOLITO",area:"ACABADO",cargo:"OPERARIO INTERMEDIO"},
-  {nombre:"FLORES CHEPE AUGUSTO FERNANDO",area:"ACABADO",cargo:"COORDINADOR BASE"},
-  {nombre:"HERBOSO AVILES YADHIRA ROSA ALEXANDRA",area:"ACABADO",cargo:"OPERARIO BASE"},
-  {nombre:"KINYO GUZMAN ADRIANO",area:"ACABADO",cargo:"OPERARIO BASE"},
-  {nombre:"SUPA LOAYZA SALOME NANCY",area:"ACABADO",cargo:"OPERARIO BASE"},
-  {nombre:"VILLA CASTRO ANGEL HOMERO",area:"MANTENIMIENTO",cargo:"ADM - MANTENIMIENTO"},
-  {nombre:"ARCE URIBE PABLO ANTONIO",area:"PROD-ADMIN",cargo:"ADM - ESPECIFICACIONES"},
-  {nombre:"CAJO HERNANDEZ RONALD",area:"PROD-ADMIN",cargo:"OPERARIO SUPERIOR"},
-  {nombre:"CALIMPA SERVAN NEICER",area:"PROD-ADMIN",cargo:"COORDINADOR SUPERIOR"},
-];
+// Trabajadores: ya no se usa un arreglo de "semilla" en el código fuente — la colección 'trabajadores'
+// de Firestore ya tiene datos reales, y mantener nombres completos de personal en el código fuente
+// público es una exposición innecesaria (ver auditoría de seguridad, punto I.4).
 
 const PRODUCTOS_BASE = {
   SHERATON:["MB01-01 | MESA COMUNAL","MB01-08 | MESA","MB01-09 | MESA OVAL ORBIT","MB01-07 | MESA REDONDA","MB01-06 | MESA 800x700","MB01-05 | SOFÁ","MB01-03 | SILLA (rattan)","MB01-10 | SILLA (rattan)","MB01-04 | SILLA (rattan)","MB01-02 | SILLA","ÁRBOL ESCULTURAL","CF01-01 | MUEBLE HOSTESS POD","CF01-03 | MUEBLE CAJA","CF01-04 | ESTACIÓN DE MESEROS","CF01-05 | ESTACIÓN DE MESEROS LARGE"],
@@ -165,7 +133,7 @@ function setStatus(msg){const el=document.getElementById('db-status');el.textCon
 async function cargarTrabajadores() {
   try {
     const snap=await getDocs(collection(db,'trabajadores'));
-    if(snap.empty){for(const t of TRABAJADORES_BASE)await setDoc(doc(collection(db,'trabajadores')),t);trabajadores=[...TRABAJADORES_BASE];}
+    if(snap.empty){ trabajadores=[]; console.warn('La colección "trabajadores" está vacía en Firebase — agrega personal desde Configuración.'); }
     else trabajadores=snap.docs.map(d=>({id:d.id,...d.data()}));
     trabajadores.sort((a,b)=>getAreaIndex(a.area)-getAreaIndex(b.area)||a.nombre.localeCompare(b.nombre));
     poblarSelectTrabajadores();renderConfigTrabajadores();
