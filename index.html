@@ -450,9 +450,11 @@ function ticketCardHTML(t){
   const aClass=area==='PENDIENTE'?'area-pendiente':(AREA_CLASS[area]||'area-prod');
   const nClass=area==='PENDIENTE'?'num-pendiente':(NUM_CLASS[area]||'num-prod');
   const names=t.nombres&&t.nombres.length>0?t.nombres.map(n=>n.split(' ').slice(0,2).join(' ')).join(' / '):'Sin asignar';
+  const orden=numeroOrdenTicket(t);
+  const ordenBadge=orden?`<div title="Orden de ejecución del día" style="width:22px;height:22px;border-radius:50%;background:rgba(255,255,255,0.9);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#333;flex-shrink:0">${orden}</div>`:'';
   return `<div class="ticket-card">
     <div class="ticket-card-header ${aClass}">
-      <div><div class="ticket-card-names">${names}</div><div class="ticket-card-area">${area}</div></div>
+      <div style="display:flex;align-items:center;gap:8px">${ordenBadge}<div><div class="ticket-card-names">${names}</div><div class="ticket-card-area">${area}</div></div></div>
       <button class="ticket-remove-btn no-print" onclick="ocultarDeTareo('${t.fbId}')" title="Quitar del tareo">×</button>
     </div>
     <div class="ticket-card-body">
@@ -466,6 +468,13 @@ function ticketCardHTML(t){
       <div class="ticket-num-box"><span class="ticket-num-label">t.u. min</span><span class="ticket-num-value ${nClass}">${t.tu}'</span></div>
       <div class="ticket-num-box"><span class="ticket-num-label">T.T. hrs</span><span class="ticket-num-value ${nClass}">${t.tt}</span></div>
     </div>
+    ${orden?`<div class="no-print" style="display:flex;align-items:center;justify-content:space-between;padding:5px 14px;border-top:0.5px solid rgba(0,0,0,0.08);font-size:10px;color:#888">
+      <span>≈ desde ${horaEstimadaTicket(t)}</span>
+      <span style="display:flex;gap:6px">
+        <button onclick="moverOrdenTicket('${t.fbId}',-1)" title="Subir prioridad" style="border:none;background:none;cursor:pointer;font-size:12px;color:#888;padding:0">▲</button>
+        <button onclick="moverOrdenTicket('${t.fbId}',1)" title="Bajar prioridad" style="border:none;background:none;cursor:pointer;font-size:12px;color:#888;padding:0">▼</button>
+      </span>
+    </div>`:''}
   </div>`;
 }
 
@@ -541,7 +550,7 @@ function imprimirHoy(fechaFiltro){
     return `<div class="print-ticket">
       <div class="pt-header ${aClass}">
         <div style="flex:1;margin-right:6px">
-          <div class="pt-name">${names}</div>
+          <div class="pt-name">${numeroOrdenTicket(t)?`<span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:#fff;color:#222;font-size:12px;font-weight:700;margin-right:6px;vertical-align:middle">${numeroOrdenTicket(t)}</span>`:''}${names}</div>
           <div class="pt-area">${area}</div>
         </div>
         <div class="pt-header-right">
@@ -691,6 +700,73 @@ function getAreaEjecucion(ticket) {
   return trabajadores.find(w=>w.nombre===nombre)?.area || 'PROD-ADMIN';
 }
 
+// ===== ORDEN DE PRIORIDAD DE TICKETS (poka-yoke: qué tarea va primero) =====
+// Agrupa los tickets activos del mismo trabajador principal + fecha de ejecución, ordenados por
+// el campo "orden" explícito si existe (lo asigna moverOrdenTicket al reordenar); si no existe,
+// cae de vuelta al orden de creación como valor por defecto razonable.
+function gruposOrdenDia(nombrePrincipal, fecha){
+  return historial
+    .filter(t=>t.visibleTareo!==false && t.fechaEjecucion===fecha && (t.nombres||[])[0]===nombrePrincipal)
+    .sort((a,b)=>{
+      const oa = a.orden!=null ? a.orden : 9999;
+      const ob = b.orden!=null ? b.orden : 9999;
+      if(oa!==ob) return oa-ob;
+      return new Date(a.fechaCreacion||0) - new Date(b.fechaCreacion||0);
+    });
+}
+function numeroOrdenTicket(t){
+  if(!t.nombres || !t.nombres.length) return null;
+  const grupo = gruposOrdenDia(t.nombres[0], t.fechaEjecucion);
+  const idx = grupo.findIndex(x=>x.fbId===t.fbId);
+  return idx>=0 ? idx+1 : null;
+}
+function formatHoraDesde8am(horasAcumuladas){
+  let totalMin = Math.round(8*60 + horasAcumuladas*60);
+  let h = Math.floor(totalMin/60)%24;
+  let m = totalMin%60;
+  const ampm = h>=12?'pm':'am';
+  let h12 = h%12; if(h12===0) h12=12;
+  return `${h12}:${String(m).padStart(2,'0')} ${ampm}`;
+}
+// Hora estimada — solo informativa, no es un compromiso: se recalcula sola con los tiempos
+// planificados de las tareas anteriores del mismo trabajador ese día.
+function horaEstimadaTicket(t){
+  if(!t.nombres || !t.nombres.length) return '';
+  const grupo = gruposOrdenDia(t.nombres[0], t.fechaEjecucion);
+  const idx = grupo.findIndex(x=>x.fbId===t.fbId);
+  if(idx<0) return '';
+  let acumulado = 0;
+  for(let i=0;i<idx;i++) acumulado += (grupo[i].tt||0);
+  return formatHoraDesde8am(acumulado);
+}
+// Sube o baja la prioridad de un ticket intercambiando su "orden" con el ticket adyacente
+// del mismo trabajador + día. Si alguno de los dos aún no tiene un valor de "orden" explícito
+// (tickets creados antes de este cambio), se lo asigna primero según su posición actual.
+async function moverOrdenTicket(fbId, direccion){
+  const t = historial.find(x=>x.fbId===fbId);
+  if(!t || !t.nombres || !t.nombres.length) return;
+  const grupo = gruposOrdenDia(t.nombres[0], t.fechaEjecucion);
+  const idx = grupo.findIndex(x=>x.fbId===fbId);
+  const swapIdx = idx + direccion;
+  if(idx<0 || swapIdx<0 || swapIdx>=grupo.length) return;
+  try{
+    for(let i=0;i<grupo.length;i++){
+      if(grupo[i].orden==null){
+        await updateDoc(doc(db,'historial',grupo[i].fbId), {orden:i+1});
+        grupo[i].orden = i+1;
+      }
+    }
+    const a = grupo[idx], b = grupo[swapIdx];
+    const ordenA = a.orden, ordenB = b.orden;
+    await updateDoc(doc(db,'historial',a.fbId), {orden:ordenB});
+    await updateDoc(doc(db,'historial',b.fbId), {orden:ordenA});
+  }catch(e){
+    console.error(e);
+    showAlert('tareo','No se pudo reordenar. Intenta de nuevo.','warn');
+  }
+}
+window.moverOrdenTicket = moverOrdenTicket;
+
 function sortTicketsByArea(tickets) {
   return [...tickets].sort((a,b) => {
     const iA = getAreaIndex(getAreaEjecucion(a));
@@ -775,11 +851,13 @@ function renderAndree(){
       const esFuturo=fechaStrToDate(fechaTkt)>fechaStrToDate(hoyStr());
       const pendienteVencido=!done&&esHoyTkt&&hora>=17;
       const alertaRojo=pendienteVencido||(!done&&esAnterior);
+      const orden=numeroOrdenTicket(t);
+      const ordenBadge=orden?`<span title="Orden de ejecución" style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#e8e8e6;font-size:10px;font-weight:700;color:#555;margin-right:6px">${orden}</span>`:'';
       return `<div class="andree-item ${done?'done':''}" style="${alertaRojo?'border:1.5px solid #E24B4A;background:#fff8f8;':''}">
         ${alertaRojo?`<div style="background:#E24B4A;color:#fff;font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px 4px 0 0;margin:-8px -8px 8px -8px">⚠ PENDIENTE DE REGISTRAR TIEMPO</div>`:''}
         <div class="status-dot ${done?'dot-done':'dot-pending'}"></div>
         <div class="andree-info">
-          <div class="andree-name">${names} <span style="font-size:10px;color:#aaa;font-weight:400">· ${area}</span></div>
+          <div class="andree-name">${ordenBadge}${names} <span style="font-size:10px;color:#aaa;font-weight:400">· ${area}</span></div>
           <div class="andree-sub">${escapeHtml(t.proyecto)} · ${escapeHtml(t.producto)} · ${escapeHtml(t.tarea)}</div>
           ${incHTML}
         </div>
@@ -1159,15 +1237,20 @@ function renderKanban(){
       const names=t.nombres.map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
       const done=!!t.tu_real;
       const tieneInc=t.incidencias&&t.incidencias.length>0;
+      const orden=numeroOrdenTicket(t);
       return `<div class="kanban-card ${done?'kanban-card-done':''} ${tieneInc?'kanban-card-inc':''}">
         <div class="kanban-card-top">
-          <span class="kanban-card-name">${names}</span>
+          <span class="kanban-card-name">${orden?`<span title="Orden de ejecución" style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:#e8e8e6;font-size:9px;font-weight:700;color:#555;margin-right:4px">${orden}</span>`:''}${names}</span>
           <span>${done?'<span class="kanban-done-badge">✓</span>':''} ${tieneInc?'<span style="color:#f57f17;font-size:10px;font-weight:800">⚠</span>':''}</span>
         </div>
         <div class="kanban-card-proyecto">${escapeHtml(t.proyecto)}</div>
         <div class="kanban-card-tarea">${escapeHtml(t.tarea)}</div>
-        ${tieneInc?`<div style="font-size:9px;color:#f57f17;margin-top:3px">${t.incidencias[t.incidencias.length-1].descripcion}</div>`:''}
+        ${tieneInc?`<div style="font-size:9px;color:#f57f17;margin-top:3px">${escapeHtml(t.incidencias[t.incidencias.length-1].descripcion)}</div>`:''}
         <div class="kanban-card-nums"><span>${t.n} ud.</span><span>${t.tu}'</span><span class="kanban-card-tt">${t.tt}h</span></div>
+        ${orden?`<div class="no-print" style="display:flex;justify-content:flex-end;gap:6px;margin-top:3px">
+          <button onclick="moverOrdenTicket('${t.fbId}',-1)" title="Subir prioridad" style="border:none;background:none;cursor:pointer;font-size:10px;color:#999;padding:0">▲</button>
+          <button onclick="moverOrdenTicket('${t.fbId}',1)" title="Bajar prioridad" style="border:none;background:none;cursor:pointer;font-size:10px;color:#999;padding:0">▼</button>
+        </div>`:''}
       </div>`;
     }).join('')||`<div class="kanban-empty">Sin tareas</div>`;
     return `<div class="kanban-col">
