@@ -284,7 +284,9 @@ function autocompletarUltimoTareo(){
   if(ult.producto&&[...selProd.options].some(o=>o.value===ult.producto)) selProd.value=ult.producto;
   document.getElementById('t-tarea').value=ult.tarea||'';
   document.getElementById('t-tu').value=ult.tu||'';
-  if(document.getElementById('t-area-ejec')) document.getElementById('t-area-ejec').value=ult.areaEjecucion||'';
+  // Nota: NO se autocompleta "Área de ejecución" — ese campo es para excepciones puntuales
+  // (préstamo a otra área ese día específico), no para repetir del historial. Si se copiara del
+  // último ticket, pisaría cualquier selección manual que hagas justo después de elegir trabajador.
   calcTT();
   aviso.style.display='block';
 }
