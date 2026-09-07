@@ -8,6 +8,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, setDoc, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBb0kvH9bRKUxCBkLD3FCUThDOarFn9UsU",
@@ -20,45 +21,14 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+const auth = getAuth(app);
 
 const AREAS_LIST = ["HABILITADO","ENSAMBLE","FIERRO","PINTURA DE FIERRO","EVA","ACABADO","MANTENIMIENTO","PROD-ADMIN"];
 const CARGOS_LIST = ["COORDINADOR SUPERIOR","COORDINADOR","COORDINADOR BASE","OPERARIO SUPERIOR","OPERARIO INTERMEDIO","OPERARIO BASE","ADM - ESPECIFICACIONES","ADM - MANTENIMIENTO","PRACTICANTE"];
 
-const TRABAJADORES_BASE = [
-  {nombre:"LLONTOP GUTIERREZ LUIS MIGUEL ANGEL",area:"HABILITADO",cargo:"COORDINADOR"},
-  {nombre:"CAJO GERMAN JEFERSON YANLU",area:"HABILITADO",cargo:"OPERARIO BASE"},
-  {nombre:"RINZA MENDOZA EVARISTO",area:"ENSAMBLE",cargo:"COORDINADOR"},
-  {nombre:"CALLE VASQUEZ JOEL",area:"ENSAMBLE",cargo:"OPERARIO BASE"},
-  {nombre:"ESPINOZA ARCE RAFAEL",area:"ENSAMBLE",cargo:"OPERARIO INTERMEDIO"},
-  {nombre:"GUEVARA FLORES EDU ALEXANDER",area:"ENSAMBLE",cargo:"OPERARIO BASE"},
-  {nombre:"HUARACA GONZALES WILLIAMS AVELINO",area:"ENSAMBLE",cargo:"OPERARIO INTERMEDIO"},
-  {nombre:"PEREZ VALENCIA KARELT YURI",area:"ENSAMBLE",cargo:"OPERARIO SUPERIOR"},
-  {nombre:"REYES RAMOS JAIME JAVIER",area:"ENSAMBLE",cargo:"OPERARIO BASE"},
-  {nombre:"RODRIGUEZ CASANOVA JORGE LUIS",area:"ENSAMBLE",cargo:"OPERARIO BASE"},
-  {nombre:"RODRIGUEZ VILLAFUERTE CAMILO JOAQUIN",area:"ENSAMBLE",cargo:"OPERARIO BASE"},
-  {nombre:"ROMERO RODRIGUEZ ORESTES ALESSANDRO",area:"ENSAMBLE",cargo:"OPERARIO BASE"},
-  {nombre:"MARROQUIN QUISPE VALERIO CONSTANTINO",area:"FIERRO",cargo:"COORDINADOR"},
-  {nombre:"GALLARDO PUICON RAMON",area:"FIERRO",cargo:"OPERARIO SUPERIOR"},
-  {nombre:"GONZALEZ USHINAHUA CESAR ALIPIO",area:"FIERRO",cargo:"OPERARIO SUPERIOR"},
-  {nombre:"PACHECO FLORES ADRIAN ZACARIAS",area:"FIERRO",cargo:"OPERARIO BASE"},
-  {nombre:"VILLAFUERTE NAVARRETE LEONARDO ANDREE",area:"FIERRO",cargo:"OPERARIO BASE"},
-  {nombre:"SALAZAR DE LA CRUZ ONNYEL PATRICK",area:"PINTURA DE FIERRO",cargo:"COORDINADOR"},
-  {nombre:"GUZMAN VILLEGAS KEVIN VALENTIN",area:"PINTURA DE FIERRO",cargo:"OPERARIO BASE"},
-  {nombre:"GARCIA CHAVEZ RAUL ALFREDO",area:"EVA",cargo:"COORDINADOR"},
-  {nombre:"CHAINA MAMANI WILLAFAN HERNAN",area:"EVA",cargo:"OPERARIO INTERMEDIO"},
-  {nombre:"CHAMAY VARGAS ELVIS JHOEL",area:"EVA",cargo:"OPERARIO BASE"},
-  {nombre:"RAMOS ILLA JOSE LUIS",area:"EVA",cargo:"PRACTICANTE"},
-  {nombre:"MACHARE GARCIA FLOR DE MARIA",area:"ACABADO",cargo:"COORDINADOR"},
-  {nombre:"CORTEZ LUNA ASUNCION HIPOLITO",area:"ACABADO",cargo:"OPERARIO INTERMEDIO"},
-  {nombre:"FLORES CHEPE AUGUSTO FERNANDO",area:"ACABADO",cargo:"COORDINADOR BASE"},
-  {nombre:"HERBOSO AVILES YADHIRA ROSA ALEXANDRA",area:"ACABADO",cargo:"OPERARIO BASE"},
-  {nombre:"KINYO GUZMAN ADRIANO",area:"ACABADO",cargo:"OPERARIO BASE"},
-  {nombre:"SUPA LOAYZA SALOME NANCY",area:"ACABADO",cargo:"OPERARIO BASE"},
-  {nombre:"VILLA CASTRO ANGEL HOMERO",area:"MANTENIMIENTO",cargo:"ADM - MANTENIMIENTO"},
-  {nombre:"ARCE URIBE PABLO ANTONIO",area:"PROD-ADMIN",cargo:"ADM - ESPECIFICACIONES"},
-  {nombre:"CAJO HERNANDEZ RONALD",area:"PROD-ADMIN",cargo:"OPERARIO SUPERIOR"},
-  {nombre:"CALIMPA SERVAN NEICER",area:"PROD-ADMIN",cargo:"COORDINADOR SUPERIOR"},
-];
+// Trabajadores: ya no se usa un arreglo de "semilla" en el código fuente — la colección 'trabajadores'
+// de Firestore ya tiene datos reales, y mantener nombres completos de personal en el código fuente
+// público es una exposición innecesaria (ver auditoría de seguridad, punto I.4).
 
 const PRODUCTOS_BASE = {
   SHERATON:["MB01-01 | MESA COMUNAL","MB01-08 | MESA","MB01-09 | MESA OVAL ORBIT","MB01-07 | MESA REDONDA","MB01-06 | MESA 800x700","MB01-05 | SOFÁ","MB01-03 | SILLA (rattan)","MB01-10 | SILLA (rattan)","MB01-04 | SILLA (rattan)","MB01-02 | SILLA","ÁRBOL ESCULTURAL","CF01-01 | MUEBLE HOSTESS POD","CF01-03 | MUEBLE CAJA","CF01-04 | ESTACIÓN DE MESEROS","CF01-05 | ESTACIÓN DE MESEROS LARGE"],
@@ -99,6 +69,52 @@ function hoyStr() { return new Date().toLocaleDateString('es-PE'); }
 function fechaStrToDate(str) {
   const [d,m,y] = str.split('/');
   return new Date(y, m-1, d);
+}
+
+// El campo "fechaCreacion" de los tickets tiene formato mixto en la base (ISO en unos, dd/mm/aaaa
+// en otros — deuda técnica pendiente de unificar). new Date("31/8/2026") da fecha inválida en el
+// navegador, lo que rompía la comparación "más reciente" en varios lugares. Este parser entiende
+// ambos formatos correctamente.
+function parseFechaCreacion(str){
+  if(!str) return new Date(0);
+  if(typeof str!=='string') return new Date(str);
+  if(str.includes('T')) return new Date(str);
+  if(str.includes('/')){
+    const [d,m,y]=str.split('/');
+    return new Date(y,m-1,d);
+  }
+  return new Date(str);
+}
+
+// Detecta si ya existe un ticket prácticamente igual (mismo trabajador, tarea, producto, fecha
+// de ejecución y tiempo unitario) creado en los últimos 15 minutos — señal de doble clic o de
+// re-generar sin querer la misma tarea. No bloquea, solo avisa antes de guardar.
+function hayTicketDuplicadoReciente(nombres,tarea,producto,fechaEjec,tu){
+  const ahora=new Date();
+  const nombresOrdenados=JSON.stringify((nombres||[]).slice().sort());
+  return historial.some(t=>{
+    if(t.visibleTareo===false) return false;
+    if(JSON.stringify((t.nombres||[]).slice().sort())!==nombresOrdenados) return false;
+    if(t.tarea!==tarea||t.producto!==producto||t.fechaEjecucion!==fechaEjec||t.tu!==tu) return false;
+    const minutos=(ahora-parseFechaCreacion(t.fechaCreacion))/60000;
+    return minutos>=0&&minutos<15;
+  });
+}
+
+// Escapa HTML para insertar texto libre del usuario (tarea, notas, incidencias) de forma segura en innerHTML.
+// Uso obligatorio para cualquier campo de texto libre antes de interpolarlo en un template de innerHTML.
+function escapeHtml(str){
+  if(str==null) return '';
+  return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Barrera adicional (NO reemplaza seguridad real de Firestore Rules) para funciones administrativas
+// sensibles — evita que alguien dispare estas acciones por accidente o desde un perfil no-admin.
+// Cualquiera con la consola del navegador puede editar localStorage y saltarse esto: la protección
+// real depende de las Reglas de Seguridad de Firestore (Fase 3 del plan de auditoría).
+function requiereAdmin(){
+  if(perfilActivo!=='ricardo'){ alert('Esta acción es solo para el administrador (Ricardo).'); return false; }
+  return true;
 }
 
 async function init() {
@@ -147,7 +163,7 @@ function setStatus(msg){const el=document.getElementById('db-status');el.textCon
 async function cargarTrabajadores() {
   try {
     const snap=await getDocs(collection(db,'trabajadores'));
-    if(snap.empty){for(const t of TRABAJADORES_BASE)await setDoc(doc(collection(db,'trabajadores')),t);trabajadores=[...TRABAJADORES_BASE];}
+    if(snap.empty){ trabajadores=[]; console.warn('La colección "trabajadores" está vacía en Firebase — agrega personal desde Configuración.'); }
     else trabajadores=snap.docs.map(d=>({id:d.id,...d.data()}));
     trabajadores.sort((a,b)=>getAreaIndex(a.area)-getAreaIndex(b.area)||a.nombre.localeCompare(b.nombre));
     poblarSelectTrabajadores();renderConfigTrabajadores();
@@ -268,6 +284,50 @@ function renderConfigProyectos(){
 // ===== TICKETS =====
 function calcTT(){const n=parseFloat(document.getElementById('t-n').value)||0;const tu=parseFloat(document.getElementById('t-tu').value)||0;document.getElementById('t-tt').value=n&&tu?(n*tu/60).toFixed(2)+' h':'';}
 
+// Auto-repetir el último tareo registrado para el trabajador seleccionado
+function autocompletarUltimoTareo(){
+  const t1=document.getElementById('t-t1').value;
+  const aviso=document.getElementById('t-t1-repite-aviso');
+  if(!t1){aviso.style.display='none';return;}
+  const tickets=historial.filter(t=>(t.nombres||[]).includes(t1));
+  if(!tickets.length){aviso.style.display='none';return;}
+  tickets.sort((a,b)=>parseFechaCreacion(b.fechaCreacion||b.guardado)-parseFechaCreacion(a.fechaCreacion||a.guardado));
+  const ult=tickets[0];
+  document.getElementById('t-proyecto').value=ult.proyectoCodigo||'';
+  actualizarProductos();
+  const selProd=document.getElementById('t-producto');
+  if(ult.producto&&[...selProd.options].some(o=>o.value===ult.producto)) selProd.value=ult.producto;
+  document.getElementById('t-tarea').value=ult.tarea||'';
+  document.getElementById('t-tu').value=ult.tu||'';
+  // Nota: NO se autocompleta "Área de ejecución" — ese campo es para excepciones puntuales
+  // (préstamo a otra área ese día específico), no para repetir del historial. Si se copiara del
+  // último ticket, pisaría cualquier selección manual que hagas justo después de elegir trabajador.
+  calcTT();
+  aviso.style.display='block';
+}
+window.autocompletarUltimoTareo=autocompletarUltimoTareo;
+
+// Muestra en vivo cuántas horas ya tiene asignadas el trabajador seleccionado para la fecha de ejecución elegida
+function actualizarHorasTrabajador(){
+  const div=document.getElementById('t-horas-trabajador');
+  if(!div) return;
+  const t1=document.getElementById('t-t1').value;
+  const fechaEjec=document.getElementById('t-fecha-ejec').value;
+  if(!t1||!fechaEjec){div.style.display='none';return;}
+  const jornada=jornadaProductiva(fechaEjec);
+  const ticketsDia=historial.filter(t=>t.visibleTareo!==false&&t.fechaEjecucion===fechaEjec&&(t.nombres||[]).includes(t1));
+  const horas=ticketsDia.reduce((s,t)=>s+t.tt,0);
+  const libres=Math.max(0,jornada-horas);
+  const nombreCorto=t1.split(' ').slice(0,2).join(' ');
+  const pct=jornada>0?(horas/jornada)*100:0;
+  const bg=pct>90?'#FCEBEB':pct>70?'#FAEEDA':'#EAF3DE';
+  const color=pct>90?'#A32D2D':pct>70?'#854F0B':'#3B6D11';
+  div.style.background=bg;div.style.color=color;
+  div.textContent=`${nombreCorto} — ${horas.toFixed(1)}h / ${jornada}h asignadas para ${fechaEjec} (${libres.toFixed(1)}h libres)`;
+  div.style.display='block';
+}
+window.actualizarHorasTrabajador=actualizarHorasTrabajador;
+
 async function agregarTicket(){
   const t1=document.getElementById('t-t1').value;
   const t2=document.getElementById('t-t2').value;
@@ -280,6 +340,13 @@ async function agregarTicket(){
   if(!t1||!proy||!prod||!tarea||!n||!tu||n<1||tu<1){showAlert('tareo','Completa todos los campos. Unidades y tiempo deben ser mayores a 0.','warn');return;}
   const ttNuevo=parseFloat((n*tu/60).toFixed(2));
   const nombresNuevo=[t1,t2].filter(Boolean);
+
+  // Aviso de posible doble registro: mismo trabajador+tarea+producto+fecha+tiempo, creado hace
+  // pocos minutos — pensado para el caso real de doble clic o de registrar la misma tarea dos
+  // veces por accidente (pasó varias veces esta semana).
+  if(hayTicketDuplicadoReciente(nombresNuevo,tarea,prod,fechaEjec,tu)){
+    if(!confirm('Ya registraste un ticket igual (mismo trabajador, tarea, producto, fecha y tiempo) hace pocos minutos.\n\n¿Seguro que quieres crear otro igual?')) return;
+  }
 
   // Verificar sobrecarga para ambos trabajadores
   const sobrecargaMsg=[];
@@ -320,7 +387,7 @@ async function agregarTicket(){
   try{
     setStatus('Guardando...');
     await addDoc(collection(db,'historial'),ticket);
-    setStatus('');limpiarForm();
+    setStatus('');limpiarForm();actualizarHorasTrabajador();
     showAlert('tareo','Ticket guardado — visible para Andree.','success');
   }catch(e){setStatus('');showAlert('tareo','Error al guardar.','warn');}
 }
@@ -347,12 +414,13 @@ async function confirmarTicketSobrecarga(){
   };
   setStatus('Guardando...');
   await addDoc(collection(db,'historial'),ticket);
-  setStatus('');limpiarForm();window._ticketPendiente=null;
+  setStatus('');limpiarForm();actualizarHorasTrabajador();window._ticketPendiente=null;
   showAlert('tareo','Ticket guardado (con sobrecarga).','success');
 }
 
 function limpiarForm(){
   ['t-t1','t-t2','t-proyecto'].forEach(id=>document.getElementById(id).value='');
+  const aviso=document.getElementById('t-t1-repite-aviso');if(aviso)aviso.style.display='none';
   document.getElementById('t-producto').innerHTML='<option value="">Seleccionar proyecto primero</option>';
   document.getElementById('t-tarea').value='';
   if(document.getElementById('t-area-ejec')) document.getElementById('t-area-ejec').value='';
@@ -374,6 +442,7 @@ async function ocultarDeAndree(fbId){
 
 // Eliminar permanentemente — solo desde historial con doble confirmación
 async function eliminarPermanente(fbId){
+  if(!requiereAdmin()) return;
   if(!confirm('¿Eliminar permanentemente este registro del historial? Esta acción NO se puede deshacer.'))return;
   if(!confirm('Segunda confirmación: ¿Seguro que quieres eliminar este registro para siempre?'))return;
   await deleteDoc(doc(db,'historial',fbId));
@@ -389,14 +458,20 @@ function renderTicketsHoy(){
   // Agrupar por fecha de ejecución
   const porFecha={};
   tickets.forEach(t=>{const f=t.fechaEjecucion||t.fecha;if(!porFecha[f])porFecha[f]=[];porFecha[f].push(t);});
-  // Ocultar automáticamente tickets de días anteriores después de las 17:00
+  // Ocultar tickets de días anteriores: si ya se completaron (tienen tiempo real registrado),
+  // se ocultan de inmediato sin importar la hora — ya no aportan nada en esta vista de "generar
+  // tickets nuevos". Si siguen pendientes, se mantienen visibles hasta las 17:00 para no perderlos
+  // de vista, igual que antes.
   const ahora=new Date();
   const hora=ahora.getHours()+(ahora.getMinutes()/60);
   const ticketsFiltrados=tickets.filter(t=>{
     const fej=t.fechaEjecucion||t.fecha;
     const d=fechaStrToDate(fej);
     const esAnterior=d<fechaStrToDate(hoy);
-    if(esAnterior&&hora>=17) return false; // ocultar pasado las 17h
+    if(esAnterior){
+      if(t.tu_real!=null) return false; // ya completado — no aporta en esta vista
+      if(hora>=17) return false; // pendiente pero ya pasó el día
+    }
     return true;
   });
   const grupos=Object.keys(Object.fromEntries(ticketsFiltrados.map(t=>[t.fechaEjecucion||t.fecha,true]))).sort((a,b)=>fechaStrToDate(a)-fechaStrToDate(b));
@@ -420,15 +495,17 @@ function ticketCardHTML(t){
   const aClass=area==='PENDIENTE'?'area-pendiente':(AREA_CLASS[area]||'area-prod');
   const nClass=area==='PENDIENTE'?'num-pendiente':(NUM_CLASS[area]||'num-prod');
   const names=t.nombres&&t.nombres.length>0?t.nombres.map(n=>n.split(' ').slice(0,2).join(' ')).join(' / '):'Sin asignar';
+  const orden=numeroOrdenTicket(t);
+  const ordenBadge=orden?`<div title="Orden de ejecución del día" style="width:22px;height:22px;border-radius:50%;background:rgba(255,255,255,0.9);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#333;flex-shrink:0">${orden}</div>`:'';
   return `<div class="ticket-card">
     <div class="ticket-card-header ${aClass}">
-      <div><div class="ticket-card-names">${names}</div><div class="ticket-card-area">${area}</div></div>
+      <div style="display:flex;align-items:center;gap:8px">${ordenBadge}<div><div class="ticket-card-names">${names}</div><div class="ticket-card-area">${area}</div></div></div>
       <button class="ticket-remove-btn no-print" onclick="ocultarDeTareo('${t.fbId}')" title="Quitar del tareo">×</button>
     </div>
     <div class="ticket-card-body">
       <div class="ticket-field"><div class="ticket-field-label">Proyecto</div><div class="ticket-field-value" style="font-size:11px">${t.proyectoCodigo?(proyectosTC.find(p=>p.codigo===t.proyectoCodigo)?.nombre||t.proyecto):t.proyecto}</div></div>
-      <div class="ticket-field"><div class="ticket-field-label">Producto</div><div class="ticket-field-value" style="font-size:11px">${t.producto}</div></div>
-      <div class="ticket-field"><div class="ticket-field-label">Tarea</div><div class="ticket-field-value">${t.tarea}</div></div>
+      <div class="ticket-field"><div class="ticket-field-label">Producto</div><div class="ticket-field-value" style="font-size:11px">${escapeHtml(t.producto)}</div></div>
+      <div class="ticket-field"><div class="ticket-field-label">Tarea</div><div class="ticket-field-value">${escapeHtml(t.tarea)}</div></div>
       ${t.incidencias&&t.incidencias.length?`<div style="margin-top:6px;padding:4px 8px;background:#fff8e1;border-radius:6px;font-size:11px;color:#f57f17">⚠ ${t.incidencias.length} incidencia${t.incidencias.length>1?'s':''}</div>`:''}
     </div>
     <div class="ticket-nums-row">
@@ -436,6 +513,13 @@ function ticketCardHTML(t){
       <div class="ticket-num-box"><span class="ticket-num-label">t.u. min</span><span class="ticket-num-value ${nClass}">${t.tu}'</span></div>
       <div class="ticket-num-box"><span class="ticket-num-label">T.T. hrs</span><span class="ticket-num-value ${nClass}">${t.tt}</span></div>
     </div>
+    ${orden?`<div class="no-print" style="display:flex;align-items:center;justify-content:space-between;padding:5px 14px;border-top:0.5px solid rgba(0,0,0,0.08);font-size:10px;color:#888">
+      <span>≈ desde ${horaEstimadaTicket(t)}</span>
+      <span style="display:flex;gap:6px">
+        <button onclick="moverOrdenTicket('${t.fbId}',-1)" title="Subir prioridad" style="border:none;background:none;cursor:pointer;font-size:12px;color:#888;padding:0">▲</button>
+        <button onclick="moverOrdenTicket('${t.fbId}',1)" title="Bajar prioridad" style="border:none;background:none;cursor:pointer;font-size:12px;color:#888;padding:0">▼</button>
+      </span>
+    </div>`:''}
   </div>`;
 }
 
@@ -488,8 +572,8 @@ function imprimirHoy(fechaFiltro){
   if(!tickets.length){showAlert('tareo','No hay tickets para esa fecha.','warn');return;}
   // Ordenar por área según orden de planta
   tickets.sort((a,b)=>{
-    const areaA=trabajadores.find(w=>w.nombre===(a.nombres||[])[0])?.area||'PROD-ADMIN';
-    const areaB=trabajadores.find(w=>w.nombre===(b.nombres||[])[0])?.area||'PROD-ADMIN';
+    const areaA=getAreaEjecucion(a);
+    const areaB=getAreaEjecucion(b);
     const iA=ORDEN_AREAS_GLOBAL.indexOf(areaA); const iB=ORDEN_AREAS_GLOBAL.indexOf(areaB);
     if(iA!==iB) return iA-iB;
     return (a.nombres||[])[0]?.localeCompare((b.nombres||[])[0])||0;
@@ -501,7 +585,7 @@ function imprimirHoy(fechaFiltro){
   document.getElementById('print-fecha').textContent=fechaObj.toLocaleDateString('es-PE',{weekday:'long',year:'numeric',month:'long',day:'numeric'}).toUpperCase();
   document.getElementById('print-total').textContent=`${tickets.length} ticket${tickets.length>1?'s':''} — ${fecha.toLocaleTimeString('es-PE',{hour:'2-digit',minute:'2-digit'})}`;
   document.getElementById('print-grid').innerHTML=tickets.map(t=>{
-    const area=trabajadores.find(w=>w.nombre===(t.nombres||[])[0])?.area||'PROD-ADMIN';
+    const area=getAreaEjecucion(t);
     const aClass=AREA_CLASS[area]||'area-prod';
     const nClass=NUM_CLASS[area]||'num-prod';
     const names=t.nombres.map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
@@ -511,7 +595,7 @@ function imprimirHoy(fechaFiltro){
     return `<div class="print-ticket">
       <div class="pt-header ${aClass}">
         <div style="flex:1;margin-right:6px">
-          <div class="pt-name">${names}</div>
+          <div class="pt-name">${numeroOrdenTicket(t)?`<span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:#fff;color:#222;font-size:12px;font-weight:700;margin-right:6px;vertical-align:middle">${numeroOrdenTicket(t)}</span>`:''}${names}</div>
           <div class="pt-area">${area}</div>
         </div>
         <div class="pt-header-right">
@@ -522,8 +606,8 @@ function imprimirHoy(fechaFiltro){
       </div>
       <div class="pt-body">
         <div class="pt-row"><span class="pt-label">Ejecución</span><div class="pt-ejec">${t.fechaEjecucion}</div></div>
-        <div class="pt-row"><span class="pt-label">Producto</span><div class="pt-value">${t.producto}</div></div>
-        <div class="pt-row"><span class="pt-label">Tarea</span><div class="pt-tarea">${t.tarea}</div></div>
+        <div class="pt-row"><span class="pt-label">Producto</span><div class="pt-value">${escapeHtml(t.producto)}</div></div>
+        <div class="pt-row"><span class="pt-label">Tarea</span><div class="pt-tarea">${escapeHtml(t.tarea)}</div></div>
       </div>
       <div class="pt-nums">
         <div class="pt-num"><span class="pt-num-label">Unidades</span><span class="pt-num-val ${nClass}">${t.n}</span></div>
@@ -599,9 +683,13 @@ function guardarPerfil(key) {
 function aplicarPerfil() {
   const perfil = PERFILES[perfilActivo];
   if(!perfil) return;
+  // Primero mostrar todos, luego ocultar los que no corresponden
+  document.querySelectorAll('.tab[data-page]').forEach(tab => {
+    tab.style.display = '';
+  });
   document.querySelectorAll('.tab[data-page]').forEach(tab => {
     const page = tab.dataset.page;
-    tab.style.display = perfil.pestanas.includes(page) ? '' : 'none';
+    if(!perfil.pestanas.includes(page)) tab.style.display = 'none';
   });
   const adminSection = document.getElementById('config-admin-section');
   if(adminSection) adminSection.style.display = perfil.admin ? '' : 'none';
@@ -657,6 +745,73 @@ function getAreaEjecucion(ticket) {
   return trabajadores.find(w=>w.nombre===nombre)?.area || 'PROD-ADMIN';
 }
 
+// ===== ORDEN DE PRIORIDAD DE TICKETS (poka-yoke: qué tarea va primero) =====
+// Agrupa los tickets activos del mismo trabajador principal + fecha de ejecución, ordenados por
+// el campo "orden" explícito si existe (lo asigna moverOrdenTicket al reordenar); si no existe,
+// cae de vuelta al orden de creación como valor por defecto razonable.
+function gruposOrdenDia(nombrePrincipal, fecha){
+  return historial
+    .filter(t=>t.visibleTareo!==false && t.fechaEjecucion===fecha && (t.nombres||[])[0]===nombrePrincipal)
+    .sort((a,b)=>{
+      const oa = a.orden!=null ? a.orden : 9999;
+      const ob = b.orden!=null ? b.orden : 9999;
+      if(oa!==ob) return oa-ob;
+      return parseFechaCreacion(a.fechaCreacion) - parseFechaCreacion(b.fechaCreacion);
+    });
+}
+function numeroOrdenTicket(t){
+  if(!t.nombres || !t.nombres.length) return null;
+  const grupo = gruposOrdenDia(t.nombres[0], t.fechaEjecucion);
+  const idx = grupo.findIndex(x=>x.fbId===t.fbId);
+  return idx>=0 ? idx+1 : null;
+}
+function formatHoraDesde8am(horasAcumuladas){
+  let totalMin = Math.round(8*60 + horasAcumuladas*60);
+  let h = Math.floor(totalMin/60)%24;
+  let m = totalMin%60;
+  const ampm = h>=12?'pm':'am';
+  let h12 = h%12; if(h12===0) h12=12;
+  return `${h12}:${String(m).padStart(2,'0')} ${ampm}`;
+}
+// Hora estimada — solo informativa, no es un compromiso: se recalcula sola con los tiempos
+// planificados de las tareas anteriores del mismo trabajador ese día.
+function horaEstimadaTicket(t){
+  if(!t.nombres || !t.nombres.length) return '';
+  const grupo = gruposOrdenDia(t.nombres[0], t.fechaEjecucion);
+  const idx = grupo.findIndex(x=>x.fbId===t.fbId);
+  if(idx<0) return '';
+  let acumulado = 0;
+  for(let i=0;i<idx;i++) acumulado += (grupo[i].tt||0);
+  return formatHoraDesde8am(acumulado);
+}
+// Sube o baja la prioridad de un ticket intercambiando su "orden" con el ticket adyacente
+// del mismo trabajador + día. Si alguno de los dos aún no tiene un valor de "orden" explícito
+// (tickets creados antes de este cambio), se lo asigna primero según su posición actual.
+async function moverOrdenTicket(fbId, direccion){
+  const t = historial.find(x=>x.fbId===fbId);
+  if(!t || !t.nombres || !t.nombres.length) return;
+  const grupo = gruposOrdenDia(t.nombres[0], t.fechaEjecucion);
+  const idx = grupo.findIndex(x=>x.fbId===fbId);
+  const swapIdx = idx + direccion;
+  if(idx<0 || swapIdx<0 || swapIdx>=grupo.length) return;
+  try{
+    for(let i=0;i<grupo.length;i++){
+      if(grupo[i].orden==null){
+        await updateDoc(doc(db,'historial',grupo[i].fbId), {orden:i+1});
+        grupo[i].orden = i+1;
+      }
+    }
+    const a = grupo[idx], b = grupo[swapIdx];
+    const ordenA = a.orden, ordenB = b.orden;
+    await updateDoc(doc(db,'historial',a.fbId), {orden:ordenB});
+    await updateDoc(doc(db,'historial',b.fbId), {orden:ordenA});
+  }catch(e){
+    console.error(e);
+    showAlert('tareo','No se pudo reordenar. Intenta de nuevo.','warn');
+  }
+}
+window.moverOrdenTicket = moverOrdenTicket;
+
 function sortTicketsByArea(tickets) {
   return [...tickets].sort((a,b) => {
     const iA = getAreaIndex(getAreaEjecucion(a));
@@ -702,7 +857,7 @@ function suscribirHistorial(){
     historial=snap.docs.map(d=>({fbId:d.id,...d.data()}));
     historial.sort((a,b)=>new Date(b.guardado||0)-new Date(a.guardado||0));
     setStatus('');
-    migrarTicketsAntiguos();aplicarPerfil();renderTicketsHoy();renderAndree();const ksel=document.getElementById('k-fecha');if(ksel)ksel.dataset.poblado='';renderKanban();poblarFiltrosHist();renderHist();renderDashboard();renderPendientes();
+    migrarTicketsAntiguos();aplicarPerfil();renderTicketsHoy();renderAndree();const ksel=document.getElementById('k-fecha');if(ksel)ksel.dataset.poblado='';renderKanban();poblarFiltrosHist();renderHist();renderDashboard();renderPendientes();actualizarHorasTrabajador();
   });
 }
 
@@ -741,12 +896,14 @@ function renderAndree(){
       const esFuturo=fechaStrToDate(fechaTkt)>fechaStrToDate(hoyStr());
       const pendienteVencido=!done&&esHoyTkt&&hora>=17;
       const alertaRojo=pendienteVencido||(!done&&esAnterior);
+      const orden=numeroOrdenTicket(t);
+      const ordenBadge=orden?`<span title="Orden de ejecución" style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#e8e8e6;font-size:10px;font-weight:700;color:#555;margin-right:6px">${orden}</span>`:'';
       return `<div class="andree-item ${done?'done':''}" style="${alertaRojo?'border:1.5px solid #E24B4A;background:#fff8f8;':''}">
         ${alertaRojo?`<div style="background:#E24B4A;color:#fff;font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px 4px 0 0;margin:-8px -8px 8px -8px">⚠ PENDIENTE DE REGISTRAR TIEMPO</div>`:''}
         <div class="status-dot ${done?'dot-done':'dot-pending'}"></div>
         <div class="andree-info">
-          <div class="andree-name">${names} <span style="font-size:10px;color:#aaa;font-weight:400">· ${area}</span></div>
-          <div class="andree-sub">${t.proyecto} · ${t.producto} · ${t.tarea}</div>
+          <div class="andree-name">${ordenBadge}${names} <span style="font-size:10px;color:#aaa;font-weight:400">· ${area}</span></div>
+          <div class="andree-sub">${escapeHtml(t.proyecto)} · ${escapeHtml(t.producto)} · ${escapeHtml(t.tarea)}</div>
           ${incHTML}
         </div>
         <div class="andree-right">
@@ -860,11 +1017,14 @@ function renderGanttDiario(){
     });
   });
 
-  // Ordenar tickets de cada trabajador por orden de creación (fechaCreacion)
+  // Ordenar tickets de cada trabajador: respeta el campo "orden" explícito (fijado al reordenar
+  // con ▲▼ en Kanban/Generar tareo); si no existe, cae de vuelta a fecha de creación como antes.
   Object.keys(porTrab).forEach(nom=>{
     porTrab[nom].sort((a,b)=>{
-      const fa=a.fechaCreacion||'';const fb=b.fechaCreacion||'';
-      return fa.localeCompare(fb);
+      const oa=a.orden!=null?a.orden:9999;
+      const ob=b.orden!=null?b.orden:9999;
+      if(oa!==ob) return oa-ob;
+      return parseFechaCreacion(a.fechaCreacion) - parseFechaCreacion(b.fechaCreacion);
     });
   });
 
@@ -948,27 +1108,29 @@ function renderGanttDiario(){
     });
 
     // Bloques de tarea
-    bloques.forEach(b=>{
+    bloques.forEach((b,bIdx)=>{
+      const ordenNum=bIdx+1;
       const x=((b.inicio-horaInicio)/duracionTotal)*100;
       const w=((b.fin-b.inicio)/duracionTotal)*100;
       const horaInicioStr=`${Math.floor(b.inicio)}:${String(Math.round((b.inicio%1)*60)).padStart(2,'0')}`;
       const horaFinStr=`${Math.floor(b.fin)}:${String(Math.round((b.fin%1)*60)).padStart(2,'0')}`;
       const done=!!b.t.tu_real;
-      const proy=b.t.proyectoCodigo||(b.t.proyecto||'').split(' · ')[0]||'';
+      const proy=escapeHtml(b.t.proyectoCodigo||(b.t.proyecto||'').split(' · ')[0]||'');
       const prod=b.t.producto||'';
-      const tarea=b.t.tarea||'—';
+      const tarea=escapeHtml(b.t.tarea||'—');
       // Calcular tiempo real si existe
       const ttReal=b.t.tu_real?parseFloat((b.t.n*b.t.tu_real/60).toFixed(2)):null;
       const wReal=ttReal?((ttReal)/duracionTotal)*100:null;
       const excede=ttReal&&ttReal>b.t.tt;
       const dentroTiempo=ttReal&&ttReal<=b.t.tt;
       const pctReal=ttReal?Math.min(100,(ttReal/b.t.tt)*100):0;
-      const tooltipTxt=`${proy} · ${tarea} | ${horaInicioStr}–${horaFinStr} | Plan: ${b.t.tt}h${ttReal?` · Real: ${ttReal}h ${excede?'⚠ EXCEDE':'✓'}` : ' · Sin registrar'}`;
+      const tooltipTxt=`${ordenNum}° · ${proy} · ${tarea} | ${horaInicioStr}–${horaFinStr} | Plan: ${b.t.tt}h${ttReal?` · Real: ${ttReal}h ${excede?'⚠ EXCEDE':'✓'}` : ' · Sin registrar'}`;
       const wPx=(b.fin-b.inicio)/duracionTotal*(ganttW);
       let textoVisible='';
-      if(wPx>200) textoVisible=`${proy} · ${tarea.length>18?tarea.substring(0,16)+'…':tarea}`;
-      else if(wPx>100) textoVisible=tarea.length>14?tarea.substring(0,12)+'…':tarea;
-      else if(wPx>50) textoVisible=tarea.length>8?tarea.substring(0,6)+'…':tarea;
+      if(wPx>200) textoVisible=`${ordenNum}° ${proy} · ${tarea.length>18?tarea.substring(0,16)+'…':tarea}`;
+      else if(wPx>100) textoVisible=`${ordenNum}° ${tarea.length>12?tarea.substring(0,10)+'…':tarea}`;
+      else if(wPx>50) textoVisible=`${ordenNum}° ${tarea.length>4?tarea.substring(0,3)+'…':tarea}`;
+      else if(wPx>24) textoVisible=`${ordenNum}°`;
       else textoVisible='';
       // Bloque planificado
       html+=`<div title="${tooltipTxt}" style="position:absolute;left:${x}%;width:${w}%;top:4px;bottom:4px;background:${color};border-radius:4px;overflow:hidden;cursor:default;border:${excede?'2px solid #E24B4A':dentroTiempo?'2px solid #27ae60':'none'}">
@@ -1125,15 +1287,20 @@ function renderKanban(){
       const names=t.nombres.map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
       const done=!!t.tu_real;
       const tieneInc=t.incidencias&&t.incidencias.length>0;
+      const orden=numeroOrdenTicket(t);
       return `<div class="kanban-card ${done?'kanban-card-done':''} ${tieneInc?'kanban-card-inc':''}">
         <div class="kanban-card-top">
-          <span class="kanban-card-name">${names}</span>
+          <span class="kanban-card-name">${orden?`<span title="Orden de ejecución" style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:#e8e8e6;font-size:9px;font-weight:700;color:#555;margin-right:4px">${orden}</span>`:''}${names}</span>
           <span>${done?'<span class="kanban-done-badge">✓</span>':''} ${tieneInc?'<span style="color:#f57f17;font-size:10px;font-weight:800">⚠</span>':''}</span>
         </div>
-        <div class="kanban-card-proyecto">${t.proyecto}</div>
-        <div class="kanban-card-tarea">${t.tarea}</div>
-        ${tieneInc?`<div style="font-size:9px;color:#f57f17;margin-top:3px">${t.incidencias[t.incidencias.length-1].descripcion}</div>`:''}
+        <div class="kanban-card-proyecto">${escapeHtml(t.proyecto)}</div>
+        <div class="kanban-card-tarea">${escapeHtml(t.tarea)}</div>
+        ${tieneInc?`<div style="font-size:9px;color:#f57f17;margin-top:3px">${escapeHtml(t.incidencias[t.incidencias.length-1].descripcion)}</div>`:''}
         <div class="kanban-card-nums"><span>${t.n} ud.</span><span>${t.tu}'</span><span class="kanban-card-tt">${t.tt}h</span></div>
+        ${orden?`<div class="no-print" style="display:flex;justify-content:flex-end;gap:6px;margin-top:3px">
+          <button onclick="moverOrdenTicket('${t.fbId}',-1)" title="Subir prioridad" style="border:none;background:none;cursor:pointer;font-size:10px;color:#999;padding:0">▲</button>
+          <button onclick="moverOrdenTicket('${t.fbId}',1)" title="Bajar prioridad" style="border:none;background:none;cursor:pointer;font-size:10px;color:#999;padding:0">▼</button>
+        </div>`:''}
       </div>`;
     }).join('')||`<div class="kanban-empty">Sin tareas</div>`;
     return `<div class="kanban-col">
@@ -1207,18 +1374,18 @@ function renderHist(){
     <th style="text-align:center">t.u. real</th><th style="text-align:center">Dif.</th>
     <th style="text-align:center">T.T.</th><th>Incidencias</th><th></th>
   </tr></thead><tbody>${datos.map(t=>{
-    const area=trabajadores.find(w=>w.nombre===(t.nombres||[])[0])?.area||'';
+    const area=getAreaEjecucion(t);
     const names=(t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
     let diff='—',dc='diff-ok';
     if(t.tu_real){const d=t.tu_real-t.tu;diff=(d>0?'+':'')+d+"'";dc=d>10?'diff-over':d<-5?'diff-under':'diff-ok';}
-    const incText=t.incidencias&&t.incidencias.length?`<span style="color:#f57f17;font-size:11px">⚠ ${t.incidencias.map(i=>i.descripcion).join(' / ')}</span>`:'—';
+    const incText=t.incidencias&&t.incidencias.length?`<span style="color:#f57f17;font-size:11px">⚠ ${t.incidencias.map(i=>escapeHtml(i.descripcion)).join(' / ')}</span>`:'—';
     return `<tr>
       <td style="white-space:nowrap">${t.fechaEjecucion||t.fecha}</td>
       <td style="font-weight:600">${names}</td>
       <td style="font-size:11px;color:#888">${area}</td>
       <td style="font-size:11px">${t.proyectoCodigo||(t.proyecto||'').split(' · ')[0]||t.proyecto}</td>
       <td style="font-size:11px;color:#888">${t.ofNumero||'—'}</td>
-      <td style="font-size:11px;color:#666">${t.tarea}</td>
+      <td style="font-size:11px;color:#666">${escapeHtml(t.tarea)}</td>
       <td style="text-align:center">${t.n}</td>
       <td style="text-align:center">${t.tu}'</td>
       <td style="text-align:center">${t.tu_real?t.tu_real+"'":'—'}</td>
@@ -1242,7 +1409,7 @@ function exportarExcel(){
   if(!datos.length){showAlert('hist','No hay datos para exportar.','warn');return;}
   const rows=[['Fecha ejecución','Fecha creación','Trabajador(es)','Área','Proyecto','Producto','Tarea','N°','t.u. plan','t.u. real','Diferencia','T.T. plan','T.T. real','Completado','Incidencias']];
   datos.forEach(t=>{
-    const area=trabajadores.find(w=>w.nombre===(t.nombres||[])[0])?.area||'';
+    const area=getAreaEjecucion(t);
     rows.push([t.fechaEjecucion||t.fecha,t.fechaCreacion||'',(t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / '),area,t.proyecto,t.producto,t.tarea,t.n,t.tu,t.tu_real||'',t.tu_real?(t.tu_real-t.tu):'',t.tt,t.tt_real||'',t.completado?'Sí':'Pendiente',(t.incidencias||[]).map(i=>`${i.hora}: ${i.descripcion}`).join(' | ')]);
   });
   const ws=XLSX.utils.aoa_to_sheet(rows);
@@ -1269,16 +1436,16 @@ function renderDashboard(){
   const porOp={};
   historial.forEach(t=>{
     (t.nombres||[]).forEach(nom=>{
-      if(!porOp[nom])porOp[nom]={plan:0,real:0,tickets:0,completados:0,desv:[]};
+      if(!porOp[nom])porOp[nom]={plan:0,planCompletados:0,real:0,tickets:0,completados:0,desv:[]};
       porOp[nom].plan+=t.tt;porOp[nom].tickets++;
-      if(t.tu_real!=null){porOp[nom].real+=(t.n*t.tu_real/60);porOp[nom].completados++;porOp[nom].desv.push(t.tu_real-t.tu);}
+      if(t.tu_real!=null){porOp[nom].real+=(t.n*t.tu_real/60);porOp[nom].planCompletados+=t.tt;porOp[nom].completados++;porOp[nom].desv.push(t.tu_real-t.tu);}
     });
   });
 
   const opRows=Object.entries(porOp).sort((a,b)=>b[1].tickets-a[1].tickets).map(([nom,d])=>{
     const short=nom.split(' ').slice(0,3).join(' ');
     const area=trabajadores.find(w=>w.nombre===nom)?.area||'';
-    const ef=d.completados>0?((d.plan/Math.max(d.real,0.1))*100).toFixed(0):'-';
+    const ef=d.completados>0?((d.planCompletados/Math.max(d.real,0.1))*100).toFixed(0):'-';
     const promDesv=d.desv.length?(d.desv.reduce((a,b)=>a+b,0)/d.desv.length).toFixed(1):'-';
     const efNum=parseFloat(ef);
     const efColor=efNum>=100?'#27ae60':efNum>=80?'#e8a020':'#c0392b';
@@ -1301,8 +1468,8 @@ function renderDashboard(){
   const tareaRows=tareasDesv.map(t=>{
     const dc=t.desv>10?'#c0392b':t.desv<-5?'#27ae60':'#888';
     return `<tr>
-      <td style="font-size:12px;font-weight:500">${t.tarea}</td>
-      <td style="font-size:11px;color:#888">${t.proyecto}</td>
+      <td style="font-size:12px;font-weight:500">${escapeHtml(t.tarea)}</td>
+      <td style="font-size:11px;color:#888">${escapeHtml(t.proyecto)}</td>
       <td style="text-align:center">${t.plan}'</td>
       <td style="text-align:center">${t.real}'</td>
       <td style="text-align:center;font-weight:700;color:${dc}">${t.desv>0?'+':''}${t.desv}'</td>
@@ -1350,7 +1517,7 @@ function abrirReasignar(fbId) {
   const t = historial.find(h=>h.fbId===fbId);
   if(!t) return;
   const names = (t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
-  document.getElementById('reasignar-info').innerHTML = `<strong>${names}</strong> · ${t.proyecto} · ${t.tarea}`;
+  document.getElementById('reasignar-info').innerHTML = `<strong>${escapeHtml(names)}</strong> · ${escapeHtml(t.proyecto)} · ${escapeHtml(t.tarea)}`;
   const sel = document.getElementById('reasignar-trabajador');
   sel.innerHTML = '<option value="">Seleccionar...</option>';
   trabajadores.forEach(w=>{
@@ -1384,7 +1551,7 @@ function abrirPosponer(fbId) {
   const t = historial.find(h=>h.fbId===fbId);
   if(!t) return;
   const names = (t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
-  document.getElementById('posponer-info').innerHTML = `<strong>${names}</strong> · ${t.proyecto} · ${t.tarea}`;
+  document.getElementById('posponer-info').innerHTML = `<strong>${escapeHtml(names)}</strong> · ${escapeHtml(t.proyecto)} · ${escapeHtml(t.tarea)}`;
   document.getElementById('posponer-nombre-actual').textContent = names || 'Sin asignar';
   document.getElementById('posponer-motivo').value = '';
   // Reset radio a "mismo trabajador"
@@ -1465,7 +1632,7 @@ function renderPendientes() {
     ${pendientes.map(t=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:0.5px solid #f5f4f0;gap:1rem">
       <div style="flex:1;min-width:0">
         <div style="font-size:13px;font-weight:500;color:var(--text-primary)">${t.proyecto||'—'} · ${t.producto||'—'}</div>
-        <div style="font-size:11px;color:#888;margin-top:2px">${t.tarea} · ${t.n} und · ${t.tu}' · ${t.tt}h</div>
+        <div style="font-size:11px;color:#888;margin-top:2px">${escapeHtml(t.tarea)} · ${t.n} und · ${t.tu}' · ${t.tt}h</div>
         <div style="font-size:11px;color:#2563eb;margin-top:2px">Ejecución: ${t.fechaEjecucion||'sin fecha'}</div>
         ${t.cambios&&t.cambios.length?`<div style="font-size:10px;color:#f57f17;margin-top:2px">Motivo: ${t.cambios[t.cambios.length-1].motivo}</div>`:''}
       </div>
@@ -1482,7 +1649,7 @@ async function asignarPendiente(fbId) {
   if(!t) return;
   // Abrir modal de reasignación reutilizando el mismo modal
   fbIdReasignar = fbId;
-  document.getElementById('reasignar-info').innerHTML = `<strong>Pendiente sin asignar</strong> · ${t.proyecto} · ${t.tarea}`;
+  document.getElementById('reasignar-info').innerHTML = `<strong>Pendiente sin asignar</strong> · ${escapeHtml(t.proyecto)} · ${escapeHtml(t.tarea)}`;
   const sel = document.getElementById('reasignar-trabajador');
   sel.innerHTML = '<option value="">Seleccionar...</option>';
   trabajadores.forEach(w=>{
@@ -1645,7 +1812,7 @@ function renderM3() {
           <span style="font-size:11px;color:#888">Real</span>
           <span style="font-size:13px;font-weight:600;color:#27ae60">${realDia.toFixed(1)} m³</span>
         </div>
-        <div style="background:#f0ede8;border-radius:3px;height:4px;overflow:hidden;margin-bottom:8px">
+        <div style="background:var(--bg);border-radius:3px;height:4px;overflow:hidden;margin-bottom:8px">
           <div style="background:${barColor};height:100%;width:${pctDia}%;border-radius:3px"></div>
         </div>
         ${entradas.map(e=>`<div style="background:var(--surface-1);border-radius:6px;padding:6px;margin-bottom:5px;font-size:11px">
@@ -1671,7 +1838,7 @@ function renderM3() {
   </div>
   <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding:10px 12px;background:var(--surface-1);border-radius:8px">
     <span style="font-size:13px;color:#888">Progreso semanal</span>
-    <div style="flex:1;margin:0 16px;background:#f0ede8;border-radius:4px;height:8px;overflow:hidden">
+    <div style="flex:1;margin:0 16px;background:var(--bg);border-radius:4px;height:8px;overflow:hidden">
       <div style="background:${totalReal>=metaM3?'#27ae60':'#2563eb'};height:100%;width:${Math.min(100,(totalReal/metaM3)*100)}%;border-radius:4px;transition:width 0.3s"></div>
     </div>
     <span style="font-size:13px;font-weight:600">${totalReal.toFixed(1)} / ${metaM3} m³</span>
@@ -1891,7 +2058,7 @@ async function cargarTorre() {
     // Cargar proyectos TC
     const snapP = await getDocs(collection(db,'proyectosTC'));
     if(snapP.empty) {
-      for(const p of PROYECTOS_BASE_TC) await setDoc(doc(collection(db,'proyectosTC')),p);
+      for(const p of PROYECTOS_BASE_TC) await setDoc(doc(db,'proyectosTC',p.codigo),p);
       proyectosTC = [...PROYECTOS_BASE_TC];
     } else {
       proyectosTC = snapP.docs.map(d=>({id:d.id,...d.data()}));
@@ -1951,6 +2118,63 @@ function toggleEtapa(etapaId) {
   renderTorre();
 }
 
+let liberarColapsado = false;
+function toggleLiberar(){ liberarColapsado = !liberarColapsado; renderTorre(); }
+
+function abrirLiberarOF(fbId) {
+  abrirMoverOF(fbId);
+  const sel = document.getElementById('mover-etapa');
+  sel.value = 'Producción';
+  onCambiarEtapaMover();
+}
+
+function renderLiberar() {
+  const cont = document.getElementById('tc-liberar');
+  if(!cont) return;
+  const cola = ofs.filter(o=>o.etapa==='Compras' && !o.bloqueada)
+    .sort((a,b)=>{
+      const da = diasAEntrega(a), db_ = diasAEntrega(b);
+      if(da===null && db_===null) return 0;
+      if(da===null) return 1;
+      if(db_===null) return -1;
+      return da-db_;
+    });
+  const enEspec = ofs.filter(o=>o.etapa==='Especificaciones').length;
+  const bloqEnCompras = ofs.filter(o=>o.etapa==='Compras' && o.bloqueada).length;
+
+  const filas = cola.map(of=>{
+    const p = proyectosTC.find(x=>x.codigo===of.proyectoCodigo);
+    const pColor = p?.color||'#888';
+    const diasEnt = diasAEntrega(of);
+    const entColor = diasEnt===null?'#888':diasEnt<7?'#A32D2D':diasEnt<15?'#854F0B':'#3B6D11';
+    const entBg = diasEnt===null?'var(--surface-1)':diasEnt<7?'#FCEBEB':diasEnt<15?'#FAEEDA':'#EAF3DE';
+    const h3 = (of.gatesAprobados||{})['H-3'];
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:0.5px solid var(--border)">
+      <span style="width:5px;height:26px;border-radius:3px;background:${pColor};flex:none"></span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12.5px;font-weight:700;color:var(--text-primary)">${escapeHtml(of.numero||'—')}</div>
+        <div style="font-size:11px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(of.descripcion||'—')} · ${escapeHtml(p?p.nombre:(of.proyectoCodigo||'—'))}</div>
+      </div>
+      <span style="font-size:9.5px;font-weight:700;padding:3px 7px;border-radius:10px;background:${h3?'#EAF3DE':'#FCEBEB'};color:${h3?'#3B6D11':'#A32D2D'};flex:none">${h3?'H-3 ✓':'H-3 pendiente'}</span>
+      <span style="font-size:10px;padding:3px 7px;border-radius:10px;background:var(--surface-1);color:var(--text-secondary);flex:none">${diasEnEtapa(of)}d en Compras</span>
+      <span style="font-size:10px;font-weight:700;padding:3px 7px;border-radius:10px;background:${entBg};color:${entColor};flex:none">${diasEnt===null?'sin fecha':diasEnt+'d entrega'}</span>
+      <button onclick="abrirLiberarOF('${of.fbId}')" style="height:28px;padding:0 12px;font-size:11px;font-weight:600;border:0.5px solid var(--border-accent);border-radius:6px;background:var(--bg-accent);color:var(--text-accent);cursor:pointer;flex:none">Liberar →</button>
+    </div>`;
+  }).join('');
+
+  cont.innerHTML = `<div style="border:1px solid var(--border-accent);border-radius:10px;overflow:hidden;background:var(--surface-2)">
+    <div onclick="toggleLiberar()" style="display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--bg-accent);cursor:pointer">
+      <span style="font-size:13px">🚦</span>
+      <span style="font-size:13px;font-weight:700;color:var(--text-accent)">Listo para liberar a Producción</span>
+      <span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;background:var(--surface-2);color:var(--text-accent)">${cola.length}</span>
+      <span style="flex:1"></span>
+      <span style="font-size:10.5px;color:var(--text-secondary)">${enEspec} en Especificaciones${bloqEnCompras?' · '+bloqEnCompras+' bloqueada(s)':''}</span>
+      <span style="font-size:11px;color:var(--text-accent)">${liberarColapsado?'▼':'▲'}</span>
+    </div>
+    ${liberarColapsado?'':(cola.length?filas:'<div style="padding:14px;font-size:12px;color:var(--text-secondary);text-align:center">No hay OF esperando liberación. Si tampoco entra trabajo nuevo, el cuello de botella está antes: en Especificaciones.</div>')}
+  </div>`;
+}
+
 function renderTorre() {
   const filtroProy = document.getElementById('tc-filtro-proy')?.value||'';
   const filtroPrio = document.getElementById('tc-filtro-prio')?.value||'';
@@ -1984,6 +2208,8 @@ function renderTorre() {
     }
   }
 
+  renderLiberar();
+
   const board = document.getElementById('tc-board');
   board.innerHTML = ETAPAS_TC.map(etapa=>{
     const etapaId = etapa.replace(/[^a-z]/gi,'').toLowerCase();
@@ -1998,7 +2224,7 @@ function renderTorre() {
     const cards = etapaOfs.map(of=>{
       const p = proyectosTC.find(x=>x.codigo===of.proyectoCodigo);
       const pColor = p?.color||'#888';
-      const pNombre = p?`${p.codigo} · ${p.nombre}`:(of.proyectoCodigo||'—');
+      const pNombre = p?`${p.codigo} · ${escapeHtml(p.nombre)}`:(of.proyectoCodigo||'—');
       const diasAqui = diasEnEtapa(of);
       const diasEnt = diasAEntrega(of);
       const prioDot = of.prioridad==='alta'?'#E24B4A':of.prioridad==='media'?'#EF9F27':'#639922';
@@ -2147,6 +2373,7 @@ async function guardarOF() {
 const GATES_CONFIG = {
   'H-1': {
     titulo: 'Gate H-1 — Comercial a Visita',
+    dueno: 'Raphael Cisneros',
     participantes: ['Raphael Cisneros','Pablo Arce','Ricardo Villar','Eduardo Nightingale'],
     checklist: [
       'Modular / Partes definidas',
@@ -2156,6 +2383,7 @@ const GATES_CONFIG = {
   },
   'H-2': {
     titulo: 'Gate H-2 — Visita a Especificaciones',
+    dueno: 'Raphael Cisneros',
     participantes: ['Raphael Cisneros','Pablo Arce','Ricardo Villar','Eduardo Nightingale'],
     checklist: [
       'Dimensiones verificadas en obra',
@@ -2166,6 +2394,7 @@ const GATES_CONFIG = {
   },
   'H-3': {
     titulo: 'Gate H-3 — Especificaciones a Compras',
+    dueno: 'Pablo Arce',
     participantes: ['Raphael Cisneros','Pablo Arce','Ronald Cajo','Ricardo Villar','Eduardo Nightingale'],
     checklist: [
       'Listado de piezas completo',
@@ -2176,16 +2405,23 @@ const GATES_CONFIG = {
   },
   'H-4': {
     titulo: 'Gate H-4 — Compras a Producción',
+    dueno: 'Ronald Cajo',
     participantes: ['Raphael Cisneros','Pablo Arce','Ronald Cajo','Ricardo Villar'],
     checklist: [
       'Compras completas confirmadas',
       'Compras inteligentes aplicadas',
       'Orden de servicio emitida',
       'Servicios controlados'
-    ]
+    ],
+    campoFecha: {
+      id: 'gate-fecha-material',
+      label: 'Material completo llega el',
+      ayuda: 'Confirmado no es lo mismo que llegó. Sin esta fecha no se libera la OF.'
+    }
   },
   'H-5': {
     titulo: 'Gate H-5 — Producción a APT',
+    dueno: 'Neicer Calampa',
     participantes: ['Raphael Cisneros','Pablo Arce','Neicer Calampa','Ronald Cajo','Ricardo Villar'],
     checklist: [
       'Revisión de todas las áreas completada',
@@ -2197,6 +2433,7 @@ const GATES_CONFIG = {
   },
   'H-6': {
     titulo: 'Gate H-6 — APT a Obra',
+    dueno: 'Ronald Cajo',
     participantes: ['Ronald Cajo','Evaristo Rinza','Neicer Calampa','Ricardo Villar'],
     checklist: [
       'Embalaje completado',
@@ -2207,6 +2444,7 @@ const GATES_CONFIG = {
   },
   'H-7': {
     titulo: 'Gate H-7 — Obra a Cierre',
+    dueno: 'Darío Calderón',
     participantes: ['Darío Calderón','Evaristo Rinza','Ronald Cajo'],
     checklist: [
       'Simetrías verificadas en obra',
@@ -2244,7 +2482,24 @@ function mostrarChecklist(gateKey) {
   const wrap = document.getElementById('gate-checklist-wrap');
   wrap.style.display = 'block';
   document.getElementById('gate-titulo').textContent = gate.titulo;
-  document.getElementById('gate-participantes').textContent = 'Participantes: ' + gate.participantes.join(', ');
+  const consultados = (gate.participantes||[]).filter(p=>p!==gate.dueno);
+  document.getElementById('gate-participantes').innerHTML =
+    `<span style="font-weight:700;color:var(--text-primary)">Dueño: ${escapeHtml(gate.dueno||'sin asignar')}</span>`
+    + (consultados.length?` &middot; Consultados: ${escapeHtml(consultados.join(', '))}`:'');
+
+  // Campo de fecha obligatorio (solo H-4 hoy)
+  const fWrap = document.getElementById('gate-campo-fecha-wrap');
+  if(gate.campoFecha) {
+    fWrap.style.display='block';
+    document.getElementById('gate-campo-fecha-label').textContent = gate.campoFecha.label;
+    document.getElementById('gate-campo-fecha-ayuda').textContent = gate.campoFecha.ayuda||'';
+    const inp = document.getElementById('gate-fecha-material');
+    inp.value='';
+    inp.oninput = verificarGateCompleto;
+    document.getElementById('gate-fecha-aviso').style.display='none';
+  } else {
+    fWrap.style.display='none';
+  }
   const lista = document.getElementById('gate-items');
   lista.innerHTML = gate.checklist.map((item, i) => `
     <label style="display:flex;align-items:flex-start;gap:8px;padding:8px 10px;background:var(--surface-1);border-radius:6px;cursor:pointer;border:0.5px solid var(--border)">
@@ -2259,9 +2514,39 @@ function verificarGateCompleto() {
   const gate = GATES_CONFIG[document.getElementById('gate-key-actual').value];
   if(!gate) return;
   const todos = gate.checklist.every((_, i) => document.getElementById(`gate-check-${i}`)?.checked);
+  let fechaOk = true;
+  if(gate.campoFecha) {
+    const val = document.getElementById('gate-fecha-material')?.value||'';
+    fechaOk = !!val;
+    const aviso = document.getElementById('gate-fecha-aviso');
+    if(val) {
+      const of = ofs.find(o=>o.fbId===fbIdMoverOF);
+      const p = of ? proyectosTC.find(x=>x.codigo===of.proyectoCodigo) : null;
+      const d0 = new Date(); d0.setHours(0,0,0,0);
+      const dMat = new Date(val+'T00:00:00');
+      const dEnt = (p && p.entregaInterna) ? new Date(p.entregaInterna) : null;
+      if(dEnt && !isNaN(dEnt) && dMat > dEnt) {
+        aviso.style.display='block';
+        aviso.style.background='#FCEBEB'; aviso.style.color='#A32D2D';
+        aviso.textContent = '⛔ El material llega DESPUÉS de la fecha de entrega del proyecto ('+dEnt.toLocaleDateString('es-PE')+'). Liberar esta OF es comprometer un incumplimiento.';
+      } else if(dMat > d0) {
+        const dias = Math.round((dMat-d0)/86400000);
+        aviso.style.display='block';
+        aviso.style.background='#FAEEDA'; aviso.style.color='#854F0B';
+        aviso.textContent = '⚠ El material aún no está en planta: faltan '+dias+' día(s). La OF entra a producción con riesgo de parada.';
+      } else {
+        aviso.style.display='block';
+        aviso.style.background='#EAF3DE'; aviso.style.color='#3B6D11';
+        aviso.textContent = '✓ Material disponible. Liberación sin riesgo por abastecimiento.';
+      }
+    } else {
+      aviso.style.display='none';
+    }
+  }
   const btn = document.getElementById('btn-confirmar-mover');
-  btn.disabled = !todos;
-  btn.style.opacity = todos ? '1' : '0.4';
+  const ok = todos && fechaOk;
+  btn.disabled = !ok;
+  btn.style.opacity = ok ? '1' : '0.4';
 }
 
 function onCambiarEtapaMover() {
@@ -2308,10 +2593,14 @@ async function confirmarMoverOF() {
   const of = ofs.find(o=>o.fbId===fbIdMoverOF);
   if(!of) return;
   // Construir registro del gate completado
+  const cfgGate = GATES_CONFIG[gateKey];
+  const fechaMaterial = (cfgGate && cfgGate.campoFecha) ? (document.getElementById('gate-fecha-material')?.value||'') : '';
   const gateCompletado = gateKey ? {
     gate: gateKey,
     fecha: new Date().toISOString(),
-    checklist: (GATES_CONFIG[gateKey]?.checklist||[]).map((item,i)=>({
+    dueno: cfgGate?.dueno||'',
+    fechaMaterial: fechaMaterial||null,
+    checklist: (cfgGate?.checklist||[]).map((item,i)=>({
       item, completado: document.getElementById(`gate-check-${i}`)?.checked||false
     }))
   } : null;
@@ -2326,13 +2615,15 @@ async function confirmarMoverOF() {
   });
   const gatesAprobados = of.gatesAprobados||{};
   if(gateKey) gatesAprobados[gateKey] = {fecha:new Date().toISOString(), aprobado:true};
-  await updateDoc(doc(db,'ofs',fbIdMoverOF),{
+  const payloadOF = {
     etapa: nuevaEtapa,
     gate: nuevoGate,
     fechaEntradaEtapa: new Date().toISOString(),
     historialMovimientos: mov,
     gatesAprobados
-  });
+  };
+  if(fechaMaterial) payloadOF.fechaMaterialComprometida = fechaMaterial;
+  await updateDoc(doc(db,'ofs',fbIdMoverOF), payloadOF);
   cerrarMoverOF();
   showAlert('torre',`OF ${of.numero} movida a ${nuevaEtapa}${gateKey?' · Gate '+gateKey+' aprobado':''}`, 'success');
 }
@@ -2422,12 +2713,12 @@ function renderConfigProyectosTC() {
   }
   cont.innerHTML = proyectosTC.map(p=>{
     const prods = proyectos[p.codigo]||[];
-    return `<div style="background:var(--surface-1);border-radius:10px;border:0.5px solid #dedad2;padding:1rem;margin-bottom:0.75rem">
+    return `<div style="background:var(--surface-1);border-radius:10px;border:1px solid var(--border);padding:1rem;margin-bottom:0.75rem">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
         <div style="display:flex;align-items:center;gap:10px">
           <div style="width:18px;height:18px;border-radius:50%;background:${p.color||'#888'};flex-shrink:0"></div>
           <div>
-            <span style="font-size:13px;font-weight:600;color:var(--text-primary)">${p.codigo||'—'} · ${p.nombre}</span>
+            <span style="font-size:13px;font-weight:600;color:var(--text-primary)">${p.codigo||'—'} · ${escapeHtml(p.nombre)}</span>
             <div style="font-size:11px;color:#aaa;margin-top:1px">
               ${p.entregaInterna?'Entrega interna: '+formatFecha(p.entregaInterna):'Sin fecha interna'}
               ${p.entregaContrato?' · Contrato: '+formatFecha(p.entregaContrato):''}
@@ -2436,11 +2727,11 @@ function renderConfigProyectosTC() {
         </div>
         <div style="display:flex;gap:6px">
           <button class="btn btn-xs" onclick="editarProyectoTC('${p.id||''}')">Editar</button>
-          <button class="btn btn-xs btn-danger" onclick="eliminarProyectoTC('${p.id||''}','${p.nombre}')">Eliminar</button>
+          <button class="btn btn-xs btn-danger" onclick="eliminarProyectoTC('${p.id||''}')">Eliminar</button>
         </div>
       </div>
       <div style="margin-bottom:6px">
-        ${prods.map((pr,i)=>`<span style="display:inline-block;padding:3px 10px;background:#f0ede8;border-radius:5px;font-size:12px;margin:2px">${pr} <span onclick="eliminarProductoUnif('${p.codigo}',${i})" style="cursor:pointer;color:#aaa;margin-left:3px">×</span></span>`).join('')}
+        ${prods.map((pr,i)=>`<span style="display:inline-block;padding:3px 10px;background:var(--bg);border-radius:5px;font-size:12px;margin:2px">${pr} <span onclick="eliminarProductoUnif('${p.codigo}',${i})" style="cursor:pointer;color:#aaa;margin-left:3px">×</span></span>`).join('')}
         ${!prods.length?'<span style="font-size:11px;color:#ccc">Sin productos aún</span>':''}
       </div>
       <div style="display:flex;gap:6px;margin-top:4px">
@@ -2490,7 +2781,8 @@ function editarProyectoTC(id) {
   document.getElementById('modal-proyecto-tc').style.display='flex';
 }
 
-async function eliminarProyectoTC(id, nombre) {
+async function eliminarProyectoTC(id) {
+  const nombre = proyectosTC.find(x=>x.id===id)?.nombre || '';
   const tieneOFs = ofs.filter(o=>o.proyectoCodigo===(proyectosTC.find(x=>x.id===id)?.codigo)).length;
   if(tieneOFs>0) {
     if(!confirm(`"${nombre}" tiene ${tieneOFs} OF activas. ¿Eliminar igual?`)) return;
@@ -2511,7 +2803,7 @@ function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classL
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
-window.confirmarTicketSobrecarga=confirmarTicketSobrecarga;window.renderDashboard=renderDashboard;window.abrirReasignar=abrirReasignar;window.cerrarReasignar=cerrarReasignar;window.confirmarReasignar=confirmarReasignar;window.abrirPosponer=abrirPosponer;window.cerrarPosponer=cerrarPosponer;window.confirmarPosponer=confirmarPosponer;window.asignarPendiente=asignarPendiente;window.poblarOFsModal=poblarOFsModal;window.seleccionarOFModal=seleccionarOFModal;window.actualizarColorTC=actualizarColorTC;window.abrirCrearOF=abrirCrearOF;window.abrirEditarOF=abrirEditarOF;window.cerrarOF=cerrarOF;window.guardarOF=guardarOF;window.abrirMoverOF=abrirMoverOF;window.cerrarMoverOF=cerrarMoverOF;window.confirmarMoverOF=confirmarMoverOF;window.onCambiarEtapaMover=onCambiarEtapaMover;window.verificarGateCompleto=verificarGateCompleto;window.abrirBloqueo=abrirBloqueo;window.cerrarBloqueo=cerrarBloqueo;window.guardarBloqueo=guardarBloqueo;window.abrirCrearProyectoTC=abrirCrearProyectoTC;window.cerrarProyectoTC=cerrarProyectoTC;window.selColor=selColor;window.guardarProyectoTC=guardarProyectoTC;window.renderTorre=renderTorre;window.toggleEtapa=toggleEtapa;window.editarProyectoTC=editarProyectoTC;window.agregarProductoUnif=agregarProductoUnif;window.eliminarProductoUnif=eliminarProductoUnif;window.eliminarProyectoTC=eliminarProyectoTC;window.renderConfigProyectosTC=renderConfigProyectosTC;window.cambiarSemana=cambiarSemana;window.moverM3Dia=moverM3Dia;window.abrirM3=abrirM3;window.cerrarM3=cerrarM3;window.calcM3=calcM3;window.guardarM3=guardarM3;window.actualizarMetaM3=actualizarMetaM3;window.registrarM3Real=registrarM3Real;window.eliminarM3=eliminarM3;window.imprimirM3=imprimirM3;window.ocultarDeTareo=ocultarDeTareo;window.ocultarDeAndree=ocultarDeAndree;window.eliminarPermanente=eliminarPermanente;
+window.confirmarTicketSobrecarga=confirmarTicketSobrecarga;window.renderDashboard=renderDashboard;window.abrirReasignar=abrirReasignar;window.cerrarReasignar=cerrarReasignar;window.confirmarReasignar=confirmarReasignar;window.abrirPosponer=abrirPosponer;window.cerrarPosponer=cerrarPosponer;window.confirmarPosponer=confirmarPosponer;window.asignarPendiente=asignarPendiente;window.poblarOFsModal=poblarOFsModal;window.seleccionarOFModal=seleccionarOFModal;window.actualizarColorTC=actualizarColorTC;window.abrirCrearOF=abrirCrearOF;window.abrirEditarOF=abrirEditarOF;window.cerrarOF=cerrarOF;window.guardarOF=guardarOF;window.abrirMoverOF=abrirMoverOF;window.cerrarMoverOF=cerrarMoverOF;window.confirmarMoverOF=confirmarMoverOF;window.onCambiarEtapaMover=onCambiarEtapaMover;window.verificarGateCompleto=verificarGateCompleto;window.abrirBloqueo=abrirBloqueo;window.cerrarBloqueo=cerrarBloqueo;window.guardarBloqueo=guardarBloqueo;window.abrirCrearProyectoTC=abrirCrearProyectoTC;window.cerrarProyectoTC=cerrarProyectoTC;window.selColor=selColor;window.guardarProyectoTC=guardarProyectoTC;window.renderTorre=renderTorre;window.toggleEtapa=toggleEtapa;window.toggleLiberar=toggleLiberar;window.abrirLiberarOF=abrirLiberarOF;window.renderLiberar=renderLiberar;window.editarProyectoTC=editarProyectoTC;window.agregarProductoUnif=agregarProductoUnif;window.eliminarProductoUnif=eliminarProductoUnif;window.eliminarProyectoTC=eliminarProyectoTC;window.renderConfigProyectosTC=renderConfigProyectosTC;window.cambiarSemana=cambiarSemana;window.moverM3Dia=moverM3Dia;window.abrirM3=abrirM3;window.cerrarM3=cerrarM3;window.calcM3=calcM3;window.guardarM3=guardarM3;window.actualizarMetaM3=actualizarMetaM3;window.registrarM3Real=registrarM3Real;window.eliminarM3=eliminarM3;window.imprimirM3=imprimirM3;window.ocultarDeTareo=ocultarDeTareo;window.ocultarDeAndree=ocultarDeAndree;window.eliminarPermanente=eliminarPermanente;
 window.registrarTiempo=registrarTiempo;window.resetTiempo=resetTiempo;
 window.abrirIncidencia=abrirIncidencia;window.cerrarIncidencia=cerrarIncidencia;window.guardarIncidencia=guardarIncidencia;
 window.renderHist=renderHist;window.exportarExcel=exportarExcel;
@@ -2520,6 +2812,7 @@ window.renderKanban=renderKanban;window.kanbanNavFecha=kanbanNavFecha;window.kan
 
 // ===== BACKUP COMPLETO =====
 async function exportarBackupCompleto() {
+  if(!requiereAdmin()) return;
   setStatus('Exportando backup...');
   try {
     const fecha = new Date().toLocaleDateString('es-PE').replace(/\//g,'-');
@@ -2626,9 +2919,78 @@ const MAPA_PROYECTOS = {
   'MANTENIMIENTO': '123',
 };
 
+// Elimina proyectosTC duplicados (mismo código, creados por una carrera de inicialización)
+// Conserva el registro más antiguo (menor guardado/id) y borra el resto — las copias son clones exactos salvo el ID.
+// Detecta tickets prácticamente idénticos (mismo trabajador, tarea, producto, fecha y tiempo)
+// y los muestra agrupados para que el admin decida cuál copia borrar — a diferencia de los
+// proyectos duplicados, aquí las copias pueden diferir en si ya se completaron o no, así que
+// no se borra nada automáticamente.
+async function detectarTicketsDuplicados(){
+  if(!requiereAdmin()) return;
+  const grupos={};
+  historial.forEach(t=>{
+    if(t.visibleTareo===false) return;
+    const key=JSON.stringify([(t.nombres||[]).slice().sort(),t.tarea,t.producto,t.fechaEjecucion,t.tu]);
+    (grupos[key]=grupos[key]||[]).push(t);
+  });
+  const duplicados=Object.values(grupos).filter(g=>g.length>1);
+  const cont=document.getElementById('config-tickets-duplicados');
+  if(!duplicados.length){
+    cont.innerHTML='<div style="font-size:12px;color:var(--text-secondary);padding:8px 0">No se encontraron tickets duplicados. ✓</div>';
+    return;
+  }
+  cont.innerHTML=`<div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">${duplicados.length} grupo(s) duplicado(s) encontrado(s):</div>`+
+    duplicados.map(grupo=>{
+      const t0=grupo[0];
+      return `<div style="border:0.5px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:8px">
+        <div style="font-size:12px;font-weight:600;color:var(--text-primary);margin-bottom:6px">${escapeHtml((t0.nombres||[]).join(' / '))} · ${escapeHtml(t0.tarea)} · ${t0.fechaEjecucion}</div>
+        ${grupo.map(t=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:11px;color:var(--text-secondary)">
+          <span>Creado: ${t.fechaCreacion} ${t.tu_real!=null?'· ✓ tiene tiempo real registrado':'· sin completar'}</span>
+          <button class="btn btn-xs btn-danger" onclick="eliminarPermanenteYRefrescarDuplicados('${t.fbId}')">Eliminar esta copia</button>
+        </div>`).join('')}
+      </div>`;
+    }).join('');
+}
+window.detectarTicketsDuplicados=detectarTicketsDuplicados;
+// Igual que eliminarPermanente, pero refresca la lista de duplicados después de borrar,
+// así no hay que volver a presionar "Buscar duplicados" tras cada borrado.
+async function eliminarPermanenteYRefrescarDuplicados(fbId){
+  await eliminarPermanente(fbId);
+  detectarTicketsDuplicados();
+}
+window.eliminarPermanenteYRefrescarDuplicados=eliminarPermanenteYRefrescarDuplicados;
+
+async function eliminarProyectosDuplicadosTC() {
+  if(!requiereAdmin()) return;
+  const porCodigo = {};
+  proyectosTC.forEach(p=>{ (porCodigo[p.codigo]=porCodigo[p.codigo]||[]).push(p); });
+  const aBorrar = [];
+  Object.values(porCodigo).forEach(lista=>{
+    if(lista.length<=1) return;
+    // Conservar el que tenga fecha 'guardado' más antigua (o el primero si no hay fecha)
+    lista.sort((a,b)=>new Date(a.guardado||0)-new Date(b.guardado||0));
+    aBorrar.push(...lista.slice(1));
+  });
+  if(!aBorrar.length){ showAlert('config','No se encontraron proyectos duplicados.','success'); return; }
+  if(!confirm(`Se encontraron ${aBorrar.length} registro(s) duplicado(s) de proyectos en Torre de Control (mismo código, copias exactas). Se eliminarán y se conservará solo 1 por código. ¿Continuar?`)) return;
+  setStatus('Eliminando duplicados...');
+  let errores=0;
+  for(const p of aBorrar){
+    try{ await deleteDoc(doc(db,'proyectosTC',p.id)); }catch(e){errores++;console.error(e);}
+  }
+  setStatus('');
+  proyectosTC = proyectosTC.filter(p=>!aBorrar.some(b=>b.id===p.id));
+  poblarSelectProyectos();
+  if(typeof poblarSelectProyectoTC==='function') poblarSelectProyectoTC();
+  if(typeof renderTorre==='function') renderTorre();
+  if(typeof renderConfigProyectosTC==='function') renderConfigProyectosTC();
+  showAlert('config',`Eliminados ${aBorrar.length-errores} duplicado(s).${errores?` ${errores} error(es).`:''}`,'success');
+}
+window.eliminarProyectosDuplicadosTC=eliminarProyectosDuplicadosTC;
+
 async function normalizarProyectosFirebase() {
+  if(!requiereAdmin()) return;
   if(!confirm('Esto normalizará los nombres de proyectos en todos los tickets de Firebase. ¿Continuar?')) return;
-  
   setStatus('Normalizando proyectos...');
   let actualizados = 0;
   let errores = 0;
@@ -2717,7 +3079,7 @@ function renderNotas() {
       +'<span style="font-size:11px;font-weight:600;color:'+cfg.color+';padding:2px 8px;border-radius:4px;border:0.5px solid '+cfg.border+'">'+cfg.emoji+' '+cfg.label+'</span>'
       +'<span style="font-size:11px;font-weight:500;padding:2px 8px;border-radius:4px;background:'+est.bg+';color:'+est.color+'">'+est.label+'</span>'
       +'</div>'
-      +'<div style="font-size:13px;color:var(--text-primary);line-height:1.5;flex:1">'+n.texto+'</div>'
+      +'<div style="font-size:13px;color:var(--text-primary);line-height:1.5;flex:1">'+escapeHtml(n.texto)+'</div>'
       +'<div style="font-size:10px;color:var(--text-muted);display:flex;justify-content:space-between;align-items:center">'
       +'<span>'+(n.autor||'—')+' · '+fecha+'</span>'
       +'<div style="display:flex;gap:4px">'
@@ -2862,10 +3224,10 @@ async function guardarAusencia() {
   const inicio = document.getElementById('aus-inicio').value;
   const fin = document.getElementById('aus-fin').value || inicio;
   const nota = document.getElementById('aus-nota').value.trim();
-  if(!trabajador||!inicio){showAlert('torre','Selecciona trabajador y fecha.','warn');return;}
+  if(!trabajador||!inicio){showAlert('personal','Selecciona trabajador y fecha.','warn');return;}
   await addDoc(collection(db,'ausencias'),{trabajador,tipo,inicio,fin,nota,fechaRegistro:new Date().toISOString()});
   cerrarAusencia();
-  showAlert('torre','Ausencia registrada.','success');
+  showAlert('personal','Ausencia registrada.','success');
 }
 async function eliminarAusencia(fbId) {
   if(!confirm('Eliminar esta ausencia?')) return;
@@ -2882,6 +3244,40 @@ window.irPersonalSinTareo=function(){
   showPage('personal');
 };
 window.renderPersonal=renderPersonal;window.cambiarFechaPersonal=cambiarFechaPersonal;window.irHoyPersonal=irHoyPersonal;window.abrirRegistrarAusencia=abrirRegistrarAusencia;window.preRegistrarAusencia=preRegistrarAusencia;window.cerrarAusencia=cerrarAusencia;window.guardarAusencia=guardarAusencia;window.eliminarAusencia=eliminarAusencia;
+
+
+// ===== MENÚ MÓVIL =====
+function toggleMobileMenu() {
+  const panel = document.getElementById('mobile-menu-panel');
+  const overlay = document.getElementById('mobile-menu-overlay');
+  const isOpen = panel.classList.contains('open');
+  if(isOpen) {
+    closeMobileMenu();
+  } else {
+    // Poblar items según perfil activo
+    const perfil = PERFILES[perfilActivo];
+    const labels = {
+      'personal':'Personal','torre':'Torre de Control','tareo':'Generar tareo',
+      'andree':'Registro Andree','kanban':'Kanban','historial':'Historial',
+      'planificacion':'Planificación','m3':'M³ Semanal','dashboard':'Dashboard',
+      'notas':'Notas','config':'Configuración'
+    };
+    const items = document.getElementById('mobile-menu-items');
+    const paginaActiva = document.querySelector('.page.active')?.id?.replace('page-','');
+    items.innerHTML = (perfil?.pestanas||Object.keys(labels)).map(p=>`
+      <button class="mobile-menu-item ${p===paginaActiva?'active':''}" onclick="showPage('${p}');closeMobileMenu()">
+        ${labels[p]||p}
+      </button>`).join('');
+    panel.classList.add('open');
+    overlay.style.display = 'block';
+  }
+}
+function closeMobileMenu() {
+  document.getElementById('mobile-menu-panel').classList.remove('open');
+  document.getElementById('mobile-menu-overlay').style.display = 'none';
+}
+window.toggleMobileMenu = toggleMobileMenu;
+window.closeMobileMenu = closeMobileMenu;
 
 // ===== PLANIFICACIÓN — GANTT SEMANAL =====
 let planVista = 'areas'; // 'areas' | 'ofs'
@@ -2986,8 +3382,7 @@ function renderGanttAreas(cont, semanas, inicioRango, finRango){
         if(!fej) return false;
         const d = fechaStrToDate(fej);
         if(d < sem.lun || d > sem.sab) return false;
-        const trab = trabajadores.find(w=>w.nombre===(t.nombres||[])[0]);
-        return (trab?.area||'') === area;
+        return getAreaEjecucion(t) === area;
       });
       return tickets.reduce((s,t)=>s+t.tt,0);
     });
@@ -3100,7 +3495,7 @@ function renderGanttOFs(cont, semanas, inicioRango, finRango){
       <div style="width:${labelW}px;flex-shrink:0;padding-right:8px">
         <div style="display:flex;align-items:center;gap:6px">
           <span style="width:10px;height:10px;border-radius:50%;background:${p.color};flex-shrink:0"></span>
-          <span style="font-size:11px;font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.nombre}</span>
+          <span style="font-size:11px;font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(p.nombre)}</span>
         </div>
         ${entregaInt?`<div style="font-size:9px;margin-left:16px;color:${riesgoColor};font-weight:500">Entrega: ${entregaInt.toLocaleDateString('es-PE')} · ${diasRestantes<0?'VENCIDO':diasRestantes+'d'}</div>`:''}
       </div>`;
@@ -3143,7 +3538,7 @@ function renderGanttOFs(cont, semanas, inicioRango, finRango){
       }
 
       html += `<div style="width:${colW}px;flex-shrink:0;padding:0 3px">
-        <div style="background:${cellBg};border:${cellBorder};border-radius:6px;height:${rowH}px;display:flex;align-items:center;justify-content:center;${esSemActual?'box-shadow:0 0 0 1.5px '+p.color+';':''}" title="${p.nombre} · ${sem.label}: ${horasSem.toFixed(1)}h">
+        <div style="background:${cellBg};border:${cellBorder};border-radius:6px;height:${rowH}px;display:flex;align-items:center;justify-content:center;${esSemActual?'box-shadow:0 0 0 1.5px '+p.color+';':''}" title="${escapeHtml(p.nombre)} · ${sem.label}: ${horasSem.toFixed(1)}h">
           ${cellContent}
         </div>
       </div>`;
@@ -3166,65 +3561,101 @@ window.renderPlanificacion=renderPlanificacion;window.setPlanVista=setPlanVista;
 window.agregarProyecto=agregarProyecto;window.agregarProducto=agregarProducto;window.eliminarProducto=eliminarProducto;window.eliminarProyecto=eliminarProyecto;
 window.agregarTrabajador=agregarTrabajador;window.eliminarTrabajador=eliminarTrabajador;window.iniciarEdicion=iniciarEdicion;window.cerrarModal=cerrarModal;window.guardarEdicion=guardarEdicion;
 
-init();
+// Autenticación anónima de Firebase — necesaria antes de que las Reglas de Seguridad de Firestore
+// puedan exigir "request.auth != null" sin romper la app para los usuarios reales.
+// No agrega login visible: cada dispositivo se autentica solo, en silencio, igual que hoy.
+let appIniciada = false;
+signInAnonymously(auth).catch(err=>{
+  console.error('Error de autenticación con Firebase:', err);
+  document.body.innerHTML = '<div style="padding:2rem;text-align:center;font-family:sans-serif;color:#c0392b">No se pudo conectar con el servidor. Verifica tu conexión a internet y recarga la página.</div>';
+});
+onAuthStateChanged(auth, (user) => {
+  if(user && !appIniciada){
+    appIniciada = true;
+    init();
+  }
+});
 </script>
 <style>
+/* ===== DESIGN SYSTEM — Linear-inspired ===== */
+:root {
+  --bg:        #f7f7f6;
+  --surface-0: #ffffff;
+  --surface-1: #f9f9f8;
+  --surface-2: #f3f3f1;
+  --border:    #e5e4e0;
+  --border-strong: #d4d3ce;
+  --text-primary:   #1a1a18;
+  --text-secondary: #6b6b69;
+  --text-muted:     #aaa9a7;
+  --amber:     #e8a020;
+  --amber-soft:#fff8e8;
+  --radius:    8px;
+  --radius-lg: 12px;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+  --shadow:    0 2px 8px rgba(0,0,0,0.08);
+}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 *{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:system-ui,sans-serif;background:#f0ede8;color:#1a1a18;min-height:100vh;}
-nav{background:#1a1a18;color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 1.5rem;height:52px;position:sticky;top:0;z-index:100;}
-nav .logo{font-weight:700;font-size:15px;letter-spacing:1px;}nav .logo span{color:#e8a020;}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text-primary);min-height:100vh;-webkit-font-smoothing:antialiased;}
+nav{background:#141413;color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 1.25rem;height:48px;position:sticky;top:0;z-index:100;border-bottom:1px solid rgba(255,255,255,0.06);}
+nav .logo{font-weight:700;font-size:14px;letter-spacing:0.5px;display:flex;align-items:center;gap:8px;}
+nav .logo span{color:#e8a020;}
 nav .tabs{display:flex;}
-nav .tab{padding:0 0.875rem;height:52px;display:flex;align-items:center;font-size:13px;cursor:pointer;color:#888;border-bottom:2px solid transparent;transition:all 0.15s;white-space:nowrap;}
-nav .tab:hover{color:#fff;}nav .tab.active{color:#fff;border-bottom-color:#e8a020;}
-nav .right{display:flex;align-items:center;gap:12px;}
-#db-status{display:none;font-size:11px;background:#e8a020;color:#fff;padding:3px 10px;border-radius:20px;}
-.fecha-nav{font-size:11px;color:#666;white-space:nowrap;}
-.page{display:none;padding:1.25rem 1.5rem;max-width:1200px;margin:0 auto;}.page.active{display:block;}
-.card{background:#fff;border-radius:12px;border:0.5px solid #dedad2;padding:1.25rem 1.5rem;margin-bottom:1rem;}
-.card-title{font-size:11px;font-weight:600;color:#999;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:1rem;}
+nav .tab{padding:0 0.75rem;height:48px;display:flex;align-items:center;font-size:12px;font-weight:500;cursor:pointer;color:rgba(255,255,255,0.45);border-bottom:2px solid transparent;transition:all 0.15s;white-space:nowrap;letter-spacing:0.1px;}
+nav .tab:hover{color:rgba(255,255,255,0.85);}
+nav .tab.active{color:#fff;border-bottom-color:#e8a020;}
+nav .right{display:flex;align-items:center;gap:10px;}
+#db-status{display:none;font-size:10px;background:#e8a020;color:#fff;padding:2px 8px;border-radius:20px;}
+.fecha-nav{font-size:11px;color:rgba(255,255,255,0.4);white-space:nowrap;}
+.page{display:none;padding:1.25rem 1.5rem;max-width:1240px;margin:0 auto;}.page.active{display:block;}
+.card{background:var(--surface-0);border-radius:var(--radius-lg);border:1px solid var(--border);padding:1.25rem 1.5rem;margin-bottom:0.875rem;box-shadow:var(--shadow-sm);}
+.card-title{font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:1rem;}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0.875rem;}
 .form-grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.875rem;}
-.field{display:flex;flex-direction:column;gap:5px;}
-.field label{font-size:11px;font-weight:600;color:#777;text-transform:uppercase;letter-spacing:0.4px;}
-.field select,.field input[type="text"],.field input[type="number"]{height:38px;border:0.5px solid #ccc;border-radius:8px;padding:0 10px;font-size:13px;background:#fff;color:#1a1a18;width:100%;}
-.field select:focus,.field input:focus{outline:none;border-color:#e8a020;box-shadow:0 0 0 3px rgba(232,160,32,0.12);}
+.field{display:flex;flex-direction:column;gap:4px;}
+.field label{font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.4px;}
+.field select,.field input[type="text"],.field input[type="number"]{height:36px;border:1px solid var(--border);border-radius:var(--radius);padding:0 10px;font-size:13px;font-family:inherit;background:var(--surface-0);color:var(--text-primary);width:100%;transition:border-color 0.15s;}
+.field select:focus,.field input:focus{outline:none;border-color:#e8a020;box-shadow:0 0 0 3px rgba(232,160,32,0.1);}
 .field-full{grid-column:1/-1;}
-.btn{height:38px;padding:0 1.25rem;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;border:0.5px solid #ccc;background:#fff;color:#1a1a18;transition:all 0.15s;white-space:nowrap;display:inline-flex;align-items:center;gap:6px;}
-.btn:hover{background:#f5f4f0;}
-.btn-primary{background:#1a1a18;color:#fff;border-color:#1a1a18;}.btn-primary:hover{background:#333;}
+.btn{height:36px;padding:0 1rem;border-radius:var(--radius);font-size:13px;font-weight:500;font-family:inherit;cursor:pointer;border:1px solid var(--border);background:var(--surface-0);color:var(--text-primary);transition:all 0.15s;white-space:nowrap;display:inline-flex;align-items:center;gap:6px;}
+.btn:hover{background:var(--surface-2);border-color:var(--border-strong);}
+.btn-primary{background:#141413;color:#fff;border-color:#141413;}.btn-primary:hover{background:#2a2a28;}
 .btn-amber{background:#e8a020;color:#fff;border-color:#e8a020;}.btn-amber:hover{background:#cf8f1a;}
-.btn-green{background:#27ae60;color:#fff;border-color:#27ae60;}.btn-green:hover{background:#219a52;}
-.btn-danger{color:#c0392b;border-color:#e8c0bb;}.btn-danger:hover{background:#fff5f4;}
-.btn-warn{color:#f57f17;border-color:#ffe0b2;}.btn-warn:hover{background:#fff8e1;}
-.btn-sm{height:30px;padding:0 0.75rem;font-size:12px;}.btn-xs{height:26px;padding:0 0.6rem;font-size:11px;}
-.actions{display:flex;gap:0.75rem;justify-content:flex-end;margin-top:1.25rem;flex-wrap:wrap;}
-.tickets-section-header{display:flex;align-items:center;justify-content:space-between;margin:1.5rem 0 0.875rem;}
-.tickets-section-title{font-size:14px;font-weight:600;}.tickets-count{background:#1a1a18;color:#fff;border-radius:20px;padding:2px 10px;font-size:12px;font-weight:600;}
-.tickets-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1rem;}
-.ticket-card{background:#fff;border-radius:12px;border:0.5px solid #dedad2;overflow:hidden;}
+.btn-green{background:#16a34a;color:#fff;border-color:#16a34a;}.btn-green:hover{background:#15803d;}
+.btn-danger{color:#dc2626;border-color:#fecaca;background:transparent;}.btn-danger:hover{background:#fef2f2;}
+.btn-warn{color:#d97706;border-color:#fde68a;background:transparent;}.btn-warn:hover{background:#fffbeb;}
+.btn-sm{height:28px;padding:0 0.625rem;font-size:12px;}.btn-xs{height:24px;padding:0 0.5rem;font-size:11px;}
+.actions{display:flex;gap:0.625rem;justify-content:flex-end;margin-top:1.25rem;flex-wrap:wrap;}
+.tickets-section-header{display:flex;align-items:center;justify-content:space-between;margin:1.5rem 0 0.75rem;}
+.tickets-section-title{font-size:14px;font-weight:600;color:var(--text-primary);}.tickets-count{background:#141413;color:#fff;border-radius:20px;padding:2px 10px;font-size:11px;font-weight:600;}
+.tickets-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:0.875rem;}
+.ticket-card{background:var(--surface-0);border-radius:var(--radius-lg);border:1px solid var(--border);overflow:hidden;box-shadow:var(--shadow-sm);transition:box-shadow 0.15s;}
+.ticket-card:hover{box-shadow:var(--shadow);}
 .ticket-card-header{padding:0.75rem 1rem;display:flex;justify-content:space-between;align-items:flex-start;}
 .ticket-card-names{font-size:13px;font-weight:700;color:#fff;line-height:1.3;flex:1;}
-.ticket-card-area{font-size:10px;font-weight:600;color:rgba(255,255,255,0.75);margin-top:2px;text-transform:uppercase;}
-.ticket-card-body{padding:0.875rem 1rem;}.ticket-field{margin-bottom:0.5rem;}
-.ticket-field-label{font-size:9px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:0.5px;}
-.ticket-field-value{font-size:12px;font-weight:500;color:#1a1a18;line-height:1.3;margin-top:1px;}
-.ticket-nums-row{display:grid;grid-template-columns:1fr 1fr 1fr;border-top:0.5px solid #f0ede8;margin-top:0.75rem;}
-.ticket-num-box{text-align:center;padding:0.625rem 0.25rem;}.ticket-num-box:not(:last-child){border-right:0.5px solid #f0ede8;}
-.ticket-num-label{font-size:9px;font-weight:700;color:#bbb;text-transform:uppercase;display:block;}
+.ticket-card-area{font-size:10px;font-weight:600;color:rgba(255,255,255,0.7);margin-top:2px;text-transform:uppercase;letter-spacing:0.3px;}
+.ticket-card-body{padding:0.75rem 1rem;}.ticket-field{margin-bottom:0.5rem;}
+.ticket-field-label{font-size:9px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;}
+.ticket-field-value{font-size:12px;font-weight:500;color:var(--text-primary);line-height:1.4;margin-top:1px;}
+.ticket-nums-row{display:grid;grid-template-columns:1fr 1fr 1fr;border-top:1px solid var(--border);margin-top:0.75rem;}
+.ticket-num-box{text-align:center;padding:0.625rem 0.25rem;}.ticket-num-box:not(:last-child){border-right:1px solid var(--border);}
+.ticket-num-label{font-size:9px;font-weight:700;color:var(--text-muted);text-transform:uppercase;display:block;}
 .ticket-num-value{font-size:22px;font-weight:800;display:block;margin-top:2px;}
-.ticket-remove-btn{background:rgba(255,255,255,0.2);border:none;color:#fff;width:24px;height:24px;border-radius:6px;cursor:pointer;font-size:16px;flex-shrink:0;margin-left:8px;}
+.ticket-remove-btn{background:rgba(255,255,255,0.15);border:none;color:#fff;width:24px;height:24px;border-radius:6px;cursor:pointer;font-size:16px;flex-shrink:0;margin-left:8px;transition:background 0.15s;}
+.ticket-remove-btn:hover{background:rgba(255,255,255,0.3);}
 .area-ensamble{background:linear-gradient(135deg,#1a3a6b,#2563eb);}.area-fierro{background:linear-gradient(135deg,#7c2d12,#ea580c);}
 .area-habilitado{background:linear-gradient(135deg,#4c1d95,#7c3aed);}.area-acabado{background:linear-gradient(135deg,#14532d,#16a34a);}
 .area-pintura{background:linear-gradient(135deg,#831843,#db2777);}.area-eva{background:linear-gradient(135deg,#164e63,#0891b2);}
 .area-mant{background:linear-gradient(135deg,#374151,#6b7280);}.area-prod{background:linear-gradient(135deg,#1a1a18,#555);}
 .num-ensamble{color:#2563eb;}.num-fierro{color:#ea580c;}.num-habilitado{color:#7c3aed;}.num-acabado{color:#16a34a;}
 .num-pintura{color:#db2777;}.num-eva{color:#0891b2;}.num-mant{color:#6b7280;}.num-prod{color:#555;}.area-pendiente{background:linear-gradient(135deg,#92400e,#d97706);}.num-pendiente{color:#d97706;}
-.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:0.875rem;margin-bottom:1.25rem;}
-.metric{background:#fff;border-radius:10px;border:0.5px solid #dedad2;padding:1rem 1.25rem;}
-.metric-label{font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;}
-.metric-value{font-size:28px;font-weight:700;color:#1a1a18;}.metric-sub{font-size:11px;color:#bbb;margin-top:3px;}
-.andree-list{display:flex;flex-direction:column;gap:0.75rem;}
-.andree-item{background:#fff;border:0.5px solid #dedad2;border-radius:10px;padding:0.875rem 1.125rem;display:flex;align-items:flex-start;gap:1rem;}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:0.75rem;margin-bottom:1.25rem;}
+.metric{background:var(--surface-0);border-radius:var(--radius-lg);border:1px solid var(--border);padding:1rem 1.25rem;box-shadow:var(--shadow-sm);}
+.metric-label{font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;}
+.metric-value{font-size:26px;font-weight:700;color:var(--text-primary);}.metric-sub{font-size:11px;color:var(--text-muted);margin-top:3px;}
+.andree-list{display:flex;flex-direction:column;gap:0.625rem;}
+.andree-item{background:var(--surface-0);border:1px solid var(--border);border-radius:var(--radius-lg);padding:0.875rem 1.125rem;display:flex;align-items:flex-start;gap:1rem;box-shadow:var(--shadow-sm);}
 .andree-item.done{opacity:0.55;}
 .status-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;margin-top:4px;}
 .dot-pending{background:#e8a020;}.dot-done{background:#27ae60;}
@@ -3232,12 +3663,12 @@ nav .right{display:flex;align-items:center;gap:12px;}
 .andree-sub{font-size:11px;color:#999;margin-top:2px;}
 .andree-right{display:flex;align-items:center;gap:0.5rem;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;}
 .badge{padding:3px 9px;border-radius:5px;font-size:11px;font-weight:600;}
-.badge-plan{background:#f0ede8;color:#888;}.badge-real{background:#e8f5e9;color:#2e7d32;}
+.badge-plan{background:var(--bg);color:#888;}.badge-real{background:#e8f5e9;color:#2e7d32;}
 .tiempo-inp{width:75px;height:32px;border:0.5px solid #ccc;border-radius:6px;padding:0 8px;font-size:13px;}
 .kanban-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:0.875rem;margin-bottom:1.25rem;}
 .kanban-scroll{overflow-x:auto;padding-bottom:1rem;}
 .kanban-board{display:flex;gap:0.75rem;min-width:max-content;}
-.kanban-col{width:200px;flex-shrink:0;background:#fff;border-radius:12px;border:0.5px solid #dedad2;overflow:hidden;}
+.kanban-col{width:200px;flex-shrink:0;background:#fff;border-radius:12px;border:1px solid var(--border);overflow:hidden;}
 .kanban-col-header{padding:0.75rem 1rem;display:flex;align-items:center;justify-content:space-between;}
 .kanban-col-title{font-size:10px;font-weight:800;color:#fff;text-transform:uppercase;letter-spacing:0.5px;}
 .kanban-col-meta{display:flex;align-items:center;gap:5px;}
@@ -3263,14 +3694,16 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 .diff-over{color:#c0392b;font-weight:700;}.diff-under{color:#27ae60;font-weight:700;}.diff-ok{color:#aaa;}
 .proyecto-item{background:#fafaf8;border:0.5px solid #eee;border-radius:8px;padding:0.875rem;margin-bottom:0.75rem;}
 .proyecto-item-name{font-weight:600;font-size:13px;}.proyecto-item-count{font-size:11px;color:#aaa;margin-top:2px;}
-.producto-tag{display:inline-block;padding:3px 10px;background:#f0ede8;border-radius:5px;font-size:12px;margin:3px;}
+.producto-tag{display:inline-block;padding:3px 10px;background:var(--bg);border-radius:5px;font-size:12px;margin:3px;}
 .add-row{display:flex;gap:0.5rem;}.add-row input{flex:1;height:36px;border:0.5px solid #ccc;border-radius:8px;padding:0 10px;font-size:13px;}
 .alert{padding:0.625rem 1rem;border-radius:8px;font-size:13px;margin-bottom:0.875rem;}
 .alert-success{background:#e8f5e9;color:#2e7d32;border:0.5px solid #c8e6c9;}
 .alert-warn{background:#fff8e1;color:#f57f17;border:0.5px solid #ffe082;}
 .empty{text-align:center;padding:2.5rem 1rem;color:#ccc;font-size:14px;}.empty-icon{font-size:30px;margin-bottom:0.5rem;}
-.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:200;align-items:center;justify-content:center;}
-.modal{background:#fff;border-radius:12px;padding:1.5rem;width:480px;max-width:90vw;}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:200;align-items:center;justify-content:center;backdrop-filter:blur(4px);}
+.modal{background:var(--surface-0);border-radius:14px;padding:1.5rem;width:480px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,0.12),0 0 0 1px rgba(0,0,0,0.06);}
+.modal-title{font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:1.25rem;letter-spacing:-0.2px;}
+.modal-actions{display:flex;gap:0.625rem;justify-content:flex-end;margin-top:1.25rem;}
 .modal-title{font-size:15px;font-weight:600;margin-bottom:1.25rem;}
 .modal-actions{display:flex;gap:0.75rem;justify-content:flex-end;margin-top:1.25rem;}
 .modal textarea{width:100%;height:90px;border:0.5px solid #ccc;border-radius:8px;padding:10px;font-size:13px;resize:vertical;font-family:inherit;}
@@ -3304,6 +3737,18 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 .pt-num-label{font-size:7px;font-weight:800;color:#bbb;text-transform:uppercase;display:block;letter-spacing:0.3px;}
 .pt-num-val{font-size:18px;font-weight:900;display:block;line-height:1.1;margin-top:2px;}
 
+
+.hamburger-btn { display: none; align-items: center; justify-content: center; width: 36px; height: 36px; border: none; background: transparent; cursor: pointer; color: rgba(255,255,255,0.7); font-size: 20px; border-radius: 6px; flex-shrink: 0; }
+.hamburger-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+.mobile-menu-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 150; }
+.mobile-menu-panel { position: fixed; top: 0; left: 0; bottom: 0; width: 260px; background: #141413; z-index: 151; transform: translateX(-100%); transition: transform 0.25s ease; padding: 0; }
+.mobile-menu-panel.open { transform: translateX(0); }
+.mobile-menu-header { padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; align-items: center; gap: 10px; }
+.mobile-menu-items { padding: 8px 0; overflow-y: auto; }
+.mobile-menu-item { display: flex; align-items: center; padding: 12px 20px; font-size: 14px; font-weight: 500; color: rgba(255,255,255,0.6); cursor: pointer; transition: all 0.15s; border: none; background: none; width: 100%; text-align: left; }
+.mobile-menu-item:hover { background: rgba(255,255,255,0.06); color: #fff; }
+.mobile-menu-item.active { color: #e8a020; background: rgba(232,160,32,0.08); }
+
 /* ===== RESPONSIVE TABLET ===== */
 @media (max-width: 1024px) {
   nav { padding: 0 0.75rem; gap: 8px; }
@@ -3332,6 +3777,8 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 
 @media (max-width: 768px) {
   .tabs { display: none; }
+  .hamburger-btn { display: flex !important; }
+  .mobile-menu { display: block; }
   .tickets-grid { grid-template-columns: 1fr !important; }
   .metrics { grid-template-columns: 1fr !important; }
   .kanban-board { flex-direction: column !important; }
@@ -3522,6 +3969,12 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
         ✓ Todos los puntos deben estar completados para avanzar la OF
       </div>
       <div id="gate-items" style="display:flex;flex-direction:column;gap:6px"></div>
+      <div id="gate-campo-fecha-wrap" style="display:none;margin-top:12px;padding-top:12px;border-top:0.5px dashed var(--border)">
+        <label style="font-size:12px;font-weight:600;color:var(--text-primary)" id="gate-campo-fecha-label"></label>
+        <div style="font-size:11px;color:var(--text-secondary);margin:2px 0 6px" id="gate-campo-fecha-ayuda"></div>
+        <input type="date" id="gate-fecha-material" style="width:100%;height:34px;border:0.5px solid #ccc;border-radius:8px;padding:0 10px;font-size:13px;background:var(--surface-2)"/>
+        <div id="gate-fecha-aviso" style="display:none;margin-top:7px;padding:6px 10px;border-radius:6px;font-size:11px;font-weight:600"></div>
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn" onclick="cerrarMoverOF()">Cancelar</button>
@@ -3649,12 +4102,24 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     <div class="tab" data-page="config" onclick="showPage('config')">Configuración</div>
     <div class="tab" data-page="notas" onclick="showPage('notas')">Notas</div>
   </div>
-  <div class="right" style="display:flex;align-items:center;gap:12px">
-    <div id="perfil-indicator" onclick="mostrarSelectorPerfil()" style="cursor:pointer;font-size:11px;color:var(--text-secondary);white-space:nowrap;padding:4px 8px;border:0.5px solid var(--border);border-radius:6px" title="Cambiar perfil">👤 Perfil</div>
+  <div class="right" style="display:flex;align-items:center;gap:10px">
+    <div id="perfil-indicator" onclick="mostrarSelectorPerfil()" style="cursor:pointer;font-size:11px;color:rgba(255,255,255,0.5);white-space:nowrap;padding:4px 8px;border:0.5px solid rgba(255,255,255,0.15);border-radius:6px" title="Cambiar perfil">👤 Perfil</div>
     <span id="db-status"></span>
     <div class="fecha-nav" id="fecha-nav"></div>
+    <button class="hamburger-btn" onclick="toggleMobileMenu()" aria-label="Menú">☰</button>
   </div>
 </nav>
+
+<!-- Menú móvil -->
+<div class="mobile-menu-overlay" id="mobile-menu-overlay" onclick="closeMobileMenu()"></div>
+<div class="mobile-menu-panel" id="mobile-menu-panel">
+  <div class="mobile-menu-header">
+    <svg width="20" height="20" viewBox="0 0 100 100" fill="none"><rect width="100" height="100" rx="10" fill="#1B6B35"/><text x="50" y="70" font-family="system-ui" font-size="58" font-weight="800" fill="white" text-anchor="middle">M</text></svg>
+    <span style="font-size:14px;font-weight:700;color:#fff">MATRANSA</span>
+    <button onclick="closeMobileMenu()" style="margin-left:auto;background:none;border:none;color:rgba(255,255,255,0.5);font-size:20px;cursor:pointer">×</button>
+  </div>
+  <div class="mobile-menu-items" id="mobile-menu-items"></div>
+</div>
 
 <!-- Modal selector de perfil -->
 <div class="modal-overlay" id="modal-perfil" style="display:none">
@@ -3700,7 +4165,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     <div class="card-title">Nuevo ticket</div>
     <div id="alert-tareo" style="display:none" class="alert"></div>
     <div class="form-grid">
-      <div class="field"><label>Trabajador principal</label><select id="t-t1"><option value="">Cargando...</option></select></div>
+      <div class="field"><label>Trabajador principal</label><select id="t-t1" onchange="autocompletarUltimoTareo();actualizarHorasTrabajador()"><option value="">Cargando...</option></select><div id="t-t1-repite-aviso" style="display:none;font-size:11px;color:#854F0B;margin-top:3px">↻ Repitiendo último tareo registrado — puedes modificar cualquier campo</div></div>
       <div class="field"><label>Segundo trabajador (opcional)</label><select id="t-t2"><option value="">Seleccionar...</option></select></div>
       <div class="field"><label>Proyecto</label><select id="t-proyecto" onchange="actualizarProductos()"><option value="">Cargando...</option></select></div>
       <div class="field"><label>Producto</label><select id="t-producto"><option value="">Seleccionar proyecto primero</option></select></div>
@@ -3715,9 +4180,10 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     <div style="margin-top:0.875rem">
       <div class="field">
         <label>Fecha de ejecución</label>
-        <select id="t-fecha-ejec" style="max-width:280px"></select>
+        <select id="t-fecha-ejec" style="max-width:280px" onchange="actualizarHorasTrabajador()"></select>
       </div>
       <div style="font-size:11px;color:#aaa;margin-top:4px">Si generas el tareo antes de las 3pm → hoy por defecto. Después de las 3pm → mañana por defecto.</div>
+      <div id="t-horas-trabajador" style="display:none;margin-top:8px;padding:8px 12px;border-radius:6px;font-size:12px;font-weight:600"></div>
     </div>
     <div id="alert-sobrecarga" style="display:none" class="alert alert-warn"></div>
     <div class="actions">
@@ -3787,6 +4253,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 
 <!-- M3 SEMANAL -->
 <div class="page" id="page-personal">
+  <div id="alert-personal" style="display:none" class="alert"></div>
   <div class="metrics" style="margin-bottom:1rem">
     <div class="metric"><div class="metric-label">Operarios disponibles</div><div class="metric-value" id="p-disponibles">0</div><div class="metric-sub">con tareo asignado</div></div>
     <div class="metric"><div class="metric-label">Sin tareo</div><div class="metric-value" id="p-sin-tareo" style="color:#EF9F27">0</div><div class="metric-sub">disponibles sin asignar</div></div>
@@ -3869,6 +4336,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
   <!-- TABLERO -->
   <div style="overflow-x:auto;padding-bottom:1rem">
     <div id="tc-alerta" style="display:none;background:var(--bg-danger);border:0.5px solid var(--border-danger);border-radius:8px;padding:7px 12px;margin-bottom:10px;font-size:12px;color:var(--text-danger);align-items:center;gap:6px"></div>
+    <div id="tc-liberar" style="margin-bottom:14px"></div>
     <div id="tc-board"></div>
   </div>
 </div>
@@ -3944,6 +4412,23 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
         <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">Corrige tickets con nombres inconsistentes (SHERATON, DAGOS, TRIBECA, etc.) y los unifica con el código correcto</div>
       </div>
       <button class="btn" onclick="normalizarProyectosFirebase()" style="background:#854F0B;color:#fff;border:none;flex-shrink:0;margin-left:16px">🔧 Normalizar proyectos</button>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-top:0.5px solid var(--border)">
+      <div>
+        <div style="font-size:13px;font-weight:500;color:var(--text-primary)">Eliminar proyectos duplicados (Torre de Control)</div>
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">Detecta y borra copias exactas de un mismo proyecto (mismo código) creadas por una carrera de inicialización — conserva solo 1 por código</div>
+      </div>
+      <button class="btn" onclick="eliminarProyectosDuplicadosTC()" style="background:#854F0B;color:#fff;border:none;flex-shrink:0;margin-left:16px">🔧 Eliminar duplicados</button>
+    </div>
+    <div style="padding:10px 0;border-top:0.5px solid var(--border)">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div>
+          <div style="font-size:13px;font-weight:500;color:var(--text-primary)">Detectar tickets duplicados</div>
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">Busca tickets con el mismo trabajador, tarea, producto, fecha y tiempo — muestra cada grupo para que elijas cuál copia borrar</div>
+        </div>
+        <button class="btn" onclick="detectarTicketsDuplicados()" style="background:#854F0B;color:#fff;border:none;flex-shrink:0;margin-left:16px">🔧 Buscar duplicados</button>
+      </div>
+      <div id="config-tickets-duplicados" style="margin-top:10px"></div>
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-top:0.5px solid var(--border)">
       <div>
