@@ -691,7 +691,7 @@ const PERFILES = {
     rol: 'Admin',
     icono: '👤',
     color: '#1a1a18',
-    pestanas: ['personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','notas','config'],
+    pestanas: ['atencion','personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','notas','config'],
     admin: true
   },
   'pablo': {
@@ -699,7 +699,7 @@ const PERFILES = {
     rol: 'Operaciones',
     icono: '📋',
     color: '#2563eb',
-    pestanas: ['personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','notas','config'],
+    pestanas: ['atencion','personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','notas','config'],
     admin: false
   },
   'andree': {
@@ -707,7 +707,7 @@ const PERFILES = {
     rol: 'Registro',
     icono: '⏱',
     color: '#059669',
-    pestanas: ['personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','notas','config'],
+    pestanas: ['atencion','personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','notas','config'],
     admin: false
   },
   'neicer': {
@@ -715,7 +715,7 @@ const PERFILES = {
     rol: 'Supervisión',
     icono: '👁',
     color: '#7c3aed',
-    pestanas: ['personal','torre','kanban','historial','notas'],
+    pestanas: ['atencion','personal','torre','kanban','historial','notas'],
     admin: false
   }
 };
@@ -1077,6 +1077,7 @@ function sortTicketsByArea(tickets) {
 
 // Flag para migración — solo corre una vez por sesión
 let migrationDone = false;
+let unsubOfs = null;   // evita suscripciones duplicadas a la colección 'ofs'
 
 // ===== MIGRACIÓN: normalizar tickets antiguos =====
 async function migrarTicketsAntiguos() {
@@ -1891,6 +1892,190 @@ async function confirmarPosponer() {
 }
 
 // ===== COLA DE PENDIENTES =====
+// ===== ATENCIÓN REQUERIDA =====
+// Pantalla de entrada: responde "¿qué está en rojo ahora mismo?" sin que nadie tenga que
+// saber en qué pestaña buscarlo. No usa ningún dato nuevo — todo sale de lo que ya está
+// registrado. Regla de diseño: un bloque sin nada que decir no se dibuja. Si la pantalla
+// queda vacía, eso también es información.
+
+// Día hábil anterior: se salta el domingo, que no se trabaja.
+function diaHabilAnterior(){
+  const d=new Date(); d.setHours(0,0,0,0);
+  do{ d.setDate(d.getDate()-1); } while(d.getDay()===0);
+  return d.toLocaleDateString('es-PE');
+}
+function diaSiguienteHabil(){
+  const d=new Date(); d.setHours(0,0,0,0);
+  do{ d.setDate(d.getDate()+1); } while(d.getDay()===0);
+  return d.toLocaleDateString('es-PE');
+}
+function diasEntre(fechaISOStr, desdeStr){
+  if(!fechaISOStr) return null;
+  const a=new Date(fechaISOStr+'T00:00:00');
+  const p=(desdeStr||hoyStr()).split('/');
+  const b=new Date(p[2],p[1]-1,p[0]);
+  if(isNaN(a)) return null;
+  return Math.round((a-b)/86400000);
+}
+
+// Devuelve la lista de alertas ordenada por gravedad. sev: 3 crítico, 2 alto, 1 aviso.
+function calcularAtencion(){
+  const A=[];
+  const hoy=hoyStr(), ayer=diaHabilAnterior(), manana=diaSiguienteHabil();
+  const ahora=new Date();
+
+  // --- 1. OF con entrega encima y todavía sin cerrar ---
+  (ofs||[]).forEach(of=>{
+    if(['Cierre','Entrega'].includes(of.etapa)) return;
+    const proy=(proyectosTC||[]).find(p=>p.codigo===of.proyectoCodigo);
+    const fEnt=proy&&(proy.entregaInterna||proy.entregaContrato);
+    const d=diasEntre(fEnt);
+    if(d===null||d>10) return;
+    A.push({
+      sev: d<0?3:(d<=3?3:(d<=7?2:1)),
+      grupo:'Entregas',
+      titulo:`OF ${of.numero} · ${of.descripcion||''}`,
+      detalle: d<0?`Entrega vencida hace ${-d} día${-d>1?'s':''} — sigue en ${of.etapa}`
+                  :`Entrega en ${d} día${d===1?'':'s'} — sigue en ${of.etapa}`,
+      pagina:'torre'
+    });
+  });
+
+  // --- 2. OF bloqueadas (una alerta cada una: son excepcionales) ---
+  (ofs||[]).filter(of=>of.bloqueada===true).forEach(of=>{
+    A.push({sev:3,grupo:'Bloqueos',titulo:`OF ${of.numero} bloqueada`,
+            detalle:`${of.descripcion||''} — detenida en ${of.etapa}`,pagina:'torre'});
+  });
+
+  // --- 3. OF estancadas: UNA sola alerta agrupada ---
+  // Se agrupan a propósito. Sobre los datos reales, catorce OF entraron a su etapa el mismo
+  // día y ninguna se movió: como alertas sueltas eran quince líneas diciendo lo mismo, que
+  // es la forma más rápida de que la pantalla se vuelva ruido y se deje de mirar. Agrupadas
+  // dicen lo que realmente pasa: la Torre de Control no se está actualizando.
+  const estancadas=(ofs||[]).filter(of=>{
+    if(of.bloqueada===true) return false;
+    if(['Cierre','Entrega'].includes(of.etapa)) return false;
+    if(!of.fechaEntradaEtapa) return false;
+    return Math.floor((ahora-new Date(of.fechaEntradaEtapa))/86400000)>=7;
+  });
+  if(estancadas.length){
+    const porEtapa={};
+    let maxDias=0;
+    estancadas.forEach(of=>{
+      porEtapa[of.etapa]=(porEtapa[of.etapa]||0)+1;
+      maxDias=Math.max(maxDias,Math.floor((ahora-new Date(of.fechaEntradaEtapa))/86400000));
+    });
+    const desglose=Object.entries(porEtapa).sort((a,b)=>b[1]-a[1])
+      .map(([e,n])=>`${n} en ${e}`).join(', ');
+    A.push({sev: estancadas.length>=5?3:2, grupo:'Bloqueos',
+      titulo:`${estancadas.length} OF sin cambiar de etapa hace ${maxDias} días o más`,
+      detalle:`${desglose}. O el trabajo está detenido, o la Torre de Control no se está actualizando.`,
+      pagina:'torre'});
+  }
+
+  // --- 3. Tickets del día hábil anterior sin tiempo real ---
+  const sinTiempo=historial.filter(t=>t.visibleAndree!==false&&t.fechaEjecucion===ayer&&!t.completado);
+  if(sinTiempo.length){
+    const quienes=[...new Set(sinTiempo.map(t=>(t.nombres||[])[0]).filter(Boolean))]
+      .map(n=>n.split(' ').slice(0,2).join(' '));
+    A.push({sev: sinTiempo.length>=10?3:2, grupo:'Registro',
+      titulo:`${sinTiempo.length} ticket${sinTiempo.length>1?'s':''} de ${ayer} sin tiempo real`,
+      detalle: quienes.slice(0,6).join(', ')+(quienes.length>6?` y ${quienes.length-6} más`:''),
+      pagina:'andree'});
+  }
+
+  // --- 4. Operarios sin tareo ---
+  // El tareo del día siguiente se genera entre las 3 y las 5 de la tarde. Avisar antes de
+  // las 5 sería reclamar por algo que todavía se está haciendo.
+  const fechasRevisar=[{f:hoy,etq:'hoy'}];
+  if(ahora.getHours()>=17) fechasRevisar.push({f:manana,etq:'mañana'});
+  fechasRevisar.forEach(({f,etq})=>{
+    const ausentes=new Set(getAusenciasDelDia(f).map(a=>a.trabajador));
+    const conTareo=new Set(historial.filter(t=>t.visibleTareo!==false&&t.fechaEjecucion===f)
+      .flatMap(t=>t.nombres||[]));
+    const sin=getOperariosProductivos().filter(w=>!conTareo.has(w.nombre)&&!ausentes.has(w.nombre));
+    if(sin.length) A.push({sev: etq==='hoy'?3:2, grupo:'Carga',
+      titulo:`${sin.length} operario${sin.length>1?'s':''} sin tareo ${etq}`,
+      detalle: sin.slice(0,6).map(w=>w.nombre.split(' ').slice(0,2).join(' ')).join(', ')
+               +(sin.length>6?` y ${sin.length-6} más`:''),
+      pagina:'tareo'});
+  });
+
+  // --- 5. Sobrecargas ---
+  [hoy,manana].forEach(f=>{
+    const jornada=jornadaProductiva(f);
+    const porTrab={};
+    historial.filter(t=>t.visibleTareo!==false&&t.fechaEjecucion===f).forEach(t=>{
+      const n=(t.nombres||[])[0]; if(!n) return;
+      porTrab[n]=(porTrab[n]||0)+(t.tt||0);
+    });
+    // Media hora de margen: diez minutos por encima de la jornada no es una sobrecarga,
+    // es redondeo, y avisarlo entrena a la gente a ignorar la pantalla.
+    Object.entries(porTrab).filter(([,h])=>h>jornada+0.5).forEach(([n,h])=>{
+      A.push({sev: h>jornada+2?3:2, grupo:'Carga',
+        titulo:`${n.split(' ').slice(0,2).join(' ')} con ${h.toFixed(1)}h el ${f}`,
+        detalle:`La jornada de ese día es de ${jornada}h — sobrecarga de ${(h-jornada).toFixed(1)}h`,
+        pagina:'kanban'});
+    });
+  });
+
+  // --- 6. Registros sin confirmar por el servidor ---
+  const pend=historial.filter(t=>t.sinSincronizar);
+  if(pend.length) A.push({sev:2,grupo:'Sincronización',
+    titulo:`${pend.length} registro${pend.length>1?'s':''} sin sincronizar`,
+    detalle:'Escritos en este dispositivo pero todavía no confirmados por el servidor. No cierres el navegador hasta que vuelva la conexión.',
+    pagina:'tareo'});
+
+  return A.sort((a,b)=>b.sev-a.sev);
+}
+
+const SEV_ESTILO={
+  3:{borde:'#b32e26',fondo:'#fdf0ee',texto:'#96261f',etq:'CRÍTICO'},
+  2:{borde:'#c9820d',fondo:'#fdf6e8',texto:'#8f5f0d',etq:'ATENCIÓN'},
+  1:{borde:'#5b7fbd',fondo:'#f0f4fb',texto:'#2b4d80',etq:'AVISO'}
+};
+
+function renderAtencion(){
+  const cont=document.getElementById('atencion-wrap');
+  if(!cont) return;
+  const A=calcularAtencion();
+  const resumen=document.getElementById('atencion-resumen');
+
+  if(!A.length){
+    if(resumen) resumen.innerHTML='';
+    cont.innerHTML=`<div class="card" style="text-align:center;padding:2.5rem 1rem">
+      <div style="font-size:34px;line-height:1">✓</div>
+      <div style="font-size:16px;font-weight:600;margin-top:8px">Nada requiere atención</div>
+      <div style="font-size:13px;color:var(--text-secondary);margin-top:4px">Sin entregas encima, sin OF detenidas, sin operarios sin tareo y con los tiempos de ayer registrados.</div>
+    </div>`;
+    return;
+  }
+
+  const c3=A.filter(a=>a.sev===3).length, c2=A.filter(a=>a.sev===2).length, c1=A.filter(a=>a.sev===1).length;
+  if(resumen){
+    resumen.innerHTML=[[c3,3],[c2,2],[c1,1]].filter(([n])=>n).map(([n,sev])=>{
+      const e=SEV_ESTILO[sev];
+      return `<span style="display:inline-flex;align-items:center;gap:6px;background:${e.fondo};color:${e.texto};border:0.5px solid ${e.borde};border-radius:20px;padding:3px 11px;font-size:11px;font-weight:700;letter-spacing:.04em">${n} ${e.etq}</span>`;
+    }).join(' ');
+  }
+
+  // Se agrupan por gravedad para que lo urgente quede arriba sin depender de la categoría.
+  cont.innerHTML=A.map(a=>{
+    const e=SEV_ESTILO[a.sev];
+    return `<div style="display:flex;align-items:flex-start;gap:12px;background:var(--surface-0,#fff);border:0.5px solid var(--border);border-left:3px solid ${e.borde};border-radius:8px;padding:12px 14px;margin-bottom:8px">
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:baseline;gap:9px;flex-wrap:wrap">
+          <span style="font-size:9.5px;font-weight:700;letter-spacing:.06em;color:${e.texto};background:${e.fondo};padding:2px 6px;border-radius:3px">${a.grupo.toUpperCase()}</span>
+          <span style="font-size:13.5px;font-weight:600">${escapeHtml(a.titulo)}</span>
+        </div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;line-height:1.45">${escapeHtml(a.detalle)}</div>
+      </div>
+      <button class="btn btn-xs" onclick="showPage('${a.pagina}')" style="flex-shrink:0;white-space:nowrap">Ver →</button>
+    </div>`;
+  }).join('');
+}
+window.renderAtencion=renderAtencion;
+
 function renderPendientes() {
   // Mostrar todos los tickets pendientes sin asignar (hoy y futuro)
   const pendientes = historial.filter(t=>t.pendiente===true&&(t.nombres||[]).length===0);
@@ -2335,11 +2520,18 @@ async function cargarTorre() {
       proyectosTC = snapP.docs.map(d=>({id:d.id,...d.data()}));
     }
     // Suscribir OFs
-    onSnapshot(collection(db,'ofs'), snap=>{
-      ofs = snap.docs.map(d=>({fbId:d.id,...d.data()}));
-      renderTorre();
-      poblarFiltroProyectoTC();
-    });
+    // cargarTorre() se llama al arrancar Y cada vez que alguien entra a Torre de Control.
+    // Sin esta bandera se creaba un listener nuevo de 'ofs' en cada visita y se iban
+    // acumulando suscripciones duplicadas, todas redibujando la misma pantalla.
+    if(!unsubOfs){
+      unsubOfs = onSnapshot(collection(db,'ofs'), snap=>{
+        ofs = snap.docs.map(d=>({fbId:d.id,...d.data()}));
+        renderTorre();
+        poblarFiltroProyectoTC();
+        // Las alertas de entregas y bloqueos de Atención dependen de esta colección.
+        refrescarVista();
+      });
+    }
     poblarSelectProyectoTC();
     await sincronizarProyectosConTareo();
     poblarSelectProyectos();
@@ -3000,7 +3192,8 @@ function paginaActiva(){
 }
 function refrescarVista(nombre){
   const p = nombre || paginaActiva();
-  if(p==='tareo'){ renderTicketsHoy(); actualizarHorasTrabajador(); }
+  if(p==='atencion'){ renderAtencion(); }
+  else if(p==='tareo'){ renderTicketsHoy(); actualizarHorasTrabajador(); }
   else if(p==='andree'){ renderAndree(); }
   else if(p==='kanban'){ const k=document.getElementById('k-fecha'); if(k)k.dataset.poblado=''; renderKanban(); }
   else if(p==='historial'){ poblarFiltrosHist(); renderHist(); }
@@ -3015,7 +3208,7 @@ function showAlert(pagina,msg,tipo){
   const el=document.getElementById(`alert-${pagina}`)||document.getElementById('alert-tareo');
   if(!el){console.warn('[alerta]',pagina,msg);return;}
   el.className=`alert alert-${tipo}`;el.textContent=msg;el.style.display='block';setTimeout(()=>el.style.display='none',3500);}
-function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
+function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
@@ -4354,9 +4547,10 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     MAT<span>RANSA</span>
   </div>
   <div class="tabs">
+    <div class="tab active" data-page="atencion" onclick="showPage('atencion')">Atención</div>
     <div class="tab" data-page="personal" onclick="showPage('personal')">Personal</div>
     <div class="tab" data-page="torre" onclick="showPage('torre')">Torre de Control</div>
-    <div class="tab active" data-page="tareo" onclick="showPage('tareo')">Generar tareo</div>
+    <div class="tab" data-page="tareo" onclick="showPage('tareo')">Generar tareo</div>
     <div class="tab" data-page="andree" onclick="showPage('andree')">Registro Andree</div>
     <div class="tab" data-page="kanban" onclick="showPage('kanban')">Kanban</div>
     <div class="tab" data-page="historial" onclick="showPage('historial')">Historial</div>
@@ -4423,8 +4617,20 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
   </div>
 </div>
 
+<!-- ATENCIÓN REQUERIDA -->
+<div class="page active" id="page-atencion">
+  <div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:1rem">
+    <div>
+      <div style="font-size:20px;font-weight:700;letter-spacing:-0.01em">Atención requerida</div>
+      <div style="font-size:12px;color:var(--text-secondary);margin-top:2px">Lo que necesita una decisión hoy, en un solo lugar</div>
+    </div>
+    <div id="atencion-resumen" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+  </div>
+  <div id="atencion-wrap"></div>
+</div>
+
 <!-- TAREO -->
-<div class="page active" id="page-tareo">
+<div class="page" id="page-tareo">
   <div class="card">
     <div class="card-title">Nuevo ticket</div>
     <div id="alert-tareo" style="display:none" class="alert"></div>
