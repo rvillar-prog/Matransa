@@ -157,6 +157,9 @@ async function init() {
     fe.innerHTML = `<option value="${hoyL}">Hoy — ${hoyL}</option><option value="${manana.toLocaleDateString('es-PE')}">${labelMan}</option>`;
   }
   fe.value = fechaEjecucionDefecto();
+  // La barra se dibuja siempre, aunque todavía no haya perfil elegido: si no, quedaría
+  // vacía mientras el selector de perfil está abierto.
+  renderTabs();
   // Cargar perfil guardado — si no hay perfil, mostrar selector obligatorio
   if(!cargarPerfil()) {
     // Sin perfil: mostrar selector y esperar selección antes de continuar
@@ -816,9 +819,56 @@ function guardarPerfil(key) {
   perfilActivo = key;
 }
 
+// ===== NAVEGACIÓN AGRUPADA =====
+// Doce pestañas al mismo nivel obligan a recordar dónde vive cada cosa. Se agrupan por el
+// momento en que se usan, no por parecido temático:
+//   Operar    → lo que se toca durante el día
+//   Controlar → cómo va la semana en curso
+//   Analizar  → qué pasó y qué se repite
+// Atención queda suelta y primero porque es la entrada; Notas y Configuración al final
+// porque no son parte del flujo de trabajo.
+// Se agrupa SIN meter las pestañas en menús desplegables: todo sigue a un clic. En una
+// herramienta de planta, esconder una pestaña detrás de un menú cuesta más de lo que ahorra.
+// Esta constante es la única fuente: de aquí salen la barra de escritorio y el menú móvil,
+// que antes se mantenían por separado y ya se habían desincronizado.
+const GRUPOS_NAV = [
+  { grupo:'',          paginas:['atencion'] },
+  { grupo:'Operar',    paginas:['tareo','andree','kanban'] },
+  { grupo:'Controlar', paginas:['torre','planificacion','personal','m3'] },
+  { grupo:'Analizar',  paginas:['dashboard','historial'] },
+  { grupo:'',          paginas:['notas','config'] },
+];
+const ETIQUETAS_NAV = {
+  atencion:'Atención', tareo:'Generar tareo', andree:'Registro Andree', kanban:'Kanban',
+  torre:'Torre de Control', planificacion:'Planificación', personal:'Personal',
+  m3:'M³ Semanal', dashboard:'Dashboard', historial:'Historial',
+  notas:'Notas', config:'Configuración'
+};
+
+// Dibuja la barra de pestañas del escritorio a partir de GRUPOS_NAV.
+// Conserva el atributo onclick exacto porque showPage() localiza la pestaña activa con él.
+function renderTabs(){
+  const cont = document.querySelector('nav .tabs');
+  if(!cont) return;
+  const activa = (document.querySelector('.page.active')||{}).id;
+  const actual = activa ? activa.replace('page-','') : 'atencion';
+  cont.innerHTML = GRUPOS_NAV.map((g,i)=>{
+    // Los grupos sin nombre (Atención al inicio, Notas y Configuración al final) igual
+    // llevan separador cuando no son el primero: sin él, "Notas" se lee como si perteneciera
+    // al grupo Analizar.
+    const rotulo = g.grupo
+      ? `<div class="tab-grupo" data-grupo="${g.grupo}">${g.grupo}</div>`
+      : (i>0 ? '<div class="tab-grupo tab-sep"></div>' : '');
+    return rotulo + g.paginas.map(p=>
+      `<div class="tab${p===actual?' active':''}" data-page="${p}" data-grupo="${g.grupo}" onclick="showPage('${p}')">${ETIQUETAS_NAV[p]}</div>`
+    ).join('');
+  }).join('');
+}
+
 function aplicarPerfil() {
   const perfil = PERFILES[perfilActivo];
   if(!perfil) return;
+  if(!document.querySelector('nav .tabs .tab')) renderTabs();
   // Primero mostrar todos, luego ocultar los que no corresponden
   document.querySelectorAll('.tab[data-page]').forEach(tab => {
     tab.style.display = '';
@@ -826,6 +876,13 @@ function aplicarPerfil() {
   document.querySelectorAll('.tab[data-page]').forEach(tab => {
     const page = tab.dataset.page;
     if(!perfil.pestanas.includes(page)) tab.style.display = 'none';
+  });
+  // Un rótulo de grupo cuyas pestañas están todas ocultas para este perfil no debe quedar
+  // colgado sin nada debajo.
+  document.querySelectorAll('.tab-grupo[data-grupo]').forEach(rot => {
+    const g = GRUPOS_NAV.find(x => x.grupo === rot.dataset.grupo);
+    const visibles = g ? g.paginas.filter(p => perfil.pestanas.includes(p)).length : 0;
+    rot.style.display = visibles ? '' : 'none';
   });
   const adminSection = document.getElementById('config-admin-section');
   if(adminSection) adminSection.style.display = perfil.admin ? '' : 'none';
@@ -3818,20 +3875,22 @@ function toggleMobileMenu() {
   if(isOpen) {
     closeMobileMenu();
   } else {
-    // Poblar items según perfil activo
+    // El menú móvil sale de la MISMA constante que la barra de escritorio. Antes tenía su
+    // propia lista de etiquetas y ya se había desincronizado: a la pestaña Atención le
+    // faltaba su nombre y aparecía como "atencion".
     const perfil = PERFILES[perfilActivo];
-    const labels = {
-      'personal':'Personal','torre':'Torre de Control','tareo':'Generar tareo',
-      'andree':'Registro Andree','kanban':'Kanban','historial':'Historial',
-      'planificacion':'Planificación','m3':'M³ Semanal','dashboard':'Dashboard',
-      'notas':'Notas','config':'Configuración'
-    };
+    const permitidas = perfil?.pestanas || Object.keys(ETIQUETAS_NAV);
     const items = document.getElementById('mobile-menu-items');
     const paginaActiva = document.querySelector('.page.active')?.id?.replace('page-','');
-    items.innerHTML = (perfil?.pestanas||Object.keys(labels)).map(p=>`
+    items.innerHTML = GRUPOS_NAV.map(g=>{
+      const visibles = g.paginas.filter(p=>permitidas.includes(p));
+      if(!visibles.length) return '';
+      const rotulo = g.grupo ? `<div class="mobile-menu-grupo">${g.grupo}</div>` : '';
+      return rotulo + visibles.map(p=>`
       <button class="mobile-menu-item ${p===paginaActiva?'active':''}" onclick="showPage('${p}');closeMobileMenu()">
-        ${labels[p]||p}
+        ${ETIQUETAS_NAV[p]||p}
       </button>`).join('');
+    }).join('');
     panel.classList.add('open');
     overlay.style.display = 'block';
   }
@@ -4169,6 +4228,9 @@ nav .tabs{display:flex;}
 nav .tab{padding:0 0.75rem;height:48px;display:flex;align-items:center;font-size:12px;font-weight:500;cursor:pointer;color:rgba(255,255,255,0.45);border-bottom:2px solid transparent;transition:all 0.15s;white-space:nowrap;letter-spacing:0.1px;}
 nav .tab:hover{color:rgba(255,255,255,0.85);}
 nav .tab.active{color:#fff;border-bottom-color:#e8a020;}
+/* Rótulo de grupo: separa visualmente sin ocupar un clic ni parecer pulsable */
+nav .tab-grupo.tab-sep{padding:0;margin-left:0.55rem;}
+nav .tab-grupo{display:flex;align-items:center;height:48px;padding:0 0.4rem 0 0.85rem;margin-left:0.3rem;font-size:9px;font-weight:700;letter-spacing:0.09em;text-transform:uppercase;color:rgba(255,255,255,0.26);white-space:nowrap;pointer-events:none;border-left:1px solid rgba(255,255,255,0.13);}
 nav .right{display:flex;align-items:center;gap:10px;}
 #db-status{display:none;font-size:10px;background:#e8a020;color:#fff;padding:2px 8px;border-radius:20px;}
 .fecha-nav{font-size:11px;color:rgba(255,255,255,0.4);white-space:nowrap;}
@@ -4312,6 +4374,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 .mobile-menu-item { display: flex; align-items: center; padding: 12px 20px; font-size: 14px; font-weight: 500; color: rgba(255,255,255,0.6); cursor: pointer; transition: all 0.15s; border: none; background: none; width: 100%; text-align: left; }
 .mobile-menu-item:hover { background: rgba(255,255,255,0.06); color: #fff; }
 .mobile-menu-item.active { color: #e8a020; background: rgba(232,160,32,0.08); }
+.mobile-menu-grupo { padding: 14px 20px 5px; font-size: 9.5px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: rgba(255,255,255,0.3); }
 
 /* ===== RESPONSIVE TABLET ===== */
 @media (max-width: 1024px) {
@@ -4647,20 +4710,8 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     </svg>
     MAT<span>RANSA</span>
   </div>
-  <div class="tabs">
-    <div class="tab active" data-page="atencion" onclick="showPage('atencion')">Atención</div>
-    <div class="tab" data-page="personal" onclick="showPage('personal')">Personal</div>
-    <div class="tab" data-page="torre" onclick="showPage('torre')">Torre de Control</div>
-    <div class="tab" data-page="tareo" onclick="showPage('tareo')">Generar tareo</div>
-    <div class="tab" data-page="andree" onclick="showPage('andree')">Registro Andree</div>
-    <div class="tab" data-page="kanban" onclick="showPage('kanban')">Kanban</div>
-    <div class="tab" data-page="historial" onclick="showPage('historial')">Historial</div>
-    <div class="tab" data-page="planificacion" onclick="showPage('planificacion')">Planificación</div>
-    <div class="tab" data-page="m3" onclick="showPage('m3')">M³ Semanal</div>
-    <div class="tab" data-page="dashboard" onclick="showPage('dashboard')">Dashboard</div>
-    <div class="tab" data-page="config" onclick="showPage('config')">Configuración</div>
-    <div class="tab" data-page="notas" onclick="showPage('notas')">Notas</div>
-  </div>
+  <!-- La barra la dibuja renderTabs() desde GRUPOS_NAV; ver la constante en el módulo -->
+  <div class="tabs"></div>
   <div class="right" style="display:flex;align-items:center;gap:10px">
     <div id="perfil-indicator" onclick="mostrarSelectorPerfil()" style="cursor:pointer;font-size:11px;color:rgba(255,255,255,0.5);white-space:nowrap;padding:4px 8px;border:0.5px solid rgba(255,255,255,0.15);border-radius:6px" title="Cambiar perfil">👤 Perfil</div>
     <span id="db-status"></span>
