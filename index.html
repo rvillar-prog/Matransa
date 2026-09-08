@@ -416,6 +416,69 @@ function construirTicket(d){
   };
 }
 
+// ===== VALIDACIÓN CAMPO POR CAMPO =====
+// Antes había un solo mensaje genérico para siete campos: el usuario sabía que faltaba algo
+// pero no qué, y lo buscaba a ojo. Ahora cada campo señala su propio error, se hace foco en
+// el primero que falta y el mensaje nombra exactamente lo que hay que completar.
+function marcarCampo(id, mensaje){
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.style.borderColor = mensaje ? '#b32e26' : '';
+  el.style.boxShadow   = mensaje ? '0 0 0 3px rgba(179,46,38,0.10)' : '';
+  const avisoId = 'err-'+id;
+  let aviso = document.getElementById(avisoId);
+  if(!mensaje){ if(aviso) aviso.remove(); return; }
+  if(!aviso){
+    aviso = document.createElement('div');
+    aviso.id = avisoId;
+    aviso.style.cssText = 'font-size:11px;color:#b32e26;font-weight:600;margin-top:2px';
+    el.parentNode.appendChild(aviso);
+  }
+  aviso.textContent = mensaje;
+}
+function limpiarMarcas(){
+  ['t-t1','t-proyecto','t-producto','t-operacion','t-tarea','t-n','t-tu','t-fecha-ejec']
+    .forEach(id=>marcarCampo(id,''));
+}
+// Devuelve la lista de campos que faltan. Se evalúan todos —no se corta en el primero—
+// para que el usuario vea de una vez todo lo que le falta y no de a uno por intento.
+function validarFormTareo(d){
+  limpiarMarcas();
+  const faltan=[];
+  const pedir=(cond,id,msg,etiqueta)=>{ if(cond){ marcarCampo(id,msg); faltan.push({id,etiqueta}); } };
+  pedir(!d.t1,        't-t1',        'Elige el trabajador principal', 'trabajador');
+  pedir(!d.proy,      't-proyecto',  'Elige el proyecto',             'proyecto');
+  pedir(!d.prod,      't-producto',  'Elige el producto',             'producto');
+  if(!d.operacion && !d.detalle){
+    marcarCampo('t-operacion','Elige una operación del catálogo o escribe el detalle');
+    faltan.push({id:'t-operacion',etiqueta:'operación o detalle'});
+  }
+  pedir(!d.n||d.n<1,  't-n',         'Debe ser 1 o más',              'nº de unidades');
+  pedir(!d.tu||d.tu<1,'t-tu',        'Debe ser 1 minuto o más',       'tiempo unitario');
+  pedir(!d.fechaEjec, 't-fecha-ejec','Elige la fecha de ejecución',   'fecha');
+  if(faltan.length){
+    const el=document.getElementById(faltan[0].id);
+    if(el && el.focus) el.focus();
+    const lista = faltan.map(f=>f.etiqueta).join(', ');
+    showAlert('tareo', faltan.length===1 ? `Falta: ${lista}.` : `Faltan ${faltan.length} campos: ${lista}.`, 'warn');
+  }
+  return faltan.length===0;
+}
+
+// Evita el doble envío: mientras la escritura está en curso el botón queda inhabilitado.
+// Firestore responde en milisegundos con caché local, así que el bloqueo dura un instante,
+// pero es lo que cubre el doble clic — la causa documentada de los tickets repetidos.
+let guardandoTicket = false;
+function bloquearGuardado(activo){
+  guardandoTicket = activo;
+  const b = document.getElementById('btn-agregar-ticket');
+  if(!b) return;
+  b.disabled = activo;
+  b.textContent = activo ? 'Guardando…' : '+ Agregar ticket';
+  b.style.opacity = activo ? '0.55' : '';
+  b.style.cursor  = activo ? 'default' : '';
+}
+
 async function agregarTicket(){
   const t1=document.getElementById('t-t1').value;
   const t2=document.getElementById('t-t2').value;
@@ -431,7 +494,8 @@ async function agregarTicket(){
   const n=parseInt(document.getElementById('t-n').value);
   const tu=parseInt(document.getElementById('t-tu').value);
   const fechaEjec=document.getElementById('t-fecha-ejec').value;
-  if(!t1||!proy||!prod||!tarea||!n||!tu||n<1||tu<1){showAlert('tareo','Completa todos los campos: elige una operación o escribe el detalle. Unidades y tiempo deben ser mayores a 0.','warn');return;}
+  if(guardandoTicket) return;   // ya hay un guardado en curso: se ignora el segundo clic
+  if(!validarFormTareo({t1,proy,prod,operacion,detalle,n,tu,fechaEjec})) return;
   const ttNuevo=parseFloat((n*tu/60).toFixed(2));
   const nombresNuevo=[t1,t2].filter(Boolean);
 
@@ -461,23 +525,33 @@ async function agregarTicket(){
     t1,t2,proy,prod,tarea,n,tu,fechaEjec,operacion,detalle,opDef,
     areaEjec:document.getElementById('t-area-ejec')?.value||null
   });
+  // La confirmación nombra lo que se guardó. Un "listo" genérico no despeja la duda de si
+  // el clic entró; ver el nombre y la cantidad sí.
+  const resumen = `${t1.split(' ').slice(0,2).join(' ')} · ${operacion||detalle} · ${n} und`;
+  bloquearGuardado(true);
   const ok=await escribir('guardar el ticket', ()=>addDoc(collection(db,'historial'),ticket),
-    {exito:'Ticket guardado — visible para Andree.'});
+    {exito:`Ticket guardado — ${resumen}`});
+  bloquearGuardado(false);
   if(!ok) return;
   limpiarForm();actualizarHorasTrabajador();
 }
 
 async function confirmarTicketSobrecarga(){
   const p=window._ticketPendiente;if(!p)return;
+  if(guardandoTicket) return;
   document.getElementById('alert-sobrecarga').style.display='none';
   const ticket=construirTicket(p);
+  const resumen = `${p.t1.split(' ').slice(0,2).join(' ')} · ${p.operacion||p.detalle||p.tarea} · ${p.n} und`;
+  bloquearGuardado(true);
   const ok=await escribir('guardar el ticket', ()=>addDoc(collection(db,'historial'),ticket));
+  bloquearGuardado(false);
   if(!ok) return;
   limpiarForm();actualizarHorasTrabajador();window._ticketPendiente=null;
-  showAlert('tareo','Ticket guardado (con sobrecarga).','success');
+  showAlert('tareo',`Ticket guardado con sobrecarga — ${resumen}`,'success');
 }
 
 function limpiarForm(){
+  limpiarMarcas();
   ['t-t1','t-t2','t-proyecto'].forEach(id=>document.getElementById(id).value='');
   const aviso=document.getElementById('t-t1-repite-aviso');if(aviso)aviso.style.display='none';
   document.getElementById('t-producto').innerHTML='<option value="">Seleccionar proyecto primero</option>';
@@ -3223,12 +3297,16 @@ function refrescarVista(nombre){
   renderPendientes();
 }
 
-function showAlert(pagina,msg,tipo){
+function showAlert(pagina,msg,tipo,ms){
   // Tolerante a páginas sin contenedor de alerta propio (no existe alert-andree, por ejemplo):
   // antes eso lanzaba un error y cortaba la función que estaba avisando. Ahora cae al de tareo.
   const el=document.getElementById(`alert-${pagina}`)||document.getElementById('alert-tareo');
   if(!el){console.warn('[alerta]',pagina,msg);return;}
-  el.className=`alert alert-${tipo}`;el.textContent=msg;el.style.display='block';setTimeout(()=>el.style.display='none',3500);}
+  el.className=`alert alert-${tipo}`;el.textContent=msg;el.style.display='block';
+  // La confirmación de guardado se queda más tiempo a propósito: si se desvanece rápido, el
+  // usuario duda de si guardó y vuelve a darle — que es como aparecen los tickets repetidos.
+  if(el._t) clearTimeout(el._t);
+  el._t = setTimeout(()=>el.style.display='none', ms || (tipo==='success' ? 7000 : 3500));}
 function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
@@ -4682,7 +4760,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     <div id="alert-sobrecarga" style="display:none" class="alert alert-warn"></div>
     <div class="actions">
       <button class="btn no-print" onclick="limpiarForm()">Limpiar</button>
-      <button class="btn btn-amber no-print" onclick="agregarTicket()">+ Agregar ticket</button>
+      <button class="btn btn-amber no-print" id="btn-agregar-ticket" onclick="agregarTicket()">+ Agregar ticket</button>
     </div>
   </div>
   <div id="pendientes-wrap" style="display:none"></div>
