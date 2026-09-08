@@ -446,9 +446,9 @@ async function confirmarTicketSobrecarga(){
   const p=window._ticketPendiente;if(!p)return;
   document.getElementById('alert-sobrecarga').style.display='none';
   const ticket=construirTicket(p);
-  setStatus('Guardando...');
-  await addDoc(collection(db,'historial'),ticket);
-  setStatus('');limpiarForm();actualizarHorasTrabajador();window._ticketPendiente=null;
+  const ok=await escribir('guardar el ticket', ()=>addDoc(collection(db,'historial'),ticket));
+  if(!ok) return;
+  limpiarForm();actualizarHorasTrabajador();window._ticketPendiente=null;
   showAlert('tareo','Ticket guardado (con sobrecarga).','success');
 }
 
@@ -466,13 +466,13 @@ function limpiarForm(){
 // Ocultar de tareo SIN eliminar de Firebase
 async function ocultarDeTareo(fbId){
   if(!confirm('¿Quitar este ticket del tareo? Seguirá visible para Andree y en el historial.'))return;
-  await updateDoc(doc(db,'historial',fbId),{visibleTareo:false});
+  await escribir('quitar el ticket del tareo', ()=>updateDoc(doc(db,'historial',fbId),{visibleTareo:false}));
 }
 
 // Ocultar de Andree SIN eliminar de Firebase
 async function ocultarDeAndree(fbId){
   if(!confirm('¿Quitar este ticket de la vista de Andree? Quedará en el historial.'))return;
-  await updateDoc(doc(db,'historial',fbId),{visibleAndree:false});
+  await escribir('quitar el ticket de la vista de Andree', ()=>updateDoc(doc(db,'historial',fbId),{visibleAndree:false}));
 }
 
 // Eliminar permanentemente — solo desde historial con doble confirmación
@@ -480,7 +480,7 @@ async function eliminarPermanente(fbId){
   if(!requiereAdmin()) return;
   if(!confirm('¿Eliminar permanentemente este registro del historial? Esta acción NO se puede deshacer.'))return;
   if(!confirm('Segunda confirmación: ¿Seguro que quieres eliminar este registro para siempre?'))return;
-  await deleteDoc(doc(db,'historial',fbId));
+  await escribir('eliminar el registro', ()=>deleteDoc(doc(db,'historial',fbId)), {trabajando:'Eliminando...', exito:'Registro eliminado.'});
 }
 
 function renderTicketsHoy(){
@@ -1058,8 +1058,11 @@ let migrationDone = false;
 async function migrarTicketsAntiguos() {
   // Solo corre una vez por sesión
   if(migrationDone) return;
+  // La bandera se activa ANTES del bucle: dentro hay awaits, y cada escritura dispara el
+  // listener del historial, que volvía a entrar aquí y arrancaba una migración solapada.
+  migrationDone = true;
   const sinCodigo = historial.filter(t => !t.proyectoCodigo && t.proyecto);
-  if(!sinCodigo.length) { migrationDone=true; return; }
+  if(!sinCodigo.length) return;
   console.log(`Migrando ${sinCodigo.length} tickets antiguos...`);
   for(const t of sinCodigo) {
     // Extraer código del nombre (ej: "P9" de "P9", o "P1" de "P1 · Hotel Sheraton")
@@ -1085,7 +1088,7 @@ function suscribirHistorial(){
     historial=snap.docs.map(d=>({fbId:d.id,...d.data()}));
     historial.sort((a,b)=>new Date(b.guardado||0)-new Date(a.guardado||0));
     setStatus('');
-    migrarTicketsAntiguos();aplicarPerfil();renderTicketsHoy();renderAndree();const ksel=document.getElementById('k-fecha');if(ksel)ksel.dataset.poblado='';renderKanban();poblarFiltrosHist();renderHist();renderDashboard();renderPendientes();actualizarHorasTrabajador();
+    migrarTicketsAntiguos();aplicarPerfil();refrescarVista();
   });
 }
 
@@ -1116,7 +1119,7 @@ function renderAndree(){
       const area=t.nombres&&t.nombres.length>0?(trabajadores.find(w=>w.nombre===t.nombres[0])?.area||''):'Sin área';
       const names=t.nombres.map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
       const done=!!t.tu_real;
-      const incHTML=t.incidencias&&t.incidencias.length?`<div style="margin-top:6px">${t.incidencias.map(inc=>`<div style="padding:4px 8px;background:#fff8e1;border-radius:6px;font-size:11px;color:#f57f17;margin-top:3px">⚠ ${inc.hora} — ${inc.descripcion}</div>`).join('')}</div>`:'';
+      const incHTML=t.incidencias&&t.incidencias.length?`<div style="margin-top:6px">${t.incidencias.map(inc=>`<div style="padding:4px 8px;background:#fff8e1;border-radius:6px;font-size:11px;color:#f57f17;margin-top:3px">⚠ ${escapeHtml(inc.hora)} — ${escapeHtml(inc.descripcion)}</div>`).join('')}</div>`:'';
       const ahora=new Date();const hora=ahora.getHours()+(ahora.getMinutes()/60);
       const fechaTkt=t.fechaEjecucion||t.fecha||hoyStr();
       const esHoyTkt=fechaTkt===hoyStr();
@@ -1168,9 +1171,9 @@ async function registrarTiempo(fbId,n){
   const inp=document.getElementById(`tr-${fbId}`);
   const val=parseInt(inp.value);
   if(!val||val<1){inp.style.borderColor='#e8a020';inp.focus();return;}
-  await updateDoc(doc(db,'historial',fbId),{tu_real:val,tt_real:parseFloat((n*val/60).toFixed(2)),completado:true});
+  await escribir('registrar el tiempo real', ()=>updateDoc(doc(db,'historial',fbId),{tu_real:val,tt_real:parseFloat((n*val/60).toFixed(2)),completado:true}), {pagina:'andree', trabajando:'Registrando...'});
 }
-async function resetTiempo(fbId){await updateDoc(doc(db,'historial',fbId),{tu_real:null,tt_real:null,completado:false});}
+async function resetTiempo(fbId){await escribir('deshacer el tiempo registrado', ()=>updateDoc(doc(db,'historial',fbId),{tu_real:null,tt_real:null,completado:false}), {pagina:'andree', trabajando:'Deshaciendo...'});}
 
 // ===== INCIDENCIAS =====
 let fbIdIncidencia=null;
@@ -1187,7 +1190,8 @@ async function guardarIncidencia(){
   if(!ticket)return;
   const incidencias=ticket.incidencias||[];
   incidencias.push({hora:new Date().toLocaleTimeString('es-PE',{hour:'2-digit',minute:'2-digit'}),descripcion:desc,fecha:hoyStr()});
-  await updateDoc(doc(db,'historial',fbIdIncidencia),{incidencias});
+  const ok=await escribir('guardar la incidencia', ()=>updateDoc(doc(db,'historial',fbIdIncidencia),{incidencias}), {pagina:'andree', trabajando:'Guardando incidencia...'});
+  if(!ok) return;
   cerrarIncidencia();
 }
 
@@ -1768,8 +1772,12 @@ async function confirmarReasignar() {
   const nombresOrig = (t.nombres||[]).length>0?(t.nombres.map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ')):'Sin asignar';
   const cambios = t.cambios || [];
   cambios.push({tipo:'asignacion', de:nombresOrig, a:nuevoTrab.split(' ').slice(0,2).join(' '), motivo, hora:new Date().toLocaleTimeString('es-PE',{hour:'2-digit',minute:'2-digit'}), fecha:hoyStr()});
-  const updateData = {nombres:[nuevoTrab], cambios, pendiente:false};
-  await updateDoc(doc(db,'historial',fbIdReasignar), updateData);
+  // Al cambiar el trabajador hay que mover también su identificador: si no, el ticket
+  // quedaría con el nombre de uno y el ID del otro.
+  const idsR = idsDeTrabajadores([nuevoTrab]);
+  const updateData = {nombres:[nuevoTrab], trabajadorIds:idsR, trabajadorId:idsR[0]||null, cambios, pendiente:false};
+  const okR = await escribir('reasignar el ticket', ()=>updateDoc(doc(db,'historial',fbIdReasignar), updateData), {trabajando:'Reasignando...'});
+  if(!okR) return;
   cerrarReasignar();
   showAlert('tareo','Ticket asignado correctamente.','success');
 }
@@ -1837,13 +1845,18 @@ async function confirmarPosponer() {
     hora:new Date().toLocaleTimeString('es-PE',{hour:'2-digit',minute:'2-digit'}),
     fecha:hoyStr()
   });
-  await updateDoc(doc(db,'historial',fbIdPosponer), {
+  const idsP = idsDeTrabajadores(nuevosNombres);
+  const okP = await escribir('posponer el ticket', ()=>updateDoc(doc(db,'historial',fbIdPosponer), {
     fechaEjecucion: manStr,
+    fechaISO: fechaAISO(manStr),
     nombres: nuevosNombres,
+    trabajadorIds: idsP,
+    trabajadorId: idsP[0]||null,
     visibleAndree: true,
     visibleTareo: true,
     cambios
-  });
+  }), {trabajando:'Posponiendo...'});
+  if(!okP) return;
   cerrarPosponer();
   const msg = asig==='otro' ? `Ticket movido al ${manStr} y reasignado` : `Ticket movido al ${manStr}`;
   showAlert('andree', msg, 'success');
@@ -2688,7 +2701,7 @@ function abrirMoverOF(fbId) {
   const of = ofs.find(o=>o.fbId===fbId);
   if(!of) return;
   const p = proyectosTC.find(x=>x.codigo===of.proyectoCodigo);
-  document.getElementById('mover-of-info').innerHTML = `<strong>${of.numero}</strong> · ${of.descripcion}<br><span style="font-size:12px;color:var(--text-secondary)">Proyecto: ${p?.nombre||of.proyectoCodigo||'—'} · Etapa actual: <strong>${of.etapa}</strong></span>`;
+  document.getElementById('mover-of-info').innerHTML = `<strong>${escapeHtml(of.numero)}</strong> · ${escapeHtml(of.descripcion||'')}<br><span style="font-size:12px;color:var(--text-secondary)">Proyecto: ${escapeHtml(p?.nombre||of.proyectoCodigo||'—')} · Etapa actual: <strong>${escapeHtml(of.etapa||'')}</strong></span>`;
   document.getElementById('mover-etapa').value = of.etapa||'Producción';
   document.getElementById('mover-gate').value = of.gate||'H-5';
   document.getElementById('gate-checklist-wrap').style.display='none';
@@ -2739,7 +2752,7 @@ function abrirBloqueo(fbId) {
   fbIdBloqueo = fbId;
   const of = ofs.find(o=>o.fbId===fbId);
   if(!of) return;
-  document.getElementById('bloqueo-of-info').innerHTML = `<strong>${of.numero}</strong> · ${of.descripcion}`;
+  document.getElementById('bloqueo-of-info').innerHTML = `<strong>${escapeHtml(of.numero)}</strong> · ${escapeHtml(of.descripcion||'')}`;
   if(of.bloqueada) {
     document.getElementById('bloqueo-tipo').value = of.bloqueoTipo||'Falta de material';
     document.getElementById('bloqueo-desc').value = of.bloqueoDesc||'';
@@ -2904,8 +2917,65 @@ async function eliminarProyectoTC(id) {
   } catch(e) { showAlert('hist','Error al eliminar el ticket.','warn'); }
 }
 
-function showAlert(pagina,msg,tipo){const el=document.getElementById(`alert-${pagina}`);el.className=`alert alert-${tipo}`;el.textContent=msg;el.style.display='block';setTimeout(()=>el.style.display='none',3500);}
-function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='dashboard')renderDashboard();if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
+// ===== ESCRITURAS CON MANEJO DE ERROR =====
+// Envuelve las escrituras a Firestore. Antes, 37 de 41 fallaban en silencio: si no había
+// internet o faltaban permisos, la pantalla simplemente no cambiaba y el usuario volvía a
+// hacer clic — de ahí buena parte de los tickets duplicados. El mensaje siempre dice si
+// quedó algo guardado o no, porque eso es lo que decide si conviene reintentar.
+function mensajeDeError(accion, e){
+  const cod = (e && e.code) ? String(e.code) : '';
+  if(typeof navigator!=='undefined' && navigator.onLine===false)
+    return 'Sin conexión: no se pudo '+accion+'. No se guardó nada — revisa el internet y vuelve a intentar.';
+  if(cod.includes('permission-denied'))
+    return 'No tienes permisos para '+accion+'. No se guardó nada. Avisa a Ricardo.';
+  if(cod.includes('unavailable') || cod.includes('deadline'))
+    return 'El servidor no responde. No se pudo '+accion+' y no se guardó nada — intenta de nuevo en un momento.';
+  return 'No se pudo '+accion+'. No se guardó nada; puedes volver a intentar.';
+}
+
+async function escribir(accion, fn, opts){
+  opts = opts || {};
+  const pagina = opts.pagina || 'tareo';
+  try{
+    setStatus(opts.trabajando || 'Guardando...');
+    await fn();
+    setStatus('');
+    if(opts.exito) showAlert(pagina, opts.exito, 'success');
+    return true;
+  }catch(e){
+    setStatus('');
+    console.error('['+accion+']', e);
+    showAlert(pagina, mensajeDeError(accion, e), 'warn');
+    return false;
+  }
+}
+
+// ===== REDIBUJADO SELECTIVO =====
+// Antes, cada cambio en cualquier ticket redibujaba las siete vistas, estuvieran o no en
+// pantalla. Ahora solo se redibuja la que se está viendo; showPage() refresca la vista a la
+// que se entra, así que el usuario ve exactamente lo mismo con una fracción del trabajo.
+function paginaActiva(){
+  const el = document.querySelector('.page.active');
+  return el ? el.id.replace('page-','') : '';
+}
+function refrescarVista(nombre){
+  const p = nombre || paginaActiva();
+  if(p==='tareo'){ renderTicketsHoy(); actualizarHorasTrabajador(); }
+  else if(p==='andree'){ renderAndree(); }
+  else if(p==='kanban'){ const k=document.getElementById('k-fecha'); if(k)k.dataset.poblado=''; renderKanban(); }
+  else if(p==='historial'){ poblarFiltrosHist(); renderHist(); }
+  else if(p==='dashboard'){ renderDashboard(); }
+  // El aviso de tickets sin asignar vive fuera de las páginas: se refresca siempre.
+  renderPendientes();
+}
+
+function showAlert(pagina,msg,tipo){
+  // Tolerante a páginas sin contenedor de alerta propio (no existe alert-andree, por ejemplo):
+  // antes eso lanzaba un error y cortaba la función que estaba avisando. Ahora cae al de tareo.
+  const el=document.getElementById(`alert-${pagina}`)||document.getElementById('alert-tareo');
+  if(!el){console.warn('[alerta]',pagina,msg);return;}
+  el.className=`alert alert-${tipo}`;el.textContent=msg;el.style.display='block';setTimeout(()=>el.style.display='none',3500);}
+function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
@@ -3368,7 +3438,7 @@ function abrirRegistrarAusencia() {
   const sel = document.getElementById('aus-trabajador');
   const cargosProductivos = CARGOS_PRODUCTIVOS;
   const ops = trabajadores.filter(w=>cargosProductivos.includes(w.cargo)&&!ES_ANALISTA_DATA(w));
-  sel.innerHTML = '<option value="">Seleccionar...</option>' + ops.map(w=>`<option value="${w.nombre}">${w.nombre.split(' ').slice(0,2).join(' ')} — ${w.area}</option>`).join('');
+  sel.innerHTML = '<option value="">Seleccionar...</option>' + ops.map(w=>`<option value="${escapeHtml(w.nombre)}">${escapeHtml(w.nombre.split(' ').slice(0,2).join(' '))} — ${escapeHtml(w.area||'')}</option>`).join('');
   const fa = personalFechaActiva().split('/');
   const isoDate = `${fa[2]}-${fa[1].padStart(2,'0')}-${fa[0].padStart(2,'0')}`;
   document.getElementById('aus-inicio').value = isoDate;
