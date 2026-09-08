@@ -7,7 +7,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, setDoc, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, setDoc, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
 const firebaseConfig = {
@@ -329,6 +329,66 @@ function actualizarHorasTrabajador(){
 }
 window.actualizarHorasTrabajador=actualizarHorasTrabajador;
 
+// ===== CONSTRUCCIÓN DEL TICKET — fuente única =====
+// Versión del formato del documento. Sirve para saber con qué reglas se escribió cada
+// ticket y para que cualquier migración futura sepa qué falta rellenar.
+const ESQUEMA_VERSION = 2;
+
+// Pasa "8/9/2026" (lo que devuelve toLocaleDateString) a "2026-09-08".
+// El formato local depende del idioma del navegador: en inglés ese mismo día se escribe
+// "9/8/2026" y día y mes quedan invertidos. La fecha ISO es estable, se ordena como texto
+// y permite consultar por rango en Firestore. Se guarda ADEMÁS de la original, no en su lugar.
+function fechaAISO(str){
+  if(!str) return null;
+  if(/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+  const m = String(str).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(!m) return null;
+  return m[3] + '-' + String(m[2]).padStart(2,'0') + '-' + String(m[1]).padStart(2,'0');
+}
+
+// El ID del documento de la colección "trabajadores" es un identificador estable que ya
+// existe. Guardarlo en el ticket permite que corregir un nombre no desconecte a la persona
+// de su histórico, y es donde se enganchará el usuario de Firebase Auth más adelante.
+function idsDeTrabajadores(nombres){
+  return (nombres||[]).map(n => (trabajadores.find(w=>w.nombre===n)||{}).id || null);
+}
+
+// Único lugar donde se arma un ticket. Los dos caminos de guardado (el normal y el que
+// confirma pese al aviso de sobrecarga) pasan por aquí, así que ya no puede volver a pasar
+// que uno escriba un campo y el otro se lo olvide — que es lo que produjo el "guardado"
+// faltante y el "areaEjecucion" perdido.
+function construirTicket(d){
+  const nombres  = [d.t1, d.t2].filter(Boolean);
+  const ids      = idsDeTrabajadores(nombres);
+  const proyObj  = proyectosTC.find(p => p.codigo === d.proy);
+  const ofMatch  = String(d.prod||'').match(/^(\d+)/);
+  const ahora    = new Date().toISOString();
+  return {
+    nombres,
+    trabajadorId:  ids[0] || null,
+    trabajadorIds: ids,
+    proyecto:      proyObj ? (d.proy + ' · ' + proyObj.nombre) : d.proy,
+    proyectoCodigo:d.proy,
+    producto:      d.prod,
+    ofNumero:      ofMatch ? ofMatch[1] : '',
+    areaEjecucion: d.areaEjec || null,
+    tarea: d.tarea, n: d.n, tu: d.tu,
+    tt: parseFloat((d.n * d.tu / 60).toFixed(2)),
+    operacion:     d.operacion || null,
+    detalle:       d.detalle || null,
+    unidad:        d.opDef ? (d.opDef.unidad || null) : null,
+    metodoCaptura: d.opDef ? d.opDef.captura : null,
+    fechaCreacion: ahora,
+    guardado:      ahora,
+    fechaEjecucion:d.fechaEjec,
+    fechaISO:      fechaAISO(d.fechaEjec),
+    visibleTareo:true, visibleAndree:true,
+    tu_real:null, tt_real:null, completado:false,
+    incidencias:[],
+    esquemaV: ESQUEMA_VERSION
+  };
+}
+
 async function agregarTicket(){
   const t1=document.getElementById('t-t1').value;
   const t2=document.getElementById('t-t2').value;
@@ -370,31 +430,10 @@ async function agregarTicket(){
     return;
   }
 
-  const proyObj=proyectosTC.find(p=>p.codigo===proy);
-  const proyNombre=proyObj?`${proy} · ${proyObj.nombre}`:proy;
-  // Extraer número de OF del producto (formato: "129738 | SILLA MB01-02 (18 und)")
-  const ofMatch=prod.match(/^(\d+)/);
-  const ofNumero=ofMatch?ofMatch[1]:'';
-  const ticket={
-    nombres:[t1,t2].filter(Boolean),
-    proyecto:proyNombre,
-    proyectoCodigo:proy,
-    producto:prod,
-    ofNumero,
-    areaEjecucion:document.getElementById('t-area-ejec')?.value||null,
-    tarea,n,tu,
-    operacion:operacion||null,
-    detalle:detalle||null,
-    unidad:opDef?(opDef.unidad||null):null,
-    metodoCaptura:opDef?opDef.captura:null,
-    tt:parseFloat((n*tu/60).toFixed(2)),
-    fechaCreacion:new Date().toISOString(),
-    fechaEjecucion:fechaEjec,
-    visibleTareo:true,
-    visibleAndree:true,
-    tu_real:null,tt_real:null,completado:false,
-    incidencias:[]
-  };
+  const ticket=construirTicket({
+    t1,t2,proy,prod,tarea,n,tu,fechaEjec,operacion,detalle,opDef,
+    areaEjec:document.getElementById('t-area-ejec')?.value||null
+  });
   try{
     setStatus('Guardando...');
     await addDoc(collection(db,'historial'),ticket);
@@ -406,28 +445,7 @@ async function agregarTicket(){
 async function confirmarTicketSobrecarga(){
   const p=window._ticketPendiente;if(!p)return;
   document.getElementById('alert-sobrecarga').style.display='none';
-  const proyObj=proyectosTC.find(pr=>pr.codigo===p.proy);
-  const proyNombre=proyObj?`${p.proy} · ${proyObj.nombre}`:p.proy;
-  const ofMatchS=p.prod.match(/^(\d+)/);
-  const ofNumeroS=ofMatchS?ofMatchS[1]:'';
-  const ticket={
-    nombres:[p.t1,p.t2].filter(Boolean),
-    proyecto:proyNombre,
-    proyectoCodigo:p.proy,
-    producto:p.prod,
-    ofNumero:ofNumeroS,
-    areaEjecucion:p.areaEjec||null,
-    tarea:p.tarea,n:p.n,tu:p.tu,
-    operacion:p.operacion||null,
-    detalle:p.detalle||null,
-    unidad:p.opDef?(p.opDef.unidad||null):null,
-    metodoCaptura:p.opDef?p.opDef.captura:null,
-    tt:parseFloat((p.n*p.tu/60).toFixed(2)),
-    fechaCreacion:hoyStr(),fechaEjecucion:p.fechaEjec,
-    visibleTareo:true,visibleAndree:true,
-    tu_real:null,tt_real:null,completado:false,incidencias:[],
-    guardado:new Date().toISOString()
-  };
+  const ticket=construirTicket(p);
   setStatus('Guardando...');
   await addDoc(collection(db,'historial'),ticket);
   setStatus('');limpiarForm();actualizarHorasTrabajador();window._ticketPendiente=null;
@@ -512,7 +530,8 @@ function ticketCardHTML(t){
   const aClass=area==='PENDIENTE'?'area-pendiente':(AREA_CLASS[area]||'area-prod');
   const nClass=area==='PENDIENTE'?'num-pendiente':(NUM_CLASS[area]||'num-prod');
   const names=t.nombres&&t.nombres.length>0?t.nombres.map(n=>n.split(' ').slice(0,2).join(' ')).join(' / '):'Sin asignar';
-  const orden=numeroOrdenTicket(t);
+  const ordenInfo=posicionOrdenTicket(t);
+  const orden=ordenInfo?ordenInfo.pos:null;
   const ordenBadge=orden?`<div title="Orden de ejecución del día" style="width:22px;height:22px;border-radius:50%;background:rgba(255,255,255,0.9);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#333;flex-shrink:0">${orden}</div>`:'';
   return `<div class="ticket-card">
     <div class="ticket-card-header ${aClass}">
@@ -532,10 +551,10 @@ function ticketCardHTML(t){
     </div>
     ${orden?`<div class="no-print" style="display:flex;align-items:center;justify-content:space-between;padding:5px 14px;border-top:0.5px solid rgba(0,0,0,0.08);font-size:10px;color:#888">
       <span>≈ desde ${horaEstimadaTicket(t)}</span>
-      <span style="display:flex;gap:6px">
-        <button onclick="moverOrdenTicket('${t.fbId}',-1)" title="Subir prioridad" style="border:none;background:none;cursor:pointer;font-size:12px;color:#888;padding:0">▲</button>
-        <button onclick="moverOrdenTicket('${t.fbId}',1)" title="Bajar prioridad" style="border:none;background:none;cursor:pointer;font-size:12px;color:#888;padding:0">▼</button>
-      </span>
+      ${ordenInfo.total>1?`<span style="display:flex;gap:6px">
+        <button onclick="moverOrdenTicket('${t.fbId}',-1)" title="Subir prioridad" ${ordenInfo.pos===1?'disabled':''} style="border:none;background:none;font-size:12px;color:#888;padding:0;cursor:${ordenInfo.pos===1?'default':'pointer'};opacity:${ordenInfo.pos===1?'0.25':'1'}">▲</button>
+        <button onclick="moverOrdenTicket('${t.fbId}',1)" title="Bajar prioridad" ${ordenInfo.pos===ordenInfo.total?'disabled':''} style="border:none;background:none;font-size:12px;color:#888;padding:0;cursor:${ordenInfo.pos===ordenInfo.total?'default':'pointer'};opacity:${ordenInfo.pos===ordenInfo.total?'0.25':'1'}">▼</button>
+      </span>`:`<span style="font-size:9px;color:#aaa">único del día</span>`}
     </div>`:''}
   </div>`;
 }
@@ -956,6 +975,16 @@ function numeroOrdenTicket(t){
   const idx = grupo.findIndex(x=>x.fbId===t.fbId);
   return idx>=0 ? idx+1 : null;
 }
+// Devuelve la posición del ticket dentro del día de su trabajador y cuántos hay en total.
+// El total es lo que decide si tiene sentido mostrar las flechas: con un solo ticket
+// no hay nada que reordenar.
+function posicionOrdenTicket(t){
+  if(!t.nombres || !t.nombres.length) return null;
+  const grupo = gruposOrdenDia(t.nombres[0], t.fechaEjecucion);
+  const idx = grupo.findIndex(x=>x.fbId===t.fbId);
+  if(idx<0) return null;
+  return {pos: idx+1, total: grupo.length};
+}
 function formatHoraDesde8am(horasAcumuladas){
   let totalMin = Math.round(8*60 + horasAcumuladas*60);
   let h = Math.floor(totalMin/60)%24;
@@ -984,18 +1013,26 @@ async function moverOrdenTicket(fbId, direccion){
   const grupo = gruposOrdenDia(t.nombres[0], t.fechaEjecucion);
   const idx = grupo.findIndex(x=>x.fbId===fbId);
   const swapIdx = idx + direccion;
-  if(idx<0 || swapIdx<0 || swapIdx>=grupo.length) return;
+  if(idx<0) return;
+  if(grupo.length<2){
+    showAlert('tareo','Ese trabajador tiene un solo ticket ese día: no hay nada que reordenar.','warn');
+    return;
+  }
+  if(swapIdx<0 || swapIdx>=grupo.length) return;  // ya está en el extremo
+  // Se calcula el orden final completo y se escribe TODO en una sola operación.
+  // Antes se hacían varios updateDoc seguidos y cada uno disparaba el onSnapshot, que
+  // volvía a dibujar la app con el orden a medio cambiar: el clic parecía no hacer nada.
+  const nuevoOrden = grupo.slice();
+  nuevoOrden[idx] = grupo[swapIdx];
+  nuevoOrden[swapIdx] = grupo[idx];
   try{
-    for(let i=0;i<grupo.length;i++){
-      if(grupo[i].orden==null){
-        await updateDoc(doc(db,'historial',grupo[i].fbId), {orden:i+1});
-        grupo[i].orden = i+1;
-      }
-    }
-    const a = grupo[idx], b = grupo[swapIdx];
-    const ordenA = a.orden, ordenB = b.orden;
-    await updateDoc(doc(db,'historial',a.fbId), {orden:ordenB});
-    await updateDoc(doc(db,'historial',b.fbId), {orden:ordenA});
+    const batch = writeBatch(db);
+    nuevoOrden.forEach((tk,i)=>{
+      batch.update(doc(db,'historial',tk.fbId), {orden:i+1});
+      tk.orden = i+1;   // refleja el cambio en memoria para que el redibujo sea inmediato
+    });
+    await batch.commit();
+    renderTicketsHoy(); renderKanban();
   }catch(e){
     console.error(e);
     showAlert('tareo','No se pudo reordenar. Intenta de nuevo.','warn');
@@ -1087,7 +1124,8 @@ function renderAndree(){
       const esFuturo=fechaStrToDate(fechaTkt)>fechaStrToDate(hoyStr());
       const pendienteVencido=!done&&esHoyTkt&&hora>=17;
       const alertaRojo=pendienteVencido||(!done&&esAnterior);
-      const orden=numeroOrdenTicket(t);
+      const ordenInfo=posicionOrdenTicket(t);
+      const orden=ordenInfo?ordenInfo.pos:null;
       const ordenBadge=orden?`<span title="Orden de ejecución" style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#e8e8e6;font-size:10px;font-weight:700;color:#555;margin-right:6px">${orden}</span>`:'';
       return `<div class="andree-item ${done?'done':''}" style="${alertaRojo?'border:1.5px solid #E24B4A;background:#fff8f8;':''}">
         ${alertaRojo?`<div style="background:#E24B4A;color:#fff;font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px 4px 0 0;margin:-8px -8px 8px -8px">⚠ PENDIENTE DE REGISTRAR TIEMPO</div>`:''}
@@ -1478,7 +1516,8 @@ function renderKanban(){
       const names=t.nombres.map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
       const done=!!t.tu_real;
       const tieneInc=t.incidencias&&t.incidencias.length>0;
-      const orden=numeroOrdenTicket(t);
+      const ordenInfo=posicionOrdenTicket(t);
+      const orden=ordenInfo?ordenInfo.pos:null;
       return `<div class="kanban-card ${done?'kanban-card-done':''} ${tieneInc?'kanban-card-inc':''}">
         <div class="kanban-card-top">
           <span class="kanban-card-name">${orden?`<span title="Orden de ejecución" style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:#e8e8e6;font-size:9px;font-weight:700;color:#555;margin-right:4px">${orden}</span>`:''}${names}</span>
@@ -1488,9 +1527,9 @@ function renderKanban(){
         <div class="kanban-card-tarea">${escapeHtml(t.tarea)}</div>
         ${tieneInc?`<div style="font-size:9px;color:#f57f17;margin-top:3px">${escapeHtml(t.incidencias[t.incidencias.length-1].descripcion)}</div>`:''}
         <div class="kanban-card-nums"><span>${t.n} ud.</span><span>${t.tu}'</span><span class="kanban-card-tt">${t.tt}h</span></div>
-        ${orden?`<div class="no-print" style="display:flex;justify-content:flex-end;gap:6px;margin-top:3px">
-          <button onclick="moverOrdenTicket('${t.fbId}',-1)" title="Subir prioridad" style="border:none;background:none;cursor:pointer;font-size:10px;color:#999;padding:0">▲</button>
-          <button onclick="moverOrdenTicket('${t.fbId}',1)" title="Bajar prioridad" style="border:none;background:none;cursor:pointer;font-size:10px;color:#999;padding:0">▼</button>
+        ${orden&&ordenInfo.total>1?`<div class="no-print" style="display:flex;justify-content:flex-end;gap:6px;margin-top:3px">
+          <button onclick="moverOrdenTicket('${t.fbId}',-1)" title="Subir prioridad" ${ordenInfo.pos===1?'disabled':''} style="border:none;background:none;font-size:10px;color:#999;padding:0;cursor:${ordenInfo.pos===1?'default':'pointer'};opacity:${ordenInfo.pos===1?'0.25':'1'}">▲</button>
+          <button onclick="moverOrdenTicket('${t.fbId}',1)" title="Bajar prioridad" ${ordenInfo.pos===ordenInfo.total?'disabled':''} style="border:none;background:none;font-size:10px;color:#999;padding:0;cursor:${ordenInfo.pos===ordenInfo.total?'default':'pointer'};opacity:${ordenInfo.pos===ordenInfo.total?'0.25':'1'}">▼</button>
         </div>`:''}
       </div>`;
     }).join('')||`<div class="kanban-empty">Sin tareas</div>`;
@@ -3055,6 +3094,60 @@ async function eliminarProyectosDuplicadosTC() {
 }
 window.eliminarProyectosDuplicadosTC=eliminarProyectosDuplicadosTC;
 
+// ===== MIGRACIÓN AL ESQUEMA 2 =====
+// Rellena en los tickets ya guardados los campos que antes no existían: fecha ISO,
+// identificador de trabajador, marca de guardado y versión de esquema. Es aditiva: no
+// modifica ni borra ningún campo existente, así que ninguna vista actual cambia.
+// Se ejecuta a mano desde Configuración → Administración y se puede repetir sin problema:
+// solo toca los tickets a los que les falta algo.
+async function migrarEsquemaTickets(){
+  if(!requiereAdmin()) return;
+  const pendientes = historial.filter(t =>
+    !t.fechaISO || !t.guardado || t.trabajadorId===undefined || t.esquemaV!==ESQUEMA_VERSION
+  );
+  if(!pendientes.length){
+    showAlert('config','Todos los tickets ya están en el esquema '+ESQUEMA_VERSION+'.','success');
+    return;
+  }
+  if(!confirm('Se van a completar '+pendientes.length+' tickets con fecha ISO, ID de trabajador y versión de esquema.\n\nEs una operación aditiva: no borra ni cambia ningún dato existente.\n\n¿Continuar?')) return;
+
+  setStatus('Migrando '+pendientes.length+' tickets...');
+  let ok=0, sinFecha=0, sinTrabajador=0;
+  try{
+    // Firestore admite hasta 500 operaciones por lote; se usan tandas de 400 por margen.
+    for(let i=0; i<pendientes.length; i+=400){
+      const tanda = pendientes.slice(i, i+400);
+      const batch = writeBatch(db);
+      tanda.forEach(t => {
+        const ids   = idsDeTrabajadores(t.nombres);
+        const iso   = fechaAISO(t.fechaEjecucion);
+        const datos = {esquemaV: ESQUEMA_VERSION};
+        if(iso) datos.fechaISO = iso; else sinFecha++;
+        if(!t.guardado) datos.guardado = (typeof t.fechaCreacion==='string' && t.fechaCreacion.includes('T'))
+          ? t.fechaCreacion : new Date().toISOString();
+        datos.trabajadorIds = ids;
+        datos.trabajadorId  = ids[0] || null;
+        if(!ids[0]) sinTrabajador++;
+        batch.update(doc(db,'historial',t.fbId), datos);
+        Object.assign(t, datos);   // refleja el cambio en memoria
+      });
+      await batch.commit();
+      ok += tanda.length;
+      setStatus('Migrando... '+ok+'/'+pendientes.length);
+    }
+    setStatus('');
+    let msg = 'Migrados '+ok+' tickets al esquema '+ESQUEMA_VERSION+'.';
+    if(sinFecha)      msg += ' '+sinFecha+' sin fecha reconocible (revisar a mano).';
+    if(sinTrabajador) msg += ' '+sinTrabajador+' con un nombre que ya no existe en Trabajadores.';
+    showAlert('config', msg, sinFecha||sinTrabajador ? 'warn' : 'success');
+  }catch(e){
+    console.error(e);
+    setStatus('');
+    showAlert('config','La migración se detuvo tras '+ok+' tickets. Puedes volver a ejecutarla: continúa donde quedó.','warn');
+  }
+}
+window.migrarEsquemaTickets = migrarEsquemaTickets;
+
 async function normalizarProyectosFirebase() {
   if(!requiereAdmin()) return;
   if(!confirm('Esto normalizará los nombres de proyectos en todos los tickets de Firebase. ¿Continuar?')) return;
@@ -4468,6 +4561,13 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
   <div class="card">
     <div class="card-title">⚙️ Administración (solo Ricardo)</div>
     <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0">
+      <div>
+        <div style="font-size:13px;font-weight:500;color:var(--text-primary)">Completar tickets al esquema 2</div>
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">Agrega fecha ISO, ID de trabajador y versión de esquema a los tickets guardados antes de este cambio. Es aditivo: no borra ni modifica nada existente, y se puede repetir</div>
+      </div>
+      <button class="btn" onclick="migrarEsquemaTickets()" style="background:#854F0B;color:#fff;border:none;flex-shrink:0;margin-left:16px">🔧 Completar esquema</button>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-top:0.5px solid var(--border)">
       <div>
         <div style="font-size:13px;font-weight:500;color:var(--text-primary)">Normalizar nombres de proyectos</div>
         <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">Corrige tickets con nombres inconsistentes (SHERATON, DAGOS, TRIBECA, etc.) y los unifica con el código correcto</div>
