@@ -7,7 +7,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, setDoc, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, setDoc, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
 const firebaseConfig = {
@@ -20,7 +20,22 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
+// Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
+// cierre o recarga de la pestaña y se sincroniza solo al volver el internet. Sin esto la
+// caché vive únicamente en memoria: un F5 sin señal borra lo registrado sin dejar rastro,
+// y la pantalla ya lo había mostrado como guardado.
+// persistentMultipleTabManager permite tener la app abierta en varias pestañas o equipos.
+let db;
+try{
+  db = initializeFirestore(app, {
+    localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+  });
+}catch(e){
+  // Navegador sin IndexedDB disponible (incógnito, versiones antiguas): se continúa con la
+  // caché en memoria, que es el comportamiento que la app tenía hasta ahora.
+  console.warn('Sin persistencia en disco, se usa caché en memoria:', e);
+  db = getFirestore(app);
+}
 const auth = getAuth(app);
 
 const AREAS_LIST = ["HABILITADO","ENSAMBLE","FIERRO","PINTURA DE FIERRO","EVA","ACABADO","MANTENIMIENTO","PROD-ADMIN"];
@@ -157,7 +172,17 @@ async function init() {
   suscribirHistorial();suscribirM3();suscribirAusencias();suscribirNotas();
 }
 
-function setStatus(msg){const el=document.getElementById('db-status');el.textContent=msg;el.style.display=msg?'block':'none';}
+// Cuántos registros están escritos en local pero todavía no confirmados por el servidor.
+let pendientesSync = 0;
+// Cuando no hay ningún mensaje que mostrar, la píldora del encabezado pasa a informar
+// si queda algo sin sincronizar. Así el usuario nunca cree que todo llegó cuando no llegó.
+function setStatus(msg){
+  const el=document.getElementById('db-status');
+  if(!el) return;
+  const texto = msg || (pendientesSync ? '⏳ '+pendientesSync+' sin sincronizar' : '');
+  el.textContent=texto;
+  el.style.display=texto?'block':'none';
+}
 
 // ===== TRABAJADORES =====
 async function cargarTrabajadores() {
@@ -434,12 +459,10 @@ async function agregarTicket(){
     t1,t2,proy,prod,tarea,n,tu,fechaEjec,operacion,detalle,opDef,
     areaEjec:document.getElementById('t-area-ejec')?.value||null
   });
-  try{
-    setStatus('Guardando...');
-    await addDoc(collection(db,'historial'),ticket);
-    setStatus('');limpiarForm();actualizarHorasTrabajador();
-    showAlert('tareo','Ticket guardado — visible para Andree.','success');
-  }catch(e){setStatus('');showAlert('tareo','Error al guardar.','warn');}
+  const ok=await escribir('guardar el ticket', ()=>addDoc(collection(db,'historial'),ticket),
+    {exito:'Ticket guardado — visible para Andree.'});
+  if(!ok) return;
+  limpiarForm();actualizarHorasTrabajador();
 }
 
 async function confirmarTicketSobrecarga(){
@@ -542,6 +565,7 @@ function ticketCardHTML(t){
       <div class="ticket-field"><div class="ticket-field-label">Proyecto</div><div class="ticket-field-value" style="font-size:11px">${t.proyectoCodigo?(proyectosTC.find(p=>p.codigo===t.proyectoCodigo)?.nombre||t.proyecto):t.proyecto}</div></div>
       <div class="ticket-field"><div class="ticket-field-label">Producto</div><div class="ticket-field-value" style="font-size:11px">${escapeHtml(t.producto)}</div></div>
       <div class="ticket-field"><div class="ticket-field-label">Tarea</div><div class="ticket-field-value">${escapeHtml(t.tarea)}</div></div>
+      ${t.sinSincronizar?`<div style="margin-top:6px;padding:4px 8px;background:#fff8e1;border-radius:6px;font-size:11px;color:#9a6510" title="Registrado en este dispositivo. Se enviará al servidor en cuanto vuelva la conexión.">⏳ Sin sincronizar</div>`:''}
       ${t.incidencias&&t.incidencias.length?`<div style="margin-top:6px;padding:4px 8px;background:#fff8e1;border-radius:6px;font-size:11px;color:#f57f17">⚠ ${t.incidencias.length} incidencia${t.incidencias.length>1?'s':''}</div>`:''}
     </div>
     <div class="ticket-nums-row">
@@ -1084,8 +1108,12 @@ async function migrarTicketsAntiguos() {
 
 function suscribirHistorial(){
   if(unsubHist)unsubHist();
-  unsubHist=onSnapshot(collection(db,'historial'),snap=>{
-    historial=snap.docs.map(d=>({fbId:d.id,...d.data()}));
+  // includeMetadataChanges: el listener también se dispara cuando el servidor confirma una
+  // escritura que estaba pendiente, que es lo que hace desaparecer el aviso de "sin
+  // sincronizar" sin tener que recargar.
+  unsubHist=onSnapshot(collection(db,'historial'),{includeMetadataChanges:true},snap=>{
+    historial=snap.docs.map(d=>({fbId:d.id,...d.data(),sinSincronizar:d.metadata.hasPendingWrites}));
+    pendientesSync = historial.filter(t=>t.sinSincronizar).length;
     historial.sort((a,b)=>new Date(b.guardado||0)-new Date(a.guardado||0));
     setStatus('');
     migrarTicketsAntiguos();aplicarPerfil();refrescarVista();
@@ -2933,21 +2961,33 @@ function mensajeDeError(accion, e){
   return 'No se pudo '+accion+'. No se guardó nada; puedes volver a intentar.';
 }
 
+// Firestore aplica la escritura en la caché local de inmediato, pero la promesa que
+// devuelve solo se resuelve cuando el SERVIDOR la confirma. Sin conexión esa promesa se
+// queda esperando indefinidamente: si la interfaz la espera, se cuelga en "Guardando..."
+// y el formulario nunca se limpia, aunque el dato ya esté registrado.
+// Por eso no se espera la confirmación del servidor para responder. El cambio ya está
+// aplicado, la sincronización va sola, y si el servidor lo rechaza (permisos, datos
+// inválidos) Firestore revierte el cambio local y aquí se avisa.
 async function escribir(accion, fn, opts){
   opts = opts || {};
   const pagina = opts.pagina || 'tareo';
+  let promesa;
   try{
-    setStatus(opts.trabajando || 'Guardando...');
-    await fn();
-    setStatus('');
-    if(opts.exito) showAlert(pagina, opts.exito, 'success');
-    return true;
+    promesa = fn();
   }catch(e){
-    setStatus('');
+    // Error inmediato, antes de tocar la caché: referencia mala o datos inválidos.
     console.error('['+accion+']', e);
     showAlert(pagina, mensajeDeError(accion, e), 'warn');
     return false;
   }
+  const offline = (typeof navigator!=='undefined' && navigator.onLine===false);
+  setStatus('');
+  if(opts.exito) showAlert(pagina, opts.exito + (offline ? ' — sin conexión, se sincroniza al reconectar.' : ''), offline ? 'warn' : 'success');
+  Promise.resolve(promesa).catch(e => {
+    console.error('['+accion+']', e);
+    showAlert(pagina, mensajeDeError(accion, e), 'warn');
+  });
+  return true;
 }
 
 // ===== REDIBUJADO SELECTIVO =====
