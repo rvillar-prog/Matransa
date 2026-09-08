@@ -81,6 +81,46 @@ function fechaEjecucionDefecto() {
   return objetivo.toLocaleDateString('es-PE');
 }
 function hoyStr() { return new Date().toLocaleDateString('es-PE'); }
+// ===== COLOR SÓLIDO POR ÁREA =====
+// Los mismos valores que ya usaban las clases .num-* — un solo lugar de ahora en adelante.
+// El área deja de pintar el relleno grande de la tarjeta y pasa a la franja lateral.
+const AREA_COLOR={"HABILITADO":"#7c3aed","ENSAMBLE":"#2563eb","FIERRO":"#ea580c","PINTURA DE FIERRO":"#db2777","EVA":"#0891b2","ACABADO":"#16a34a","MANTENIMIENTO":"#6b7280","PROD-ADMIN":"#555555","PENDIENTE":"#d97706"};
+
+// ===== ESTADO DEL TICKET =====
+// Regla de color de toda la app: lo normal no se pinta, el color marca la excepción.
+// Un tablero donde todo grita no señala nada; si algo aparece en rojo o ámbar es porque
+// de verdad pasa algo.
+//
+// Son cuatro estados y son los únicos deducibles de los datos que ya existen. En particular
+// NO existe "en curso": ningún campo registra que una tarea arrancó — tu_real aparece recién
+// cuando Andree la cierra. Inventarlo obligaría a que alguien apriete un botón al empezar
+// cada tarea, y un estado que nadie actualiza miente peor que no tenerlo.
+const ESTADOS_TICKET={
+  vencido:    {clase:'tk-vencido',    rotulo:'No ejecutado — venció el día', icono:'!', color:'#B32E26'},
+  completado: {clase:'tk-completado', rotulo:'Completado',                   icono:'✓', color:'#16803D'},
+  aviso:      {clase:'tk-aviso',      rotulo:'Requiere revisión',            icono:'⚠', color:'#B7791F'},
+  pendiente:  {clase:'tk-pendiente',  rotulo:'Sin empezar',                  icono:'○', color:'#57564F'}
+};
+// Precedencia: primero lo que exige acción (vencido), luego lo que ya cerró (completado),
+// luego los avisos, y al final lo normal. Un ticket completado con incidencia se muestra
+// como completado: la incidencia sigue visible como chip en el cuerpo.
+function estadoTicket(t){
+  const hecho = t.tu_real!=null && t.tu_real!=='';
+  const fej   = t.fechaEjecucion||t.fecha||hoyStr();
+  const d     = fechaStrToDate(fej);
+  const hoy   = fechaStrToDate(hoyStr());
+  const ahora = new Date();
+  const hora  = ahora.getHours()+ahora.getMinutes()/60;
+  const vencido = !hecho && (d<hoy || (d.getTime()===hoy.getTime() && hora>=17));
+  let clave;
+  if(vencido) clave='vencido';
+  else if(hecho) clave='completado';
+  else if(t.sinSincronizar || (t.incidencias&&t.incidencias.length)) clave='aviso';
+  else clave='pendiente';
+  return Object.assign({clave}, ESTADOS_TICKET[clave]);
+}
+
+
 function fechaStrToDate(str) {
   const [d,m,y] = str.split('/');
   return new Date(y, m-1, d);
@@ -629,21 +669,27 @@ function renderTicketsHoy(){
 
 function ticketCardHTML(t){
   const area=t.nombres&&t.nombres.length>0?getAreaEjecucion(t):'PENDIENTE';
-  const aClass=area==='PENDIENTE'?'area-pendiente':(AREA_CLASS[area]||'area-prod');
   const nClass=area==='PENDIENTE'?'num-pendiente':(NUM_CLASS[area]||'num-prod');
+  const est=estadoTicket(t);
   const names=t.nombres&&t.nombres.length>0?t.nombres.map(n=>n.split(' ').slice(0,2).join(' ')).join(' / '):'Sin asignar';
   const ordenInfo=posicionOrdenTicket(t);
   const orden=ordenInfo?ordenInfo.pos:null;
   const ordenBadge=orden?`<div title="Orden de ejecución del día" style="width:22px;height:22px;border-radius:50%;background:rgba(255,255,255,0.9);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#333;flex-shrink:0">${orden}</div>`:'';
-  return `<div class="ticket-card">
-    <div class="ticket-card-header ${aClass}">
+  // El punto lleva el glifo además del color: se distingue en pantalla, en escala de grises
+  // y por alguien que no separa bien rojo de verde.
+  const punto=`<span class="tk-punto" style="color:${est.color}" title="${est.rotulo}">${est.icono}</span>`;
+  const sello=est.clave==='completado'
+    ? `<div class="tk-sello">✓ Completado · real ${(t.n*t.tu_real/60).toFixed(2)} h</div>` : '';
+  return `<div class="ticket-card${est.clave==='completado'?' tk-hecho':''}" style="--area-color:${AREA_COLOR[area]||'#8a8985'}">
+    <div class="ticket-card-header ${est.clase}">
       <div style="display:flex;align-items:center;gap:8px">${ordenBadge}<div><div class="ticket-card-names">${names}</div><div class="ticket-card-area">${area}</div></div></div>
-      <button class="ticket-remove-btn no-print" onclick="ocultarDeTareo('${t.fbId}')" title="Quitar del tareo">×</button>
+      <div style="display:flex;align-items:center;gap:7px">${punto}<button class="ticket-remove-btn no-print" onclick="ocultarDeTareo('${t.fbId}')" title="Quitar del tareo">×</button></div>
     </div>
     <div class="ticket-card-body">
       <div class="ticket-field"><div class="ticket-field-label">Proyecto</div><div class="ticket-field-value" style="font-size:11px">${t.proyectoCodigo?(proyectosTC.find(p=>p.codigo===t.proyectoCodigo)?.nombre||t.proyecto):t.proyecto}</div></div>
       <div class="ticket-field"><div class="ticket-field-label">Producto</div><div class="ticket-field-value" style="font-size:11px">${escapeHtml(t.producto)}</div></div>
       <div class="ticket-field"><div class="ticket-field-label">Tarea</div><div class="ticket-field-value">${escapeHtml(t.tarea)}</div></div>
+      ${sello}
       ${t.sinSincronizar?`<div style="margin-top:6px;padding:4px 8px;background:#fff8e1;border-radius:6px;font-size:11px;color:#9a6510" title="Registrado en este dispositivo. Se enviará al servidor en cuanto vuelva la conexión.">⏳ Sin sincronizar</div>`:''}
       ${t.incidencias&&t.incidencias.length?`<div style="margin-top:6px;padding:4px 8px;background:#fff8e1;border-radius:6px;font-size:11px;color:#f57f17">⚠ ${t.incidencias.length} incidencia${t.incidencias.length>1?'s':''}</div>`:''}
     </div>
@@ -1295,7 +1341,7 @@ function renderAndree(){
       const ordenBadge=orden?`<span title="Orden de ejecución" style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#e8e8e6;font-size:10px;font-weight:700;color:#555;margin-right:6px">${orden}</span>`:'';
       return `<div class="andree-item ${done?'done':''}" style="${alertaRojo?'border:1.5px solid #E24B4A;background:#fff8f8;':''}">
         ${alertaRojo?`<div style="background:#E24B4A;color:#fff;font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px 4px 0 0;margin:-8px -8px 8px -8px">⚠ PENDIENTE DE REGISTRAR TIEMPO</div>`:''}
-        <div class="status-dot ${done?'dot-done':'dot-pending'}"></div>
+        <div class="status-dot" style="background:${estadoTicket(t).color}" title="${estadoTicket(t).rotulo}"></div>
         <div class="andree-info">
           <div class="andree-name">${ordenBadge}${names} <span style="font-size:10px;color:#aaa;font-weight:400">· ${area}</span></div>
           <div class="andree-sub">${escapeHtml(t.proyecto)} · ${escapeHtml(t.producto)} · ${escapeHtml(t.tarea)}</div>
@@ -4213,6 +4259,14 @@ onAuthStateChanged(auth, (user) => {
   --text-muted:     #aaa9a7;
   --amber:     #e8a020;
   --amber-soft:#fff8e8;
+  /* ---- Estado del ticket. Lo normal es carbón; el color marca la excepción. ---- */
+  --tk-pendiente:      #57564F;
+  --tk-pendiente-fill: linear-gradient(135deg,#2E2D29,#4A4943);
+  --tk-completado:     #16803D;
+  --tk-vencido:        #B32E26;
+  --tk-vencido-fill:   linear-gradient(135deg,#7f1d1d,#B32E26);
+  --tk-aviso:          #B7791F;
+  --tk-aviso-fill:     linear-gradient(135deg,#8a5a08,#B7791F);
   --radius:    8px;
   --radius-lg: 12px;
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
@@ -4256,8 +4310,17 @@ nav .right{display:flex;align-items:center;gap:10px;}
 .tickets-section-header{display:flex;align-items:center;justify-content:space-between;margin:1.5rem 0 0.75rem;}
 .tickets-section-title{font-size:14px;font-weight:600;color:var(--text-primary);}.tickets-count{background:#141413;color:#fff;border-radius:20px;padding:2px 10px;font-size:11px;font-weight:600;}
 .tickets-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:0.875rem;}
-.ticket-card{background:var(--surface-0);border-radius:var(--radius-lg);border:1px solid var(--border);overflow:hidden;box-shadow:var(--shadow-sm);transition:box-shadow 0.15s;}
+.ticket-card{background:var(--surface-0);border-radius:var(--radius-lg);border:1px solid var(--border);border-left:6px solid var(--area-color,#8a8985);overflow:hidden;box-shadow:var(--shadow-sm);transition:box-shadow 0.15s,opacity 0.15s;}
 .ticket-card:hover{box-shadow:var(--shadow);}
+/* Completado: ya cumplió su función, se retira de la vista sin desaparecer */
+.ticket-card.tk-hecho{opacity:0.62;}
+.ticket-card.tk-hecho:hover{opacity:1;}
+/* Sin empezar y completado comparten el carbón: ninguno de los dos pide acción */
+.ticket-card-header.tk-pendiente,.ticket-card-header.tk-completado{background:var(--tk-pendiente-fill);}
+.ticket-card-header.tk-vencido{background:var(--tk-vencido-fill);}
+.ticket-card-header.tk-aviso{background:var(--tk-aviso-fill);}
+.tk-punto{width:16px;height:16px;border-radius:50%;background:rgba(255,255,255,0.93);font-size:10px;font-weight:800;line-height:16px;text-align:center;display:inline-block;flex-shrink:0;}
+.tk-sello{margin-top:6px;padding:4px 8px;background:#E8F3E9;border-radius:6px;font-size:11px;color:#14602F;font-weight:600;}
 .ticket-card-header{padding:0.75rem 1rem;display:flex;justify-content:space-between;align-items:flex-start;}
 .ticket-card-names{font-size:13px;font-weight:700;color:#fff;line-height:1.3;flex:1;}
 .ticket-card-area{font-size:10px;font-weight:600;color:rgba(255,255,255,0.7);margin-top:2px;text-transform:uppercase;letter-spacing:0.3px;}
