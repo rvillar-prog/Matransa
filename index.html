@@ -201,6 +201,8 @@ function suscribirTrabajadores(){
     poblarSelectTrabajadores();renderConfigTrabajadores();
     renderTicketsHoy();
     if(document.getElementById('page-personal')?.classList.contains('active')) renderPersonal();
+    // Alta, baja o cambio de área de un operario cambia quién debería tener tareo.
+    refrescarVista();
   });
 }
 
@@ -1077,7 +1079,8 @@ function sortTicketsByArea(tickets) {
 
 // Flag para migración — solo corre una vez por sesión
 let migrationDone = false;
-let unsubOfs = null;   // evita suscripciones duplicadas a la colección 'ofs'
+let unsubOfs = null;      // evita suscripciones duplicadas a la colección 'ofs'
+let unsubProyTC = null;   // idem para 'proyectosTC'
 
 // ===== MIGRACIÓN: normalizar tickets antiguos =====
 async function migrarTicketsAntiguos() {
@@ -2076,6 +2079,14 @@ function renderAtencion(){
 }
 window.renderAtencion=renderAtencion;
 
+// Varias alertas dependen de la hora y de la fecha, no de que cambie algo en la base: el
+// aviso de "sin tareo mañana" entra a las 5pm, los días acumulados de las OF estancadas
+// suben cada medianoche y el "día hábil anterior" cambia al día siguiente. Sin esto, una
+// pantalla dejada abierta se quedaría congelada en el estado del último cambio — justo lo
+// contrario de lo que se necesita si se deja puesta en un monitor.
+// El recálculo no consulta nada a Firestore: los datos ya están en memoria.
+setInterval(()=>{ if(paginaActiva()==='atencion') renderAtencion(); }, 5*60*1000);
+
 function renderPendientes() {
   // Mostrar todos los tickets pendientes sin asignar (hoy y futuro)
   const pendientes = historial.filter(t=>t.pendiente===true&&(t.nombres||[]).length===0);
@@ -2523,6 +2534,16 @@ async function cargarTorre() {
     // cargarTorre() se llama al arrancar Y cada vez que alguien entra a Torre de Control.
     // Sin esta bandera se creaba un listener nuevo de 'ofs' en cada visita y se iban
     // acumulando suscripciones duplicadas, todas redibujando la misma pantalla.
+    // Los proyectos traen las fechas de entrega, de las que dependen las alertas de entrega
+    // próxima. Antes se cargaban una sola vez al abrir la app: cambiar una fecha no se veía
+    // hasta recargar la página.
+    if(!unsubProyTC){
+      unsubProyTC = onSnapshot(collection(db,'proyectosTC'), snap=>{
+        if(snap.empty) return;
+        proyectosTC = snap.docs.map(d=>({id:d.id,...d.data()}));
+        refrescarVista();
+      });
+    }
     if(!unsubOfs){
       unsubOfs = onSnapshot(collection(db,'ofs'), snap=>{
         ofs = snap.docs.map(d=>({fbId:d.id,...d.data()}));
@@ -3607,6 +3628,8 @@ function suscribirAusencias() {
     ausencias = snap.docs.map(d=>({fbId:d.id,...d.data()}));
     if(document.getElementById('page-personal')?.classList.contains('active')) renderPersonal();
     renderKanban();
+    // Atención cuenta los operarios sin tareo descontando a los ausentes.
+    refrescarVista();
   });
 }
 
