@@ -367,7 +367,7 @@ function autocompletarUltimoTareo(){
   actualizarProductos();
   const selProd=document.getElementById('t-producto');
   if(ult.producto&&[...selProd.options].some(o=>o.value===ult.producto)) selProd.value=ult.producto;
-  actualizarOperaciones(ult.operacion||'');
+  actualizarOperaciones(ult.operacion==='Otra'?OPERACION_OTRA:(ult.operacion||''));
   document.getElementById('t-tarea').value=(ult.detalle!==undefined&&ult.detalle!==null)?ult.detalle:(ult.tarea||'');
   document.getElementById('t-tu').value=ult.tu||'';
   // Nota: NO se autocompleta "Área de ejecución" — ese campo es para excepciones puntuales
@@ -445,6 +445,7 @@ function construirTicket(d){
     tarea: d.tarea, n: d.n, tu: d.tu,
     tt: parseFloat((d.n * d.tu / 60).toFixed(2)),
     operacion:     d.operacion || null,
+    fueraCatalogo: d.fueraCatalogo === true,
     detalle:       d.detalle || null,
     unidad:        d.opDef ? (d.opDef.unidad || null) : null,
     metodoCaptura: d.opDef ? d.opDef.captura : null,
@@ -492,9 +493,16 @@ function validarFormTareo(d){
   pedir(!d.t1,        't-t1',        'Elige el trabajador principal', 'trabajador');
   pedir(!d.proy,      't-proyecto',  'Elige el proyecto',             'proyecto');
   pedir(!d.prod,      't-producto',  'Elige el producto',             'producto');
-  if(!d.operacion && !d.detalle){
-    marcarCampo('t-operacion','Elige una operación del catálogo o escribe el detalle');
-    faltan.push({id:'t-operacion',etiqueta:'operación o detalle'});
+  // Con catalogo disponible la operacion es obligatoria. "Otra" es una respuesta valida, pero
+  // entonces el detalle deja de ser opcional: un ticket "Otra" sin texto no dice nada, no sirve
+  // ni para medir ni para completar el catalogo.
+  if(areaTieneCatalogo(d.area)){
+    pedir(!d.operacion, 't-operacion', 'Elige la operaci\u00f3n (o "Otra \u2014 no est\u00e1 en la lista")', 'operaci\u00f3n');
+    if(d.operacion === OPERACION_OTRA)
+      pedir(!d.detalle, 't-tarea', 'Escribe qu\u00e9 operaci\u00f3n fue: as\u00ed se decide si entra al cat\u00e1logo', 'detalle de la operaci\u00f3n');
+  } else if(!d.operacion && !d.detalle){
+    marcarCampo('t-operacion','Elige una operaci\u00f3n del cat\u00e1logo o escribe el detalle');
+    faltan.push({id:'t-operacion',etiqueta:'operaci\u00f3n o detalle'});
   }
   pedir(!d.n||d.n<1,  't-n',         'Debe ser 1 o más',              'nº de unidades');
   pedir(!d.tu||d.tu<1,'t-tu',        'Debe ser 1 minuto o más',       'tiempo unitario');
@@ -527,18 +535,22 @@ async function agregarTicket(){
   const t2=document.getElementById('t-t2').value;
   const proy=document.getElementById('t-proyecto').value;
   const prod=document.getElementById('t-producto').value;
-  const operacion=document.getElementById('t-operacion')?document.getElementById('t-operacion').value:'';
+  const operacionSel=document.getElementById('t-operacion')?document.getElementById('t-operacion').value:'';
+  // "Otra" se guarda como tal: queda contable por area y por semana, que es lo que permite
+  // decidir despues si falta una operacion en el catalogo o si fue un caso suelto.
+  const fueraCatalogo=operacionSel===OPERACION_OTRA;
+  const operacion=fueraCatalogo?'Otra':operacionSel;
   const detalle=document.getElementById('t-tarea').value.trim();
   // Convivencia: mientras el catálogo se termina de validar, se acepta operación del catálogo
   // o texto libre. "tarea" se sigue guardando siempre para que Kanban, Historial, impresión y
   // Excel no cambien; si hay operación y no hay detalle, "tarea" toma el nombre de la operación.
   const tarea=detalle||operacion;
-  const opDef=operacion?buscarOperacion(areaFormTareo(),operacion):null;
+  const opDef=(operacion&&!fueraCatalogo)?buscarOperacion(areaFormTareo(),operacion):null;
   const n=parseInt(document.getElementById('t-n').value);
   const tu=parseInt(document.getElementById('t-tu').value);
   const fechaEjec=document.getElementById('t-fecha-ejec').value;
   if(guardandoTicket) return;   // ya hay un guardado en curso: se ignora el segundo clic
-  if(!validarFormTareo({t1,proy,prod,operacion,detalle,n,tu,fechaEjec})) return;
+  if(!validarFormTareo({t1,proy,prod,operacion:operacionSel,detalle,n,tu,fechaEjec,area:areaFormTareo()})) return;
   const ttNuevo=parseFloat((n*tu/60).toFixed(2));
   const nombresNuevo=[t1,t2].filter(Boolean);
 
@@ -557,7 +569,7 @@ async function agregarTicket(){
     if(horasNom>8) sobrecargaMsg.push(`${nom.split(' ').slice(0,2).join(' ')} tendrá <strong>${horasNom.toFixed(1)}h</strong>`);
   });
   if(sobrecargaMsg.length>0){
-    window._ticketPendiente={t1,t2,proy,prod,tarea,n,tu,fechaEjec,operacion,detalle,opDef,areaEjec:document.getElementById('t-area-ejec')?document.getElementById('t-area-ejec').value||null:null};
+    window._ticketPendiente={t1,t2,proy,prod,tarea,n,tu,fechaEjec,operacion,fueraCatalogo,detalle,opDef,areaEjec:document.getElementById('t-area-ejec')?document.getElementById('t-area-ejec').value||null:null};
     const al=document.getElementById('alert-sobrecarga');
     al.innerHTML=`<strong>⚠ Sobrecarga detectada</strong><br>${sobrecargaMsg.join(' / ')} asignadas para ${fechaEjec} (máx. recomendado: 8h).<div style="margin-top:8px;display:flex;gap:8px"><button onclick="confirmarTicketSobrecarga()" class="btn btn-xs btn-amber">Guardar igual</button><button onclick="document.getElementById('alert-sobrecarga').style.display='none'" class="btn btn-xs">Cancelar</button></div>`;
     al.style.display='block';
@@ -565,7 +577,7 @@ async function agregarTicket(){
   }
 
   const ticket=construirTicket({
-    t1,t2,proy,prod,tarea,n,tu,fechaEjec,operacion,detalle,opDef,
+    t1,t2,proy,prod,tarea,n,tu,fechaEjec,operacion,fueraCatalogo,detalle,opDef,
     areaEjec:document.getElementById('t-area-ejec')?.value||null
   });
   // La confirmación nombra lo que se guardó. Un "listo" genérico no despeja la duda de si
@@ -641,18 +653,22 @@ function renderTicketsHoy(){
   // de vista, igual que antes.
   const ahora=new Date();
   const hora=ahora.getHours()+(ahora.getMinutes()/60);
+  const fueraVentana=[];
   const ticketsFiltrados=tickets.filter(t=>{
     const fej=t.fechaEjecucion||t.fecha;
     const d=fechaStrToDate(fej);
     const esAnterior=d<fechaStrToDate(hoy);
     if(esAnterior){
-      if(t.tu_real!=null) return false; // ya completado — no aporta en esta vista
-      if(hora>=17) return false; // pendiente pero ya pasó el día
+      if(t.tu_real!=null) return false; // ya completado \u2014 no aporta en esta vista
+      if(hora>=17) return false; // pendiente pero ya pas\u00f3 el d\u00eda
+      // Fuera de la ventana de arrastre no se borra de la vista: se aparta. Hacer desaparecer
+      // en silencio un ticket real es peor que mostrarlo \u2014 nadie lo reclama y nadie lo cierra.
+      if(!dentroDeVentana(fej)){ fueraVentana.push(t); return false; }
     }
     return true;
   });
   const grupos=Object.keys(Object.fromEntries(ticketsFiltrados.map(t=>[t.fechaEjecucion||t.fecha,true]))).sort((a,b)=>fechaStrToDate(a)-fechaStrToDate(b));
-  wrap.innerHTML=grupos.map(fecha=>{
+  let htmlTareo=grupos.map(fecha=>{
     const esHoy=fecha===hoy;
     const mañana=new Date();mañana.setDate(mañana.getDate()+1);
     const manStr2=mañana.toLocaleDateString('es-PE');
@@ -665,7 +681,42 @@ function renderTicketsHoy(){
     </div>
     <div class="tickets-grid">${grupo.map(ticketCardHTML).join('')}</div>`;
   }).join('');
+  if(!ticketsFiltrados.length) htmlTareo='<div class="empty"><div class="empty-icon">\ud83d\udccb</div><div>Sin tickets dentro de la ventana de trabajo.</div></div>';
+  if(fueraVentana.length) htmlTareo+=bloqueFueraVentana(fueraVentana);
+  wrap.innerHTML=htmlTareo;
 }
+
+// Cola de lo que quedo fuera de la ventana. Se ve, se puede abrir y se puede cerrar o quitar,
+// pero no compite con el tareo del dia. El contador es la metrica que importa: si crece, el
+// problema no es la ventana, es que los tickets no se estan cerrando.
+function bloqueFueraVentana(lista){
+  const porFecha={};
+  lista.forEach(t=>{ const f=t.fechaEjecucion||t.fecha; porFecha[f]=(porFecha[f]||0)+1; });
+  const desglose=Object.entries(porFecha)
+    .sort((a,b)=>fechaStrToDate(a[0])-fechaStrToDate(b[0]))
+    .map(([f,c])=>`${c} del ${f}`).join(' \u00b7 ');
+  const plural=lista.length>1?'s':'';
+  return `<div class="no-print" style="margin-top:18px;border:1px solid #e6e4de;border-radius:10px;background:#faf9f7;overflow:hidden">
+    <div onclick="toggleFueraVentana()" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;cursor:pointer">
+      <div>
+        <div style="font-size:13px;font-weight:600;color:#6b6862">Fuera de la ventana \u2014 ${lista.length} ticket${plural} sin cerrar de m\u00e1s de ${VENTANA_ARRASTRE_DIAS} d\u00edas h\u00e1biles</div>
+        <div style="font-size:11px;color:#8a8985;margin-top:3px">${escapeHtml(desglose)} \u00b7 ya no se arrastran al tareo del d\u00eda: ci\u00e9rralos con Andree o qu\u00edtalos.</div>
+      </div>
+      <span id="fv-flecha" style="font-size:12px;color:#8a8985;white-space:nowrap">\u25be ver</span>
+    </div>
+    <div id="fv-lista" style="display:none;padding:0 14px 14px">
+      <div class="tickets-grid">${sortTicketsByArea(lista).map(ticketCardHTML).join('')}</div>
+    </div>
+  </div>`;
+}
+function toggleFueraVentana(){
+  const l=document.getElementById('fv-lista'), f=document.getElementById('fv-flecha');
+  if(!l) return;
+  const abierto=l.style.display!=='none';
+  l.style.display=abierto?'none':'block';
+  if(f) f.textContent=abierto?'\u25be ver':'\u25b4 ocultar';
+}
+window.toggleFueraVentana=toggleFueraVentana;
 
 function ticketCardHTML(t){
   const area=t.nombres&&t.nombres.length>0?getAreaEjecucion(t):'PENDIENTE';
@@ -1003,15 +1054,24 @@ const CATALOGO_OPERACIONES = [
   {area:'HABILITADO', grupo:'Cortes especiales',    nombre:'Corte CNC',          unidad:'pieza',         origen:'S', captura:'muestreo'},
 
   // ---------- FIERRO ----------
-  // "Soldar" y "Pulido" no salieron en el levantamiento pero son 35 de los 342 tickets
-  // registrados. Si Fierro las llama de otra forma, se cambia el nombre aquí y ya.
-  {area:'FIERRO', grupo:'Habilitado', nombre:'Soldar',            unidad:'unión soldada', origen:'C', captura:'muestreo'},
+  // Vocabulario confirmado con el coordinador de Fierro (8/9/2026):
+  //   soldar  → ellos lo llaman "Resoldado". La soldadura va en dos pasos sobre la misma
+  //             junta: primero "Apuntalado" (los puntos que fijan las piezas) y encima de
+  //             esos puntos el cordón. No son alternativas, son secuencia.
+  //   pulir   → ellos lo llaman "Satinado" (manual o al torno).
+  // Por eso se eliminaron las operaciones provisionales "Soldar" y "Pulido" que se habían
+  // agregado en paralelo: eran las mismas dos con nombre de oficina, y tenerlas duplicadas
+  // habría partido en dos el histórico de la misma operación.
+  // El sinónimo va en la etiqueta a propósito: el que elige en el desplegable arma el tareo
+  // desde oficina, no suelda. Si solo dijera "Resoldado", quien busca soldadura no la
+  // encuentra y termina escribiendo texto libre en Detalle — justo lo que el catálogo
+  // vino a reemplazar. Esta etiqueta se guarda tal cual en el campo `operacion`: no
+  // cambiarla otra vez sin migrar los tickets ya guardados.
   {area:'FIERRO', grupo:'Habilitado', nombre:'Corte de piezas',   unidad:'pieza',         origen:'C', captura:'muestreo'},
   {area:'FIERRO', grupo:'Habilitado', nombre:'Limpieza de filo',  unidad:'pieza',         origen:'C', captura:'muestreo'},
   {area:'FIERRO', grupo:'Habilitado', nombre:'Preparar machina',  unidad:'unidad',        origen:'C', captura:'muestreo'},
   {area:'FIERRO', grupo:'Habilitado', nombre:'Apuntalado',        unidad:'punto',         origen:'C', captura:'muestreo'},
-  {area:'FIERRO', grupo:'Habilitado', nombre:'Resoldado',         unidad:'unión',         origen:'C', captura:'muestreo'},
-  {area:'FIERRO', grupo:'Habilitado', nombre:'Pulido',            unidad:'pieza',         origen:'C', captura:'muestreo'},
+  {area:'FIERRO', grupo:'Habilitado', nombre:'Resoldado (soldar)',unidad:'unión',         origen:'C', captura:'muestreo'},
   {area:'FIERRO', grupo:'Habilitado', nombre:'Acabado de pieza',  unidad:'pieza',         origen:'C', captura:'muestreo'},
   {area:'FIERRO', grupo:'Maquinado',  nombre:'Corte en cizalla',  unidad:'pieza',         origen:'C', captura:'muestreo'},
   {area:'FIERRO', grupo:'Maquinado',  nombre:'Corte láser',       unidad:'pieza',         origen:'C', captura:'muestreo'},
@@ -1019,8 +1079,8 @@ const CATALOGO_OPERACIONES = [
   {area:'FIERRO', grupo:'Maquinado',  nombre:'Doblez manual',     unidad:'pieza',         origen:'C', captura:'muestreo'},
   {area:'FIERRO', grupo:'Maquinado',  nombre:'Rolado',            unidad:'pieza',         origen:'C', captura:'muestreo'},
   {area:'FIERRO', grupo:'Maquinado',  nombre:'Perforaciones',     unidad:'perforación',   origen:'C', captura:'muestreo'},
-  {area:'FIERRO', grupo:'Maquinado',  nombre:'Satinado manual',   unidad:'pieza',         origen:'C', captura:'muestreo'},
-  {area:'FIERRO', grupo:'Maquinado',  nombre:'Satinado torno',    unidad:'pieza',         origen:'C', captura:'muestreo'},
+  {area:'FIERRO', grupo:'Maquinado',  nombre:'Satinado manual (pulido)', unidad:'pieza',   origen:'C', captura:'muestreo'},
+  {area:'FIERRO', grupo:'Maquinado',  nombre:'Satinado torno (pulido)',   unidad:'pieza',   origen:'C', captura:'muestreo'},
 
   // ---------- PINTURA DE FIERRO ----------
   {area:'PINTURA DE FIERRO', grupo:'Preparación de superficies', nombre:'Limpieza',      unidad:'pieza', origen:'C', captura:'muestreo'},
@@ -1080,6 +1140,15 @@ const OPERACIONES_TRANSVERSALES = [
   {nombre:'Transporte interno',      unidad:'',       origen:'',  captura:'inicio-fin'},
 ];
 
+// Salida explicita del catalogo. Existe para que "no esta en la lista" sea una eleccion
+// registrada y contable, no un campo vacio: cada ticket con "Otra" es una operacion candidata
+// a entrar al catalogo, con el detalle escrito al lado.
+const OPERACION_OTRA = 'Otra \u2014 no est\u00e1 en la lista';
+
+function areaTieneCatalogo(area){
+  return !!area && operacionesDeArea(area).length > 0;
+}
+
 function operacionesDeArea(area){
   const propias = CATALOGO_OPERACIONES.filter(o => o.area === area);
   const transv  = OPERACIONES_TRANSVERSALES.map(o => Object.assign({area, grupo:'Transversales'}, o));
@@ -1111,7 +1180,11 @@ function actualizarOperaciones(mantener){
     return;
   }
   const ops = operacionesDeArea(area);
-  let html = '<option value="">— Sin operación (usar solo el detalle) —</option>';
+  // El area tiene catalogo, asi que la operacion deja de ser opcional. La salida sigue
+  // existiendo, pero explicita: de los 13 tickets del 8/9 que no usaron el desplegable, al
+  // menos 5 tenian la operacion a un clic. El escape no era falta de opciones, era que el
+  // formulario dejaba guardar con el detalle solo y nadie se enteraba.
+  let html = '<option value="">— Elige la operación —</option>';
   const grupos = [];
   ops.forEach(o => { if(!grupos.includes(o.grupo)) grupos.push(o.grupo); });
   grupos.forEach(g => {
@@ -1123,6 +1196,7 @@ function actualizarOperaciones(mantener){
     });
     if(g) html += '</optgroup>';
   });
+  html += '<option value="' + escapeHtml(OPERACION_OTRA) + '">' + escapeHtml(OPERACION_OTRA) + '</option>';
   sel.innerHTML = html;
   if(previo && [...sel.options].some(o => o.value === previo)) sel.value = previo;
   mostrarUnidadOperacion();
@@ -1134,6 +1208,14 @@ function mostrarUnidadOperacion(){
   const cont = document.getElementById('t-unidad-info');
   if(!cont) return;
   const sel = document.getElementById('t-operacion');
+  cont.style.background = '#EEF2FB'; cont.style.color = '#17408F';
+  if(sel && sel.value === OPERACION_OTRA){
+    cont.style.background = '#FFF8E1'; cont.style.color = '#8A6410';
+    cont.innerHTML = 'Escribe en el <strong>Detalle</strong> qu\u00e9 operaci\u00f3n fue y en qu\u00e9 unidad contaste.' +
+                     '<br><span style="opacity:.75">Estos tickets se revisan para decidir si la operaci\u00f3n entra al cat\u00e1logo.</span>';
+    cont.style.display = 'block';
+    return;
+  }
   const op = sel && sel.value ? buscarOperacion(areaFormTareo(), sel.value) : null;
   if(!op){ cont.style.display='none'; cont.innerHTML=''; return; }
   const metodo = op.captura === 'muestreo'
@@ -2078,16 +2160,26 @@ async function confirmarPosponer() {
 // registrado. Regla de diseño: un bloque sin nada que decir no se dibuja. Si la pantalla
 // queda vacía, eso también es información.
 
-// Día hábil anterior: se salta el domingo, que no se trabaja.
-function diaHabilAnterior(){
-  const d=new Date(); d.setHours(0,0,0,0);
-  do{ d.setDate(d.getDate()-1); } while(d.getDay()===0);
-  return d.toLocaleDateString('es-PE');
-}
 function diaSiguienteHabil(){
   const d=new Date(); d.setHours(0,0,0,0);
   do{ d.setDate(d.getDate()+1); } while(d.getDay()===0);
   return d.toLocaleDateString('es-PE');
+}
+
+// ===== VENTANA DE ARRASTRE =====
+// Un solo numero gobierna dos cosas que antes iban por separado: hasta cuando "Generar tareo"
+// sigue arrastrando un ticket viejo sin cerrar (antes: sin limite) y hasta donde llega la alerta
+// de Atencion que lo reclama (antes: solo el dia habil anterior). Asi el arrastre no puede
+// mostrar tickets que ninguna alerta reclama, ni la alerta reclamar tickets que ya no se ven.
+// Se cuenta en dias habiles porque el domingo no se trabaja: un lunes la ventana llega al sabado.
+const VENTANA_ARRASTRE_DIAS = 2;
+function diasHabilesAtras(n, desde){
+  const out=[]; const d=desde?new Date(desde):new Date(); d.setHours(0,0,0,0);
+  while(out.length<n){ d.setDate(d.getDate()-1); if(d.getDay()!==0) out.push(d.toLocaleDateString('es-PE')); }
+  return out;
+}
+function dentroDeVentana(fechaStr){
+  return diasHabilesAtras(VENTANA_ARRASTRE_DIAS).includes(fechaStr);
 }
 function diasEntre(fechaISOStr, desdeStr){
   if(!fechaISOStr) return null;
@@ -2101,7 +2193,7 @@ function diasEntre(fechaISOStr, desdeStr){
 // Devuelve la lista de alertas ordenada por gravedad. sev: 3 crítico, 2 alto, 1 aviso.
 function calcularAtencion(){
   const A=[];
-  const hoy=hoyStr(), ayer=diaHabilAnterior(), manana=diaSiguienteHabil();
+  const hoy=hoyStr(), manana=diaSiguienteHabil();
   const ahora=new Date();
 
   // --- 1. OF con entrega encima y todavía sin cerrar ---
@@ -2153,14 +2245,23 @@ function calcularAtencion(){
       pagina:'torre'});
   }
 
-  // --- 3. Tickets del día hábil anterior sin tiempo real ---
-  const sinTiempo=historial.filter(t=>t.visibleAndree!==false&&t.fechaEjecucion===ayer&&!t.completado);
+  // --- 3. Tickets sin tiempo real dentro de la ventana de arrastre ---
+  // Antes esta alerta miraba solo el dia habil anterior mientras "Generar tareo" arrastraba
+  // pendientes de cualquier fecha: el arrastre viejo le era invisible. Ahora ambas usan la
+  // misma ventana, asi que lo que se sigue mostrando es exactamente lo que se sigue reclamando.
+  const ventana=diasHabilesAtras(VENTANA_ARRASTRE_DIAS);
+  const sinTiempo=historial.filter(t=>t.visibleAndree!==false&&ventana.includes(t.fechaEjecucion)&&!t.completado);
   if(sinTiempo.length){
     const quienes=[...new Set(sinTiempo.map(t=>(t.nombres||[])[0]).filter(Boolean))]
       .map(n=>n.split(' ').slice(0,2).join(' '));
+    const porFecha={};
+    sinTiempo.forEach(t=>{ porFecha[t.fechaEjecucion]=(porFecha[t.fechaEjecucion]||0)+1; });
+    const desglose=Object.entries(porFecha)
+      .sort((a,b)=>fechaStrToDate(a[0])-fechaStrToDate(b[0]))
+      .map(([f,c])=>`${c} del ${f}`).join(' \u00b7 ');
     A.push({sev: sinTiempo.length>=10?3:2, grupo:'Registro',
-      titulo:`${sinTiempo.length} ticket${sinTiempo.length>1?'s':''} de ${ayer} sin tiempo real`,
-      detalle: quienes.slice(0,6).join(', ')+(quienes.length>6?` y ${quienes.length-6} más`:''),
+      titulo:`${sinTiempo.length} ticket${sinTiempo.length>1?'s':''} sin tiempo real (\u00faltimos ${VENTANA_ARRASTRE_DIAS} d\u00edas h\u00e1biles)`,
+      detalle: desglose+' \u2014 '+quienes.slice(0,6).join(', ')+(quienes.length>6?` y ${quienes.length-6} m\u00e1s`:''),
       pagina:'andree'});
   }
 
@@ -2226,7 +2327,7 @@ function renderAtencion(){
     cont.innerHTML=`<div class="card" style="text-align:center;padding:2.5rem 1rem">
       <div style="font-size:34px;line-height:1">✓</div>
       <div style="font-size:16px;font-weight:600;margin-top:8px">Nada requiere atención</div>
-      <div style="font-size:13px;color:var(--text-secondary);margin-top:4px">Sin entregas encima, sin OF detenidas, sin operarios sin tareo y con los tiempos de ayer registrados.</div>
+      <div style="font-size:13px;color:var(--text-secondary);margin-top:4px">Sin entregas encima, sin OF detenidas, sin operarios sin tareo y con los tiempos de los últimos días hábiles registrados.</div>
     </div>`;
     return;
   }
