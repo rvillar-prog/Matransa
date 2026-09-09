@@ -3124,8 +3124,11 @@ function datosMapaOF(){
       etapaAtrasada: !!of && etapaIdx>=0 && etapaIdx<idxProduccion && r.ultima!==null
     };
   });
-  // Lo parado arriba. Sin tickets primero: es el caso mas extremo de silencio.
-  filas.sort((a,b) => (b.dias===null?9999:b.dias) - (a.dias===null?9999:a.dias));
+  // Lo parado arriba, lo que ya tiene trabajo programado abajo, y las OF sin ningun ticket al
+  // final: una OF en Especificaciones sin tickets es lo normal, no una alarma, y ya tiene su
+  // propio aviso. Si se ordenaran primero empujarian hacia abajo a las que llevan dias paradas,
+  // que es exactamente lo que hay que ver de un vistazo.
+  filas.sort((a,b) => (b.dias===null?-9999:b.dias) - (a.dias===null?-9999:a.dias));
   return filas;
 }
 
@@ -3163,10 +3166,14 @@ function renderMapaOF(){
   };
 
   const cuerpo = filas.map(f => {
+    // dias<0 significa que la OF ya tiene tickets con fecha futura: el tareo de manana esta
+    // hecho. No es silencio, es lo contrario, asi que no se pinta como si fuera un retraso.
     const colorDias = f.dias===null ? 'var(--text-muted)'
                     : f.dias>=DIAS_SILENCIO_ALERTA ? '#B32E26'
                     : f.dias>=3 ? '#B7791F' : 'var(--text-secondary)';
-    const textoDias = f.dias===null ? 'sin tickets' : (f.dias===0 ? 'hoy' : f.dias+'d');
+    const textoDias = f.dias===null ? 'sin tickets'
+                    : f.dias<0 ? 'programada'
+                    : f.dias===0 ? 'hoy' : f.dias+'d';
     const etapa = f.of ? escapeHtml(f.of.etapa||'\u2014') : '<span style="color:#B32E26">no est\u00e1 en la Torre</span>';
     const desc = f.of ? escapeHtml(f.of.descripcion||'') : '';
     return `<tr>
