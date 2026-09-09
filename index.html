@@ -2012,12 +2012,17 @@ function exportarExcel(){
 }
 
 function renderDashboard(){
-  if(!historial.length){
-    document.getElementById('dash-content').innerHTML='<div class="empty"><div class="empty-icon">📊</div><div>Sin datos aún. Los registros aparecen aquí conforme se generan tareos.</div></div>';
+  // El dashboard recorria el historial completo, asi que los tickets quitados del tareo seguian
+  // contando en el % completado, en las horas plan por operario y en la eficiencia. Con el
+  // cierre por motivo el sesgo empeoraba: un ticket cerrado como no ejecutado se contaba como
+  // pendiente. Aqui se mide solo el trabajo vigente, igual que en el resto de las vistas.
+  const activos=historial.filter(t=>t.visibleTareo!==false && !t.noEjecutado);
+  if(!activos.length){
+    document.getElementById('dash-content').innerHTML='<div class="empty"><div class="empty-icon">\ud83d\udcca</div><div>Sin datos a\u00fan. Los registros aparecen aqu\u00ed conforme se generan tareos.</div></div>';
     return;
   }
-  const conReal=historial.filter(t=>t.tu_real!=null);
-  const totalTickets=historial.length;
+  const conReal=activos.filter(t=>t.tu_real!=null);
+  const totalTickets=activos.length;
   const completados=conReal.length;
   const pctComp=totalTickets>0?((completados/totalTickets)*100).toFixed(0):0;
 
@@ -2028,7 +2033,7 @@ function renderDashboard(){
 
   // Por operario
   const porOp={};
-  historial.forEach(t=>{
+  activos.forEach(t=>{
     (t.nombres||[]).forEach(nom=>{
       if(!porOp[nom])porOp[nom]={plan:0,planCompletados:0,real:0,tickets:0,completados:0,desv:[]};
       porOp[nom].plan+=t.tt;porOp[nom].tickets++;
@@ -3056,6 +3061,136 @@ function renderTorre() {
       }
     </div>`;
   }).join('');
+
+  renderMapaOF();
+}
+
+// ===== MAPA DE OF POR AREA =====
+// Responde "\u00bfesta OF se esta moviendo, y donde?", que es lo unico que los datos actuales
+// permiten responder. NO responde "\u00bfya termino en el area?": nada en el sistema declara que
+// es terminar, y eso depende de las rutas de fabricacion por producto, que todavia no existen.
+// Por eso la columna que manda no es un porcentaje de avance sino los dias sin movimiento: el
+// silencio es la senal accionable, y no requiere que nadie declare nada.
+//
+// Es una matriz y no una barra de progreso por etapas porque las areas NO corren en secuencia.
+// Sobre los datos reales una misma OF abre Fierro el 28, Ensamble el 29 y Habilitado el 31:
+// son componentes en paralelo que vuelven sobre las mismas areas.
+//
+// Los tickets retirados del tareo y los cerrados sin ejecutar cuentan para la fecha de ultimo
+// movimiento pero no para las cuentas por area. El porque de cada mitad esta explicado abajo.
+const AREAS_MAPA = ['HABILITADO','FIERRO','PINTURA DE FIERRO','EVA','ENSAMBLE','ACABADO'];
+const DIAS_SILENCIO_ALERTA = 7;
+
+function datosMapaOF(){
+  const conOf = historial.filter(t => t.ofNumero);
+  const porOf = {};
+  const fila = of => porOf[of] || (porOf[of] = {areas:{}, ultima:null, total:0, abiertos:0});
+  // La fecha de ultimo movimiento sale de TODOS los tickets de la OF, incluidos los quitados del
+  // tareo y los cerrados sin ejecutar. La pregunta aqui es cuando se toco la OF por ultima vez,
+  // y un ticket retirado tambien es una vez que alguien la puso en un plan. Si esto mirara solo
+  // el trabajo vigente, una OF cuyos tickets se retiraron todos apareceria como si no existiera,
+  // que es justo el caso que hay que ver.
+  conOf.forEach(t => {
+    const r = fila(t.ofNumero);
+    const f = fechaStrToDate(t.fechaEjecucion || t.fecha || hoyStr());
+    if(!r.ultima || f > r.ultima) r.ultima = f;
+  });
+  // Las cuentas por area, en cambio, solo miran trabajo vigente: un ticket retirado o cerrado
+  // sin ejecutar no es trabajo pendiente ni trabajo hecho, y contarlo inflaria las dos cosas.
+  conOf.filter(t => t.visibleTareo!==false && !t.noEjecutado).forEach(t => {
+    const r = fila(t.ofNumero);
+    const a = getAreaEjecucion(t);
+    const cel = r.areas[a] || (r.areas[a] = {tot:0, ab:0});
+    cel.tot++; r.total++;
+    if(!(t.tu_real!=null && t.tu_real!=='')){ cel.ab++; r.abiertos++; }
+  });
+  const enTorre = {};
+  (ofs||[]).forEach(o => { enTorre[o.numero] = o; });
+  const numeros = new Set(Object.keys(porOf));
+  (ofs||[]).forEach(o => { if(!['Cierre','Entrega'].includes(o.etapa)) numeros.add(o.numero); });
+
+  const idxProduccion = ETAPAS_TC.indexOf('Producci\u00f3n');
+  const filas = [...numeros].map(num => {
+    const r = porOf[num] || {areas:{}, ultima:null, total:0, abiertos:0};
+    const of = enTorre[num] || null;
+    const dias = r.ultima ? Math.round((fechaStrToDate(hoyStr()) - r.ultima)/86400000) : null;
+    const etapaIdx = of ? ETAPAS_TC.indexOf(of.etapa) : -1;
+    return {
+      num, of, ...r, dias,
+      // "tiene tickets" es r.ultima!==null, no r.total: una OF cuyos tickets se retiraron todos
+      // sigue siendo una OF que existio en un plan, y es la que mas importa ver.
+      sinTorre:      !of && r.ultima!==null,
+      sinTickets:    !!of && r.ultima===null,
+      etapaAtrasada: !!of && etapaIdx>=0 && etapaIdx<idxProduccion && r.ultima!==null
+    };
+  });
+  // Lo parado arriba. Sin tickets primero: es el caso mas extremo de silencio.
+  filas.sort((a,b) => (b.dias===null?9999:b.dias) - (a.dias===null?9999:a.dias));
+  return filas;
+}
+
+function renderMapaOF(){
+  const cont = document.getElementById('tc-mapa');
+  if(!cont) return;
+  const filas = datosMapaOF();
+  if(!filas.length){ cont.innerHTML=''; return; }
+
+  const sinTorre      = filas.filter(f => f.sinTorre);
+  const sinTickets    = filas.filter(f => f.sinTickets);
+  const atrasadas     = filas.filter(f => f.etapaAtrasada);
+  const paradas       = filas.filter(f => f.dias!==null && f.dias>=DIAS_SILENCIO_ALERTA);
+
+  // Regla de la casa: un bloque sin nada que decir no se dibuja.
+  const aviso = (cond, texto) => cond
+    ? `<div style="font-size:12px;color:var(--text-danger);background:var(--bg-danger);border:0.5px solid var(--border-danger);border-radius:8px;padding:7px 12px;margin-bottom:6px">${texto}</div>`
+    : '';
+  const avisos =
+    aviso(paradas.length,   `\u26a0 ${paradas.length} OF sin un ticket nuevo hace ${DIAS_SILENCIO_ALERTA} d\u00edas o m\u00e1s \u2014 ${paradas.map(f=>f.num).join(', ')}`) +
+    aviso(sinTorre.length,  `\u26a0 ${sinTorre.length} OF con tickets de producci\u00f3n que no est\u00e1n registradas en la Torre \u2014 ${sinTorre.map(f=>f.num).join(', ')}`) +
+    aviso(atrasadas.length, `\u26a0 ${atrasadas.length} OF figuran en una etapa anterior a Producci\u00f3n pero ya tienen tickets \u2014 ${atrasadas.map(f=>f.num+' ('+f.of.etapa+', '+f.total+')').join(', ')}`) +
+    aviso(sinTickets.length,`\u26a0 ${sinTickets.length} OF registradas en la Torre sin ning\u00fan ticket \u2014 ${sinTickets.map(f=>f.num).join(', ')}`);
+
+  const celda = (f, area) => {
+    const c = f.areas[area];
+    if(!c) return '<td style="text-align:center;color:var(--text-muted)">\u00b7</td>';
+    return `<td style="text-align:center" title="${c.tot} ticket(s) en ${escapeHtml(area)}, ${c.ab} sin cerrar">` +
+           `${c.tot}${c.ab?`<sup style="color:#B7791F;font-weight:700">${c.ab}</sup>`:''}</td>`;
+  };
+
+  const cuerpo = filas.map(f => {
+    const colorDias = f.dias===null ? 'var(--text-muted)'
+                    : f.dias>=DIAS_SILENCIO_ALERTA ? '#B32E26'
+                    : f.dias>=3 ? '#B7791F' : 'var(--text-secondary)';
+    const textoDias = f.dias===null ? 'sin tickets' : (f.dias===0 ? 'hoy' : f.dias+'d');
+    const etapa = f.of ? escapeHtml(f.of.etapa||'\u2014') : '<span style="color:#B32E26">no est\u00e1 en la Torre</span>';
+    const desc = f.of ? escapeHtml(f.of.descripcion||'') : '';
+    return `<tr>
+      <td style="font-weight:600;white-space:nowrap">${escapeHtml(f.num)}</td>
+      <td style="font-size:11px;color:var(--text-secondary);max-width:190px">${desc}</td>
+      <td style="font-size:11px">${etapa}</td>
+      ${AREAS_MAPA.map(a => celda(f,a)).join('')}
+      <td style="text-align:center;font-weight:600">${f.total}${f.abiertos?`<sup style="color:#B7791F;font-weight:700">${f.abiertos}</sup>`:''}</td>
+      <td style="text-align:center;font-weight:700;color:${colorDias};white-space:nowrap">${textoDias}</td>
+    </tr>`;
+  }).join('');
+
+  cont.innerHTML = `
+    <div class="card" style="margin-top:1rem">
+      <div class="card-title">Mapa de OF por \u00e1rea</div>
+      <div style="font-size:11px;color:var(--text-muted);margin:2px 0 10px">
+        Derivado de los tickets, sin campos nuevos. El n\u00famero es cu\u00e1ntos tickets tiene la OF en esa \u00e1rea;
+        el super\u00edndice \u00e1mbar, cu\u00e1ntos siguen sin cerrar. Las \u00e1reas no corren en secuencia, as\u00ed que esto
+        dice d\u00f3nde se est\u00e1 trabajando y qu\u00e9 lleva tiempo sin moverse \u2014 no si un \u00e1rea "termin\u00f3".
+      </div>
+      ${avisos}
+      <div style="overflow-x:auto">
+        <table><thead><tr>
+          <th>OF</th><th>Descripci\u00f3n</th><th>Etapa Torre</th>
+          ${AREAS_MAPA.map(a=>`<th style="text-align:center;font-size:10px">${escapeHtml(a)}</th>`).join('')}
+          <th style="text-align:center">Total</th><th style="text-align:center">Sin mover</th>
+        </tr></thead><tbody>${cuerpo}</tbody></table>
+      </div>
+    </div>`;
 }
 
 // ===== CREAR/EDITAR OF =====
@@ -5209,6 +5344,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
   <div style="overflow-x:auto;padding-bottom:1rem">
     <div id="tc-alerta" style="display:none;background:var(--bg-danger);border:0.5px solid var(--border-danger);border-radius:8px;padding:7px 12px;margin-bottom:10px;font-size:12px;color:var(--text-danger);align-items:center;gap:6px"></div>
     <div id="tc-board"></div>
+    <div id="tc-mapa"></div>
   </div>
 </div>
 
