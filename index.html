@@ -3132,6 +3132,11 @@ function datosMapaOF(){
 function renderMapaOF(){
   const cont = document.getElementById('tc-mapa');
   if(!cont) return;
+  if(!historial.length){
+    cont.innerHTML = '<div class="card" style="margin-top:1rem"><div class="card-title">Mapa de OF por \u00e1rea</div>' +
+      '<div style="font-size:12px;color:var(--text-muted);padding:6px 0">Esperando los tickets\u2026</div></div>';
+    return;
+  }
   const filas = datosMapaOF();
   if(!filas.length){ cont.innerHTML=''; return; }
 
@@ -3705,6 +3710,10 @@ function refrescarVista(nombre){
   else if(p==='kanban'){ const k=document.getElementById('k-fecha'); if(k)k.dataset.poblado=''; renderKanban(); }
   else if(p==='historial'){ poblarFiltrosHist(); renderHist(); }
   else if(p==='dashboard'){ renderDashboard(); }
+  // Torre depende del historial (metrica de cobertura, alerta de OF sin tickets y Mapa de OF),
+  // pero se dibujaba solo desde el snapshot de 'ofs', que llega antes que los tickets. Sin esta
+  // linea la Torre se quedaba con la foto del arranque, con historial todavia vacio.
+  else if(p==='torre'){ if(ofs && ofs.length) renderTorre(); }
   // El aviso de tickets sin asignar vive fuera de las páginas: se refresca siempre.
   renderPendientes();
 }
@@ -3719,7 +3728,7 @@ function showAlert(pagina,msg,tipo,ms){
   // usuario duda de si guardó y vuelve a darle — que es como aparecen los tickets repetidos.
   if(el._t) clearTimeout(el._t);
   el._t = setTimeout(()=>el.style.display='none', ms || (tipo==='success' ? 7000 : 3500));}
-function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
+function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();if(ofs&&ofs.length)renderTorre();}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
