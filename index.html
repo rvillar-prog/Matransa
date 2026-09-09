@@ -95,8 +95,29 @@ const AREA_COLOR={"HABILITADO":"#7c3aed","ENSAMBLE":"#2563eb","FIERRO":"#ea580c"
 // NO existe "en curso": ningún campo registra que una tarea arrancó — tu_real aparece recién
 // cuando Andree la cierra. Inventarlo obligaría a que alguien apriete un botón al empezar
 // cada tarea, y un estado que nadie actualiza miente peor que no tenerlo.
+// ===== CIERRE SIN EJECUCION =====
+// Un ticket puede terminar de dos maneras: ejecutado y medido (tu_real), o no ejecutado con
+// un motivo. Lo que no puede es quedar en el limbo, que es lo que pasaba: se quitaba de la
+// vista y desaparecia sin dejar rastro, de modo que "no se registro el tiempo" y "no se hizo
+// el trabajo" quedaban con la misma huella (tu_real = null) y ninguna metrica podia separarlas.
+//
+// "cuentaPlan: false" marca los motivos que NO son incumplimiento del plan sino error de
+// captura: un duplicado no dice nada sobre la planificacion y no debe ensuciar ese indicador.
+const MOTIVOS_NO_EJECUCION = [
+  {cod:'reprogramado', etq:'Se reprogram\u00f3 para otro d\u00eda',              cuentaPlan:true},
+  {cod:'prioridad',    etq:'Cambi\u00f3 la prioridad \u2014 se hizo otra cosa',  cuentaPlan:true},
+  {cod:'insumo',       etq:'Falt\u00f3 material, m\u00e1quina o herramienta',    cuentaPlan:true},
+  {cod:'no_llego',     etq:'No se lleg\u00f3 \u2014 falt\u00f3 tiempo',         cuentaPlan:true},
+  {cod:'error',        etq:'Se cre\u00f3 por error o est\u00e1 duplicado',       cuentaPlan:false}
+];
+function etiquetaMotivo(cod){
+  const m = MOTIVOS_NO_EJECUCION.find(x => x.cod === cod);
+  return m ? m.etq : (cod || 'Sin motivo');
+}
+
 const ESTADOS_TICKET={
-  vencido:    {clase:'tk-vencido',    rotulo:'No ejecutado — venció el día', icono:'!', color:'#B32E26'},
+  vencido:    {clase:'tk-vencido',    rotulo:'Sin resolver \u2014 venci\u00f3 el d\u00eda', icono:'!', color:'#B32E26'},
+  noejecutado:{clase:'tk-noejecutado', rotulo:'No ejecutado',                 icono:'\u2298', color:'#57564F'},
   completado: {clase:'tk-completado', rotulo:'Completado',                   icono:'✓', color:'#16803D'},
   aviso:      {clase:'tk-aviso',      rotulo:'Requiere revisión',            icono:'⚠', color:'#B7791F'},
   pendiente:  {clase:'tk-pendiente',  rotulo:'Sin empezar',                  icono:'○', color:'#57564F'}
@@ -112,9 +133,15 @@ function estadoTicket(t){
   const ahora = new Date();
   const hora  = ahora.getHours()+ahora.getMinutes()/60;
   const vencido = !hecho && (d<hoy || (d.getTime()===hoy.getTime() && hora>=17));
+  // "No ejecutado" gana sobre "vencido": un ticket cerrado con motivo ya esta resuelto y no
+  // debe seguir pintado de rojo, que queda reservado para lo que de verdad falta atender.
+  // Pero pierde contra "completado": si hay tiempo real el trabajo se hizo, y el dato duro
+  // manda sobre la marca. Esa combinacion no deberia existir (abrirNoEjecutado la bloquea);
+  // si apareciera por data vieja, se muestra por lo que se puede comprobar.
   let clave;
-  if(vencido) clave='vencido';
-  else if(hecho) clave='completado';
+  if(hecho) clave='completado';
+  else if(t.noEjecutado===true) clave='noejecutado';
+  else if(vencido) clave='vencido';
   else if(t.sinSincronizar || (t.incidencias&&t.incidencias.length)) clave='aviso';
   else clave='pendiente';
   return Object.assign({clave}, ESTADOS_TICKET[clave]);
@@ -617,18 +644,6 @@ function limpiarForm(){
   document.getElementById('t-fecha-ejec').value=fechaEjecucionDefecto();
 }
 
-// Ocultar de tareo SIN eliminar de Firebase
-async function ocultarDeTareo(fbId){
-  if(!confirm('¿Quitar este ticket del tareo? Seguirá visible para Andree y en el historial.'))return;
-  await escribir('quitar el ticket del tareo', ()=>updateDoc(doc(db,'historial',fbId),{visibleTareo:false}));
-}
-
-// Ocultar de Andree SIN eliminar de Firebase
-async function ocultarDeAndree(fbId){
-  if(!confirm('¿Quitar este ticket de la vista de Andree? Quedará en el historial.'))return;
-  await escribir('quitar el ticket de la vista de Andree', ()=>updateDoc(doc(db,'historial',fbId),{visibleAndree:false}));
-}
-
 // Eliminar permanentemente — solo desde historial con doble confirmación
 async function eliminarPermanente(fbId){
   if(!requiereAdmin()) return;
@@ -729,12 +744,16 @@ function ticketCardHTML(t){
   // El punto lleva el glifo además del color: se distingue en pantalla, en escala de grises
   // y por alguien que no separa bien rojo de verde.
   const punto=`<span class="tk-punto" style="color:${est.color}" title="${est.rotulo}">${est.icono}</span>`;
-  const sello=est.clave==='completado'
-    ? `<div class="tk-sello">✓ Completado · real ${(t.n*t.tu_real/60).toFixed(2)} h</div>` : '';
-  return `<div class="ticket-card${est.clave==='completado'?' tk-hecho':''}" style="--area-color:${AREA_COLOR[area]||'#8a8985'}">
+  const sello = est.clave==='completado'
+    ? `<div class="tk-sello">\u2713 Completado \u00b7 real ${(t.n*t.tu_real/60).toFixed(2)} h</div>`
+    : est.clave==='noejecutado'
+    ? `<div class="tk-sello tk-sello-anulado">\u2298 No ejecutado \u00b7 ${escapeHtml(etiquetaMotivo(t.motivoNoEjecucion))}</div>`
+    : '';
+  const cerrado = est.clave==='completado' || est.clave==='noejecutado';
+  return `<div class="ticket-card${cerrado?' tk-hecho':''}" style="--area-color:${AREA_COLOR[area]||'#8a8985'}">
     <div class="ticket-card-header ${est.clase}">
       <div style="display:flex;align-items:center;gap:8px">${ordenBadge}<div><div class="ticket-card-names">${names}</div><div class="ticket-card-area">${area}</div></div></div>
-      <div style="display:flex;align-items:center;gap:7px">${punto}<button class="ticket-remove-btn no-print" onclick="ocultarDeTareo('${t.fbId}')" title="Quitar del tareo">×</button></div>
+      <div style="display:flex;align-items:center;gap:7px">${punto}<button class="ticket-remove-btn no-print" onclick="abrirNoEjecutado('${t.fbId}','tareo')" title="Cerrar como no ejecutado">×</button></div>
     </div>
     <div class="ticket-card-body">
       <div class="ticket-field"><div class="ticket-field-label">Proyecto</div><div class="ticket-field-value" style="font-size:11px">${t.proyectoCodigo?(proyectosTC.find(p=>p.codigo===t.proyectoCodigo)?.nombre||t.proyecto):t.proyecto}</div></div>
@@ -1440,7 +1459,7 @@ function renderAndree(){
           <button class="btn btn-sm btn-warn" onclick="abrirIncidencia('${t.fbId}')" title="Reportar incidencia">⚠</button>
           <button class="btn btn-sm" onclick="abrirReasignar('${t.fbId}')" title="Reasignar a otro trabajador">↔</button>
           <button class="btn btn-sm" onclick="abrirPosponer('${t.fbId}')" title="Posponer para mañana">⏩</button>
-          <button class="btn btn-sm btn-danger" onclick="ocultarDeAndree('${t.fbId}')" title="Quitar de esta vista">✕</button>
+          <button class="btn btn-sm btn-danger" onclick="abrirNoEjecutado('${t.fbId}','andree')" title="Cerrar como no ejecutado">✕</button>
         </div>
       </div>`;
     }).join('');
@@ -1465,6 +1484,55 @@ async function registrarTiempo(fbId,n){
   await escribir('registrar el tiempo real', ()=>updateDoc(doc(db,'historial',fbId),{tu_real:val,tt_real:parseFloat((n*val/60).toFixed(2)),completado:true}), {pagina:'andree', trabajando:'Registrando...'});
 }
 async function resetTiempo(fbId){await escribir('deshacer el tiempo registrado', ()=>updateDoc(doc(db,'historial',fbId),{tu_real:null,tt_real:null,completado:false}), {pagina:'andree', trabajando:'Deshaciendo...'});}
+
+// ===== CIERRE SIN EJECUCION =====
+// El boton X ya existia y ya se usaba: quitaba el ticket de la vista y no guardaba nada.
+// Ahora ese mismo clic pide el motivo. No es una rutina nueva en planta, es la misma accion
+// registrando lo que antes se perdia; por eso se engancha aqui y no en un boton aparte.
+let fbIdNoEjec=null, paginaNoEjec='tareo';
+function abrirNoEjecutado(fbId, pagina){
+  const t=historial.find(x=>x.fbId===fbId);
+  // Un ticket con tiempo real ya registrado no puede cerrarse como no ejecutado: seria decir
+  // dos cosas opuestas del mismo ticket. Para eso esta el boton de deshacer el tiempo.
+  if(t && t.tu_real!=null && t.tu_real!==''){
+    alert('Este ticket ya tiene tiempo real registrado (' + t.tu_real + ' min).\n\nSi el trabajo no se hizo, primero deshaz el tiempo con el bot\u00f3n \u21a9 y vuelve a intentarlo.');
+    return;
+  }
+  fbIdNoEjec=fbId; paginaNoEjec=pagina||'tareo';
+  const cont=document.getElementById('ne-motivos');
+  cont.innerHTML=MOTIVOS_NO_EJECUCION.map((m,i)=>
+    `<label style="display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid #e6e4de;border-radius:8px;margin-bottom:6px;cursor:pointer;font-size:13px">
+       <input type="radio" name="ne-motivo" value="${m.cod}"${i===0?' checked':''} style="margin:0">
+       <span>${escapeHtml(m.etq)}</span>
+     </label>`).join('');
+  document.getElementById('ne-nota').value='';
+  document.getElementById('ne-ticket').textContent = t
+    ? ((t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ')+' \u00b7 '+(t.tarea||'')+' \u00b7 '+t.tt+' h')
+    : '';
+  document.getElementById('modal-noejec').style.display='flex';
+}
+function cerrarNoEjecutado(){ document.getElementById('modal-noejec').style.display='none'; fbIdNoEjec=null; }
+async function guardarNoEjecutado(){
+  if(!fbIdNoEjec) return;
+  const sel=document.querySelector('input[name="ne-motivo"]:checked');
+  if(!sel) return;
+  const nota=document.getElementById('ne-nota').value.trim();
+  const datos={
+    noEjecutado:true,
+    motivoNoEjecucion:sel.value,
+    notaNoEjecucion:nota||null,
+    cerradoPorPerfil:getPerfil()||null,
+    fechaNoEjecucion:new Date().toISOString(),
+    // Sale de las dos vistas de trabajo porque ya esta resuelto; sigue en el historial.
+    visibleTareo:false,
+    visibleAndree:false
+  };
+  const ok=await escribir('marcar el ticket como no ejecutado',
+    ()=>updateDoc(doc(db,'historial',fbIdNoEjec),datos),
+    {pagina:paginaNoEjec, trabajando:'Guardando...', exito:'Ticket cerrado como no ejecutado \u2014 '+etiquetaMotivo(sel.value)});
+  if(!ok) return;
+  cerrarNoEjecutado();
+}
 
 // ===== INCIDENCIAS =====
 let fbIdIncidencia=null;
@@ -1910,7 +1978,7 @@ function renderHist(){
       <td style="font-size:11px;color:#888">${area}</td>
       <td style="font-size:11px">${t.proyectoCodigo||(t.proyecto||'').split(' · ')[0]||t.proyecto}</td>
       <td style="font-size:11px;color:#888">${t.ofNumero||'—'}</td>
-      <td style="font-size:11px;color:#666">${escapeHtml(t.tarea)}</td>
+      <td style="font-size:11px;color:#666">${escapeHtml(t.tarea)}${t.noEjecutado?`<div style="margin-top:2px;font-size:10px;color:#8a8985">\u2298 No ejecutado \u00b7 ${escapeHtml(etiquetaMotivo(t.motivoNoEjecucion))}${t.notaNoEjecucion?' \u2014 '+escapeHtml(t.notaNoEjecucion):''}</div>`:''}</td>
       <td style="text-align:center">${t.n}</td>
       <td style="text-align:center">${t.tu}'</td>
       <td style="text-align:center">${t.tu_real?t.tu_real+"'":'—'}</td>
@@ -1932,10 +2000,11 @@ function exportarExcel(){
     return true;
   });
   if(!datos.length){showAlert('hist','No hay datos para exportar.','warn');return;}
-  const rows=[['Fecha ejecución','Fecha creación','Trabajador(es)','Área','Proyecto','Producto','Tarea','N°','t.u. plan','t.u. real','Diferencia','T.T. plan','T.T. real','Completado','Incidencias']];
+  const rows=[['Fecha ejecución','Fecha creación','Trabajador(es)','Área','Proyecto','Producto','Tarea','N°','t.u. plan','t.u. real','Diferencia','T.T. plan','T.T. real','Cierre','Motivo no ejecución','Nota','Incidencias']];
   datos.forEach(t=>{
     const area=getAreaEjecucion(t);
-    rows.push([t.fechaEjecucion||t.fecha,t.fechaCreacion||'',(t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / '),area,t.proyecto,t.producto,t.tarea,t.n,t.tu,t.tu_real||'',t.tu_real?(t.tu_real-t.tu):'',t.tt,t.tt_real||'',t.completado?'Sí':'Pendiente',(t.incidencias||[]).map(i=>`${i.hora}: ${i.descripcion}`).join(' | ')]);
+    const cierre = t.completado ? 'Ejecutado' : (t.noEjecutado ? 'No ejecutado' : 'Sin resolver');
+    rows.push([t.fechaEjecucion||t.fecha,t.fechaCreacion||'',(t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / '),area,t.proyecto,t.producto,t.tarea,t.n,t.tu,t.tu_real||'',t.tu_real?(t.tu_real-t.tu):'',t.tt,t.tt_real||'',cierre,t.noEjecutado?etiquetaMotivo(t.motivoNoEjecucion):'',t.notaNoEjecucion||'',(t.incidencias||[]).map(i=>`${i.hora}: ${i.descripcion}`).join(' | ')]);
   });
   const ws=XLSX.utils.aoa_to_sheet(rows);
   const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Historial');
@@ -2250,7 +2319,9 @@ function calcularAtencion(){
   // pendientes de cualquier fecha: el arrastre viejo le era invisible. Ahora ambas usan la
   // misma ventana, asi que lo que se sigue mostrando es exactamente lo que se sigue reclamando.
   const ventana=diasHabilesAtras(VENTANA_ARRASTRE_DIAS);
-  const sinTiempo=historial.filter(t=>t.visibleAndree!==false&&ventana.includes(t.fechaEjecucion)&&!t.completado);
+  // !t.noEjecutado es redundante hoy (cerrar pone visibleAndree en false) pero deja la regla
+  // escrita donde se lee: lo que se reclama es lo que no esta ni ejecutado ni explicado.
+  const sinTiempo=historial.filter(t=>t.visibleAndree!==false&&!t.noEjecutado&&ventana.includes(t.fechaEjecucion)&&!t.completado);
   if(sinTiempo.length){
     const quienes=[...new Set(sinTiempo.map(t=>(t.nombres||[])[0]).filter(Boolean))]
       .map(n=>n.split(' ').slice(0,2).join(' '));
@@ -2260,7 +2331,9 @@ function calcularAtencion(){
       .sort((a,b)=>fechaStrToDate(a[0])-fechaStrToDate(b[0]))
       .map(([f,c])=>`${c} del ${f}`).join(' \u00b7 ');
     A.push({sev: sinTiempo.length>=10?3:2, grupo:'Registro',
-      titulo:`${sinTiempo.length} ticket${sinTiempo.length>1?'s':''} sin tiempo real (\u00faltimos ${VENTANA_ARRASTRE_DIAS} d\u00edas h\u00e1biles)`,
+      titulo:`${sinTiempo.length} ticket${sinTiempo.length>1?'s':''} sin resolver (\u00faltimos ${VENTANA_ARRASTRE_DIAS} d\u00edas h\u00e1biles)`,
+      // "sin resolver" y no "sin tiempo real": ahora hay dos formas validas de cerrar un
+      // ticket, y esta alerta reclama las dos que faltan, no solo el registro de tiempo.
       detalle: desglose+' \u2014 '+quienes.slice(0,6).join(', ')+(quienes.length>6?` y ${quienes.length-6} m\u00e1s`:''),
       pagina:'andree'});
   }
@@ -3515,7 +3588,7 @@ function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classL
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
-window.confirmarTicketSobrecarga=confirmarTicketSobrecarga;window.renderDashboard=renderDashboard;window.abrirReasignar=abrirReasignar;window.cerrarReasignar=cerrarReasignar;window.confirmarReasignar=confirmarReasignar;window.abrirPosponer=abrirPosponer;window.cerrarPosponer=cerrarPosponer;window.confirmarPosponer=confirmarPosponer;window.asignarPendiente=asignarPendiente;window.poblarOFsModal=poblarOFsModal;window.seleccionarOFModal=seleccionarOFModal;window.actualizarColorTC=actualizarColorTC;window.abrirCrearOF=abrirCrearOF;window.abrirEditarOF=abrirEditarOF;window.cerrarOF=cerrarOF;window.guardarOF=guardarOF;window.abrirMoverOF=abrirMoverOF;window.cerrarMoverOF=cerrarMoverOF;window.confirmarMoverOF=confirmarMoverOF;window.onCambiarEtapaMover=onCambiarEtapaMover;window.verificarGateCompleto=verificarGateCompleto;window.abrirBloqueo=abrirBloqueo;window.cerrarBloqueo=cerrarBloqueo;window.guardarBloqueo=guardarBloqueo;window.abrirCrearProyectoTC=abrirCrearProyectoTC;window.cerrarProyectoTC=cerrarProyectoTC;window.selColor=selColor;window.guardarProyectoTC=guardarProyectoTC;window.renderTorre=renderTorre;window.toggleEtapa=toggleEtapa;window.editarProyectoTC=editarProyectoTC;window.agregarProductoUnif=agregarProductoUnif;window.eliminarProductoUnif=eliminarProductoUnif;window.eliminarProyectoTC=eliminarProyectoTC;window.renderConfigProyectosTC=renderConfigProyectosTC;window.cambiarSemana=cambiarSemana;window.moverM3Dia=moverM3Dia;window.abrirM3=abrirM3;window.cerrarM3=cerrarM3;window.calcM3=calcM3;window.guardarM3=guardarM3;window.actualizarMetaM3=actualizarMetaM3;window.registrarM3Real=registrarM3Real;window.eliminarM3=eliminarM3;window.imprimirM3=imprimirM3;window.ocultarDeTareo=ocultarDeTareo;window.ocultarDeAndree=ocultarDeAndree;window.eliminarPermanente=eliminarPermanente;
+window.confirmarTicketSobrecarga=confirmarTicketSobrecarga;window.renderDashboard=renderDashboard;window.abrirReasignar=abrirReasignar;window.cerrarReasignar=cerrarReasignar;window.confirmarReasignar=confirmarReasignar;window.abrirPosponer=abrirPosponer;window.cerrarPosponer=cerrarPosponer;window.confirmarPosponer=confirmarPosponer;window.asignarPendiente=asignarPendiente;window.poblarOFsModal=poblarOFsModal;window.seleccionarOFModal=seleccionarOFModal;window.actualizarColorTC=actualizarColorTC;window.abrirCrearOF=abrirCrearOF;window.abrirEditarOF=abrirEditarOF;window.cerrarOF=cerrarOF;window.guardarOF=guardarOF;window.abrirMoverOF=abrirMoverOF;window.cerrarMoverOF=cerrarMoverOF;window.confirmarMoverOF=confirmarMoverOF;window.onCambiarEtapaMover=onCambiarEtapaMover;window.verificarGateCompleto=verificarGateCompleto;window.abrirBloqueo=abrirBloqueo;window.cerrarBloqueo=cerrarBloqueo;window.guardarBloqueo=guardarBloqueo;window.abrirCrearProyectoTC=abrirCrearProyectoTC;window.cerrarProyectoTC=cerrarProyectoTC;window.selColor=selColor;window.guardarProyectoTC=guardarProyectoTC;window.renderTorre=renderTorre;window.toggleEtapa=toggleEtapa;window.editarProyectoTC=editarProyectoTC;window.agregarProductoUnif=agregarProductoUnif;window.eliminarProductoUnif=eliminarProductoUnif;window.eliminarProyectoTC=eliminarProyectoTC;window.renderConfigProyectosTC=renderConfigProyectosTC;window.cambiarSemana=cambiarSemana;window.moverM3Dia=moverM3Dia;window.abrirM3=abrirM3;window.cerrarM3=cerrarM3;window.calcM3=calcM3;window.guardarM3=guardarM3;window.actualizarMetaM3=actualizarMetaM3;window.registrarM3Real=registrarM3Real;window.eliminarM3=eliminarM3;window.imprimirM3=imprimirM3;window.eliminarPermanente=eliminarPermanente;window.abrirNoEjecutado=abrirNoEjecutado;window.cerrarNoEjecutado=cerrarNoEjecutado;window.guardarNoEjecutado=guardarNoEjecutado;
 window.registrarTiempo=registrarTiempo;window.resetTiempo=resetTiempo;
 window.abrirIncidencia=abrirIncidencia;window.cerrarIncidencia=cerrarIncidencia;window.guardarIncidencia=guardarIncidencia;
 window.renderHist=renderHist;window.exportarExcel=exportarExcel;
@@ -4417,7 +4490,8 @@ nav .right{display:flex;align-items:center;gap:10px;}
 .ticket-card.tk-hecho{opacity:0.62;}
 .ticket-card.tk-hecho:hover{opacity:1;}
 /* Sin empezar y completado comparten el carbón: ninguno de los dos pide acción */
-.ticket-card-header.tk-pendiente,.ticket-card-header.tk-completado{background:var(--tk-pendiente-fill);}
+.ticket-card-header.tk-pendiente,.ticket-card-header.tk-completado,.ticket-card-header.tk-noejecutado{background:var(--tk-pendiente-fill);}
+.tk-sello-anulado{background:#EFEEEA;color:#57564F;}
 .ticket-card-header.tk-vencido{background:var(--tk-vencido-fill);}
 .ticket-card-header.tk-aviso{background:var(--tk-aviso-fill);}
 .tk-punto{width:16px;height:16px;border-radius:50%;background:rgba(255,255,255,0.93);font-size:10px;font-weight:800;line-height:16px;text-align:center;display:inline-block;flex-shrink:0;}
@@ -4604,6 +4678,17 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
   </div>
 </div>
 
+
+<div class="modal-overlay" id="modal-noejec">
+  <div class="modal">
+    <div class="modal-title">\u2298 Cerrar como no ejecutado</div>
+    <div id="ne-ticket" style="font-size:12px;color:var(--text-secondary);background:#faf9f7;border-radius:8px;padding:9px 11px;margin-bottom:0.875rem"></div>
+    <div class="field" style="margin-bottom:0.5rem"><label>\u00bfPor qu\u00e9 no se ejecut\u00f3?</label><div id="ne-motivos" style="margin-top:6px"></div></div>
+    <div class="field" style="margin-bottom:0.5rem"><label>Nota (opcional)</label><input type="text" id="ne-nota" placeholder="Ej: se movi\u00f3 al viernes por falta de tablero"/></div>
+    <div style="font-size:11px;color:#aaa;margin-bottom:0.875rem">El ticket sale del tareo y de la vista de Andree, y queda en el historial con el motivo. No se elimina.</div>
+    <div class="modal-actions"><button class="btn" onclick="cerrarNoEjecutado()">Cancelar</button><button class="btn btn-danger" onclick="guardarNoEjecutado()">\u2298 Cerrar ticket</button></div>
+  </div>
+</div>
 
 <!-- MODAL CREAR/EDITAR OF -->
 <div class="modal-overlay" id="modal-of">
