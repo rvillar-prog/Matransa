@@ -19,6 +19,10 @@ const firebaseConfig = {
   appId: "1:93565118328:web:0a315edb8c09de4f7b8a8d"
 };
 
+// Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
+// sirve para saber que version esta publicada sin tener que recorrerlo entero.
+const VERSION_APP = 'v2026-09-11 \u00b7 F2-13';
+
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
 // cierre o recarga de la pestaña y se sincroniza solo al volver el internet. Sin esto la
@@ -127,6 +131,11 @@ function etiquetaReproceso(cod){
 // ejecutado" — es su opuesto — así que viaja en su propio campo y se cuenta por separado.
 const CIERRE_SIN_MEDIR = '__sin_medir__';
 
+// En estos dos motivos la nota ES el dato. "Cambio de prioridad" sin explicacion no dice nada:
+// el numero interesante no es cuantos tickets se cayeron, es a favor de que se cayeron. En los
+// otros tres (error, reprogramado, no se llego) la nota no agrega nada y sigue siendo opcional.
+const MOTIVOS_EXIGEN_NOTA = ['prioridad', 'insumo'];
+
 function etiquetaMotivo(cod){
   const m = MOTIVOS_NO_EJECUCION.find(x => x.cod === cod);
   return m ? m.etq : (cod || 'Sin motivo');
@@ -219,6 +228,8 @@ function requiereAdmin(){
 }
 
 async function init() {
+  const v=document.getElementById('config-version');
+  if(v) v.textContent='MATRANSA \u00b7 '+VERSION_APP;
   const hoy=new Date();
   document.getElementById('fecha-nav').textContent=hoy.toLocaleDateString('es-PE',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
   // Poblar selector de fecha ejecución — nunca muestra domingo, sábado va directo a lunes
@@ -469,6 +480,23 @@ function idsDeTrabajadores(nombres){
   return (nombres||[]).map(n => (trabajadores.find(w=>w.nombre===n)||{}).id || null);
 }
 
+// El numero de OF se sacaba con una expresion regular sobre el texto del producto
+// ("129738 | SILLA MB01-02"). Si alguien escribe el producto sin el numero delante, el ticket se
+// queda sin OF y desaparece del Mapa de OF y de cualquier cuenta por orden. Ahora, ademas del
+// numero, se guarda el id del documento de la OF: ese no depende de como este escrito el texto.
+function resolverOF(producto){
+  const m = String(producto||'').match(/^\s*(\d+)/);
+  let numero = m ? m[1] : '';
+  let doc = numero ? (ofs||[]).find(o => String(o.numero) === numero) : null;
+  if(!doc && !numero){
+    // Sin numero delante: ultimo intento, buscar una OF cuya descripcion coincida con el texto.
+    const txt = String(producto||'').toUpperCase().trim();
+    doc = (ofs||[]).find(o => txt && String(o.descripcion||'').toUpperCase().trim() === txt) || null;
+    if(doc) numero = String(doc.numero);
+  }
+  return { ofNumero: numero, ofId: doc ? (doc.fbId || null) : null };
+}
+
 // Único lugar donde se arma un ticket. Los dos caminos de guardado (el normal y el que
 // confirma pese al aviso de sobrecarga) pasan por aquí, así que ya no puede volver a pasar
 // que uno escriba un campo y el otro se lo olvide — que es lo que produjo el "guardado"
@@ -477,7 +505,7 @@ function construirTicket(d){
   const nombres  = [d.t1, d.t2].filter(Boolean);
   const ids      = idsDeTrabajadores(nombres);
   const proyObj  = proyectosTC.find(p => p.codigo === d.proy);
-  const ofMatch  = String(d.prod||'').match(/^(\d+)/);
+  const of       = resolverOF(d.prod);
   const ahora    = new Date().toISOString();
   return {
     nombres,
@@ -486,8 +514,11 @@ function construirTicket(d){
     proyecto:      proyObj ? (d.proy + ' · ' + proyObj.nombre) : d.proy,
     proyectoCodigo:d.proy,
     producto:      d.prod,
-    ofNumero:      ofMatch ? ofMatch[1] : '',
-    areaEjecucion: d.areaEjec || null,
+    ofNumero:      of.ofNumero,
+    ofId:          of.ofId,
+    // Se escribe el area aunque no se haya elegido "area de ejecucion" en el formulario: la
+    // operacion ya la determina. El campo pasa a significar "donde se ejecuto", no "excepcion".
+    areaEjecucion: d.areaEjec || areaDeOperacion(d.operacion) || null,
     tarea: d.tarea, n: d.n, tu: d.tu,
     tt: parseFloat((d.n * d.tu / 60).toFixed(2)),
     operacion:     d.operacion || null,
@@ -1322,10 +1353,27 @@ function mostrarCausaReproceso(){
 }
 window.mostrarCausaReproceso = mostrarCausaReproceso;
 
+// El area a la que pertenece una operacion del catalogo. Solo mira CATALOGO_OPERACIONES, no las
+// transversales: Mantenimiento o Transporte interno se hacen desde cualquier area y por lo tanto
+// no dicen nada sobre donde ocurrio el trabajo.
+function areaDeOperacion(nombre){
+  if(!nombre) return null;
+  const hits = CATALOGO_OPERACIONES.filter(x => x.nombre === nombre);
+  // Si el nombre existe en mas de un area no se puede saber cual fue, y adivinar es peor que no
+  // derivar: se devuelve null y decide el area base del trabajador, como antes. Hoy el unico caso
+  // es "Lijado", que existe en Acabado y en Pintura de Fierro.
+  return hits.length === 1 ? hits[0].area : null;
+}
+
 function getAreaEjecucion(ticket) {
   // Retorna el área donde realmente trabaja el ticket ese día
   // Si tiene areaEjecucion definida, usa esa; si no, usa el área base del trabajador principal
   if(ticket.areaEjecucion) return ticket.areaEjecucion;
+  // Si el ticket trae una operacion del catalogo, esa operacion ya dice en que area ocurrio el
+  // trabajo. Derivarlo aqui corrige de una vez los tickets viejos sin necesidad de migrar nada:
+  // el area base del trabajador queda como ultimo recurso, no como primera respuesta.
+  const areaOp = areaDeOperacion(ticket.operacion);
+  if(areaOp) return areaOp;
   const nombre = (ticket.nombres||[])[0];
   if(!nombre) return 'PROD-ADMIN';
   return trabajadores.find(w=>w.nombre===nombre)?.area || 'PROD-ADMIN';
@@ -1604,6 +1652,8 @@ function actualizarAvisoCierre(){
   const sinMedir = sel && sel.value===CIERRE_SIN_MEDIR;
   av.innerHTML = sinMedir
     ? 'Cuenta como trabajo hecho, pero <strong>no aporta al tiempo est\u00e1ndar</strong> de la operaci\u00f3n. Se cuenta aparte para saber cu\u00e1ntos se est\u00e1n cerrando sin medir.'
+    : (sel && MOTIVOS_EXIGEN_NOTA.includes(sel.value))
+    ? 'En este motivo <strong>la nota es obligatoria</strong>: es donde queda a favor de qu\u00e9 se dej\u00f3 de hacer, o qu\u00e9 material falt\u00f3.'
     : 'El ticket sale del tareo y de la vista de Andree, y queda en el historial con el motivo. No se elimina.';
   if(btn) btn.textContent = sinMedir ? '\u2713 Cerrar sin medir' : '\u2298 Cerrar ticket';
 }
@@ -1615,6 +1665,18 @@ async function guardarNoEjecutado(){
   const sel=document.querySelector('input[name="ne-motivo"]:checked');
   if(!sel) return;
   const nota=document.getElementById('ne-nota').value.trim();
+  const campoNota=document.getElementById('ne-nota');
+  if(MOTIVOS_EXIGEN_NOTA.includes(sel.value) && !nota){
+    if(campoNota){
+      campoNota.style.borderColor='#b32e26';
+      campoNota.style.boxShadow='0 0 0 3px rgba(179,46,38,0.10)';
+      campoNota.focus();
+    }
+    const av=document.getElementById('ne-aviso');
+    if(av) av.innerHTML='<span style="color:#b32e26;font-weight:600">Escribe la nota:</span> en este motivo es el dato que importa. \u00bfA favor de qu\u00e9 se dej\u00f3 de hacer, o qu\u00e9 material falt\u00f3?';
+    return;
+  }
+  if(campoNota){ campoNota.style.borderColor=''; campoNota.style.boxShadow=''; }
   const sinMedir = sel.value===CIERRE_SIN_MEDIR;
   // Los dos cierres sacan el ticket de las vistas de trabajo y lo dejan en el historial, pero
   // NO son el mismo dato: uno dice que el trabajo no se hizo y el otro que sí.
@@ -5549,6 +5611,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 
 <!-- CONFIG -->
 <div class="page" id="page-config">
+  <div style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--text-muted);margin-bottom:0.75rem" id="config-version"></div>
   <div class="card">
     <div class="card-title">Personal de planta</div>
     <div id="alert-config" style="display:none" class="alert"></div>
