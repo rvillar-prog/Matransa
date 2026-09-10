@@ -110,6 +110,19 @@ const MOTIVOS_NO_EJECUCION = [
   {cod:'no_llego',     etq:'No se lleg\u00f3 \u2014 falt\u00f3 tiempo',         cuentaPlan:true},
   {cod:'error',        etq:'Se cre\u00f3 por error o est\u00e1 duplicado',       cuentaPlan:false}
 ];
+// Causas de reproceso. Son pocas a propósito: la pregunta que tienen que contestar es de quién
+// es el costo, no el detalle técnico, que va en el Detalle del ticket.
+const MOTIVOS_REPROCESO = [
+  {cod:'defecto',  etq:'Defecto de fabricaci\u00f3n'},
+  {cod:'cambio',   etq:'Cambio pedido por el cliente'},
+  {cod:'dano',     etq:'Da\u00f1o o mala manipulaci\u00f3n'},
+  {cod:'material', etq:'Material defectuoso'}
+];
+function etiquetaReproceso(cod){
+  const m = MOTIVOS_REPROCESO.find(x => x.cod === cod);
+  return m ? m.etq : (cod || 'Sin causa');
+}
+
 // Tercera salida del ticket: se ejecutó, pero nadie midió el tiempo. No es un motivo de "no
 // ejecutado" — es su opuesto — así que viaja en su propio campo y se cuenta por separado.
 const CIERRE_SIN_MEDIR = '__sin_medir__';
@@ -479,6 +492,10 @@ function construirTicket(d){
     tt: parseFloat((d.n * d.tu / 60).toFixed(2)),
     operacion:     d.operacion || null,
     fueraCatalogo: d.fueraCatalogo === true,
+    // Serie es el caso por defecto y no lleva marca: lo normal no se etiqueta.
+    esPrototipo:   d.esPrototipo === true,
+    esReproceso:   d.esReproceso === true,
+    motivoReproceso: d.esReproceso ? (d.motivoReproceso || null) : null,
     detalle:       d.detalle || null,
     unidad:        d.opDef ? (d.opDef.unidad || null) : null,
     metodoCaptura: d.opDef ? d.opDef.captura : null,
@@ -537,6 +554,10 @@ function validarFormTareo(d){
     marcarCampo('t-operacion','Elige una operaci\u00f3n del cat\u00e1logo o escribe el detalle');
     faltan.push({id:'t-operacion',etiqueta:'operaci\u00f3n o detalle'});
   }
+  // Un reproceso sin causa no sirve para nada: el numero que importa no es cuantas horas se
+  // rehicieron, es por que se rehicieron.
+  if(d.esReproceso)
+    pedir(!d.motivoReproceso, 't-motivo-reproceso', 'Elige por qu\u00e9 se rehace', 'causa del reproceso');
   pedir(!d.n||d.n<1,  't-n',         'Debe ser 1 o más',              'nº de unidades');
   pedir(!d.tu||d.tu<1,'t-tu',        'Debe ser 1 minuto o más',       'tiempo unitario');
   pedir(!d.fechaEjec, 't-fecha-ejec','Elige la fecha de ejecución',   'fecha');
@@ -574,6 +595,9 @@ async function agregarTicket(){
   const fueraCatalogo=operacionSel===OPERACION_OTRA;
   const operacion=fueraCatalogo?'Otra':operacionSel;
   const detalle=document.getElementById('t-tarea').value.trim();
+  const esPrototipo=!!document.getElementById('t-prototipo')?.checked;
+  const esReproceso=!!document.getElementById('t-reproceso')?.checked;
+  const motivoReproceso=esReproceso?(document.getElementById('t-motivo-reproceso')?.value||''):'';
   // Convivencia: mientras el catálogo se termina de validar, se acepta operación del catálogo
   // o texto libre. "tarea" se sigue guardando siempre para que Kanban, Historial, impresión y
   // Excel no cambien; si hay operación y no hay detalle, "tarea" toma el nombre de la operación.
@@ -583,7 +607,7 @@ async function agregarTicket(){
   const tu=parseInt(document.getElementById('t-tu').value);
   const fechaEjec=document.getElementById('t-fecha-ejec').value;
   if(guardandoTicket) return;   // ya hay un guardado en curso: se ignora el segundo clic
-  if(!validarFormTareo({t1,proy,prod,operacion:operacionSel,detalle,n,tu,fechaEjec,area:areaFormTareo()})) return;
+  if(!validarFormTareo({t1,proy,prod,operacion:operacionSel,detalle,n,tu,fechaEjec,area:areaFormTareo(),esReproceso,motivoReproceso})) return;
   const ttNuevo=parseFloat((n*tu/60).toFixed(2));
   const nombresNuevo=[t1,t2].filter(Boolean);
 
@@ -602,7 +626,7 @@ async function agregarTicket(){
     if(horasNom>8) sobrecargaMsg.push(`${nom.split(' ').slice(0,2).join(' ')} tendrá <strong>${horasNom.toFixed(1)}h</strong>`);
   });
   if(sobrecargaMsg.length>0){
-    window._ticketPendiente={t1,t2,proy,prod,tarea,n,tu,fechaEjec,operacion,fueraCatalogo,detalle,opDef,areaEjec:document.getElementById('t-area-ejec')?document.getElementById('t-area-ejec').value||null:null};
+    window._ticketPendiente={t1,t2,proy,prod,tarea,n,tu,fechaEjec,operacion,fueraCatalogo,esPrototipo,esReproceso,motivoReproceso,detalle,opDef,areaEjec:document.getElementById('t-area-ejec')?document.getElementById('t-area-ejec').value||null:null};
     const al=document.getElementById('alert-sobrecarga');
     al.innerHTML=`<strong>⚠ Sobrecarga detectada</strong><br>${sobrecargaMsg.join(' / ')} asignadas para ${fechaEjec} (máx. recomendado: 8h).<div style="margin-top:8px;display:flex;gap:8px"><button onclick="confirmarTicketSobrecarga()" class="btn btn-xs btn-amber">Guardar igual</button><button onclick="document.getElementById('alert-sobrecarga').style.display='none'" class="btn btn-xs">Cancelar</button></div>`;
     al.style.display='block';
@@ -610,7 +634,7 @@ async function agregarTicket(){
   }
 
   const ticket=construirTicket({
-    t1,t2,proy,prod,tarea,n,tu,fechaEjec,operacion,fueraCatalogo,detalle,opDef,
+    t1,t2,proy,prod,tarea,n,tu,fechaEjec,operacion,fueraCatalogo,esPrototipo,esReproceso,motivoReproceso,detalle,opDef,
     areaEjec:document.getElementById('t-area-ejec')?.value||null
   });
   // La confirmación nombra lo que se guardó. Un "listo" genérico no despeja la duda de si
@@ -646,6 +670,8 @@ function limpiarForm(){
   document.getElementById('t-tarea').value='';
   if(document.getElementById('t-area-ejec')) document.getElementById('t-area-ejec').value='';
   if(document.getElementById('t-operacion')) actualizarOperaciones('');
+  ['t-prototipo','t-reproceso'].forEach(id=>{const c=document.getElementById(id); if(c) c.checked=false;});
+  mostrarCausaReproceso();
   document.getElementById('t-n').value='1';document.getElementById('t-tu').value='';document.getElementById('t-tt').value='';
   document.getElementById('t-fecha-ejec').value=fechaEjecucionDefecto();
 }
@@ -785,6 +811,8 @@ function ticketCardHTML(t){
       <div class="ticket-field"><div class="ticket-field-label">Producto</div><div class="ticket-field-value" style="font-size:11px">${escapeHtml(t.producto)}</div></div>
       <div class="ticket-field"><div class="ticket-field-label">Tarea</div><div class="ticket-field-value">${escapeHtml(t.tarea)}</div></div>
       ${sello}
+      ${t.esPrototipo?`<div style="margin-top:6px;padding:4px 8px;background:#EEF2FB;border-radius:6px;font-size:11px;color:#17408F;font-weight:600" title="No entra al tiempo est\u00e1ndar">\u25c8 Prototipo</div>`:''}
+      ${t.esReproceso?`<div style="margin-top:6px;padding:4px 8px;background:#F7E5E4;border-radius:6px;font-size:11px;color:#8F2C27;font-weight:600" title="No entra al tiempo est\u00e1ndar">\u21ba Reproceso \u00b7 ${escapeHtml(etiquetaReproceso(t.motivoReproceso))}</div>`:''}
       ${t.sinSincronizar?`<div style="margin-top:6px;padding:4px 8px;background:#fff8e1;border-radius:6px;font-size:11px;color:#9a6510" title="Registrado en este dispositivo. Se enviará al servidor en cuanto vuelva la conexión.">⏳ Sin sincronizar</div>`:''}
       ${t.incidencias&&t.incidencias.length?`<div style="margin-top:6px;padding:4px 8px;background:#fff8e1;border-radius:6px;font-size:11px;color:#f57f17">⚠ ${t.incidencias.length} incidencia${t.incidencias.length>1?'s':''}</div>`:''}
     </div>
@@ -1274,6 +1302,25 @@ function mostrarUnidadOperacion(){
   cont.style.display = 'block';
 }
 window.mostrarUnidadOperacion = mostrarUnidadOperacion;
+
+// La causa solo aparece cuando hace falta. Un desplegable siempre visible que casi nunca se usa
+// es una casilla mas que estorba en un formulario que ya es largo.
+function mostrarCausaReproceso(){
+  const chk = document.getElementById('t-reproceso');
+  const sel = document.getElementById('t-motivo-reproceso');
+  if(!chk || !sel) return;
+  if(chk.checked){
+    if(!sel.options.length){
+      sel.innerHTML = '<option value="">\u00bfPor qu\u00e9 se rehace?</option>' +
+        MOTIVOS_REPROCESO.map(m => '<option value="'+m.cod+'">'+escapeHtml(m.etq)+'</option>').join('');
+    }
+    sel.style.display = '';
+  } else {
+    sel.style.display = 'none';
+    sel.value = '';
+  }
+}
+window.mostrarCausaReproceso = mostrarCausaReproceso;
 
 function getAreaEjecucion(ticket) {
   // Retorna el área donde realmente trabaja el ticket ese día
@@ -2040,7 +2087,7 @@ function renderHist(){
       <td style="font-size:11px;color:#888">${area}</td>
       <td style="font-size:11px">${t.proyectoCodigo||(t.proyecto||'').split(' · ')[0]||t.proyecto}</td>
       <td style="font-size:11px;color:#888">${t.ofNumero||'—'}</td>
-      <td style="font-size:11px;color:#666">${escapeHtml(t.tarea)}${t.noEjecutado?`<div style="margin-top:2px;font-size:10px;color:#8a8985">\u2298 No ejecutado \u00b7 ${escapeHtml(etiquetaMotivo(t.motivoNoEjecucion))}${t.notaNoEjecucion?' \u2014 '+escapeHtml(t.notaNoEjecucion):''}</div>`:''}${t.ejecutadoSinMedir?`<div style="margin-top:2px;font-size:10px;color:#8A6410">\u2713 Ejecutado sin medir${t.notaNoEjecucion?' \u2014 '+escapeHtml(t.notaNoEjecucion):''}</div>`:''}</td>
+      <td style="font-size:11px;color:#666">${escapeHtml(t.tarea)}${t.noEjecutado?`<div style="margin-top:2px;font-size:10px;color:#8a8985">\u2298 No ejecutado \u00b7 ${escapeHtml(etiquetaMotivo(t.motivoNoEjecucion))}${t.notaNoEjecucion?' \u2014 '+escapeHtml(t.notaNoEjecucion):''}</div>`:''}${t.esPrototipo?`<div style="margin-top:2px;font-size:10px;color:#17408F">\u25c8 Prototipo</div>`:''}${t.esReproceso?`<div style="margin-top:2px;font-size:10px;color:#8F2C27">\u21ba Reproceso \u00b7 ${escapeHtml(etiquetaReproceso(t.motivoReproceso))}</div>`:''}${t.ejecutadoSinMedir?`<div style="margin-top:2px;font-size:10px;color:#8A6410">\u2713 Ejecutado sin medir${t.notaNoEjecucion?' \u2014 '+escapeHtml(t.notaNoEjecucion):''}</div>`:''}</td>
       <td style="text-align:center">${t.n}</td>
       <td style="text-align:center">${t.tu}'</td>
       <td style="text-align:center">${t.tu_real?t.tu_real+"'":'—'}</td>
@@ -2062,13 +2109,13 @@ function exportarExcel(){
     return true;
   });
   if(!datos.length){showAlert('hist','No hay datos para exportar.','warn');return;}
-  const rows=[['Fecha ejecución','Fecha creación','Trabajador(es)','Área','Proyecto','Producto','Tarea','N°','t.u. plan','t.u. real','Diferencia','T.T. plan','T.T. real','Cierre','Motivo no ejecución','Nota','Incidencias']];
+  const rows=[['Fecha ejecución','Fecha creación','Trabajador(es)','Área','Proyecto','Producto','Tarea','N°','t.u. plan','t.u. real','Diferencia','T.T. plan','T.T. real','Cierre','Motivo no ejecución','Nota','Tipo de trabajo','Causa reproceso','Incidencias']];
   datos.forEach(t=>{
     const area=getAreaEjecucion(t);
     const cierre = t.completado ? 'Ejecutado'
                  : t.ejecutadoSinMedir ? 'Ejecutado sin medir'
                  : t.noEjecutado ? 'No ejecutado' : 'Sin resolver';
-    rows.push([t.fechaEjecucion||t.fecha,t.fechaCreacion||'',(t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / '),area,t.proyecto,t.producto,t.tarea,t.n,t.tu,t.tu_real||'',t.tu_real?(t.tu_real-t.tu):'',t.tt,t.tt_real||'',cierre,t.noEjecutado?etiquetaMotivo(t.motivoNoEjecucion):'',t.notaNoEjecucion||'',(t.incidencias||[]).map(i=>`${i.hora}: ${i.descripcion}`).join(' | ')]);
+    rows.push([t.fechaEjecucion||t.fecha,t.fechaCreacion||'',(t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / '),area,t.proyecto,t.producto,t.tarea,t.n,t.tu,t.tu_real||'',t.tu_real?(t.tu_real-t.tu):'',t.tt,t.tt_real||'',cierre,t.noEjecutado?etiquetaMotivo(t.motivoNoEjecucion):'',t.notaNoEjecucion||'',t.esPrototipo?'Prototipo':(t.esReproceso?'Reproceso':'Serie'),t.esReproceso?etiquetaReproceso(t.motivoReproceso):'',(t.incidencias||[]).map(i=>`${i.hora}: ${i.descripcion}`).join(' | ')]);
   });
   const ws=XLSX.utils.aoa_to_sheet(rows);
   const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Historial');
@@ -5271,6 +5318,19 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
       <div class="field field-full"><label>Área de ejecución <span style="font-size:10px;color:var(--text-muted)">(solo si trabaja fuera de su área base)</span></label><select id="t-area-ejec" onchange="actualizarOperaciones()"><option value="">— Usar área del trabajador —</option><option>HABILITADO</option><option>ENSAMBLE</option><option>FIERRO</option><option>PINTURA DE FIERRO</option><option>EVA</option><option>ACABADO</option><option>MANTENIMIENTO</option></select></div>
       <div class="field field-full"><label>Operación</label><select id="t-operacion" onchange="mostrarUnidadOperacion()"><option value="">Elige primero el trabajador</option></select><div id="t-unidad-info" style="display:none;font-size:11px;color:#17408F;background:#EEF2FB;border-radius:6px;padding:6px 9px;margin-top:5px;line-height:1.45"></div></div>
       <div class="field field-full"><label>Detalle <span style="font-size:10px;color:var(--text-muted)">(qué pieza o mueble, y cualquier precisión)</span></label><input type="text" id="t-tarea" placeholder="Ej: parantes de la base, patas delanteras..." /></div>
+      <div class="field field-full">
+        <label>Tipo de trabajo</label>
+        <div style="display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;margin-top:4px">
+          <label style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:400;cursor:pointer;margin:0">
+            <input type="checkbox" id="t-prototipo" style="margin:0"> Prototipo o muestra
+          </label>
+          <label style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:400;cursor:pointer;margin:0">
+            <input type="checkbox" id="t-reproceso" onchange="mostrarCausaReproceso()" style="margin:0"> Reproceso
+          </label>
+          <select id="t-motivo-reproceso" style="display:none;height:32px;border:0.5px solid #ccc;border-radius:8px;padding:0 8px;font-size:13px;background:var(--surface-2)"></select>
+        </div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:5px">Si no marcas nada, es trabajo de serie. Prototipo y reproceso se miden aparte y no entran al tiempo estándar.</div>
+      </div>
     </div>
     <div class="form-grid-3" style="margin-top:0.875rem">
       <div class="field"><label>N° unidades</label><input type="number" id="t-n" min="1" value="1" oninput="calcTT()" /></div>
