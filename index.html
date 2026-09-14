@@ -21,7 +21,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-14 \u00b7 F2-15';
+const VERSION_APP = 'v2026-09-14 \u00b7 F2-19';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -159,7 +159,10 @@ function estadoTicket(t){
   const hoy   = fechaStrToDate(hoyStr());
   const ahora = new Date();
   const hora  = ahora.getHours()+ahora.getMinutes()/60;
-  const vencido = !hecho && (d<hoy || (d.getTime()===hoy.getTime() && hora>=17));
+  // La hora de cierre estaba escrita a mano como 17. El viernes se trabaja hasta las 18 y el
+  // sabado hasta la 1: un ticket del viernes se pintaba de rojo una hora antes de que acabara
+  // la jornada, y uno del sabado recien cuatro horas despues.
+  const vencido = !hecho && (d<hoy || (d.getTime()===hoy.getTime() && hora>=horaFinJornada(hoyStr())));
   // "No ejecutado" gana sobre "vencido": un ticket cerrado con motivo ya esta resuelto y no
   // debe seguir pintado de rojo, que queda reservado para lo que de verdad falta atender.
   // Pero pierde contra "completado": si hay tiempo real el trabajo se hizo, y el dato duro
@@ -649,17 +652,21 @@ async function agregarTicket(){
     if(!confirm('Ya registraste un ticket igual (mismo trabajador, tarea, producto, fecha y tiempo) hace pocos minutos.\n\n¿Seguro que quieres crear otro igual?')) return;
   }
 
-  // Verificar sobrecarga para ambos trabajadores
+  // Verificar sobrecarga para ambos trabajadores.
+  // El umbral es el mismo que usa la alerta del Dashboard: la jornada de ESE dia mas media hora
+  // de margen. Antes eran 8h fijas, asi que de lunes a jueves avisaba a partir de 8.1h cuando la
+  // jornada es de 8.5h: un aviso que se equivoca entrena a la gente a darle a "Guardar igual".
+  const jornadaEjec=jornadaProductiva(fechaEjec);
   const sobrecargaMsg=[];
   nombresNuevo.forEach(nom=>{
     const ticketsNom=historial.filter(t=>t.visibleTareo!==false&&t.fechaEjecucion===fechaEjec&&(t.nombres||[]).includes(nom));
     const horasNom=ticketsNom.reduce((s,t)=>s+t.tt,0)+ttNuevo;
-    if(horasNom>8) sobrecargaMsg.push(`${nom.split(' ').slice(0,2).join(' ')} tendrá <strong>${horasNom.toFixed(1)}h</strong>`);
+    if(horasNom>jornadaEjec+0.5) sobrecargaMsg.push(`${nom.split(' ').slice(0,2).join(' ')} tendrá <strong>${horasNom.toFixed(1)}h</strong>`);
   });
   if(sobrecargaMsg.length>0){
     window._ticketPendiente={t1,t2,proy,prod,tarea,n,tu,fechaEjec,operacion,fueraCatalogo,esPrototipo,esReproceso,motivoReproceso,detalle,opDef,areaEjec:document.getElementById('t-area-ejec')?document.getElementById('t-area-ejec').value||null:null};
     const al=document.getElementById('alert-sobrecarga');
-    al.innerHTML=`<strong>⚠ Sobrecarga detectada</strong><br>${sobrecargaMsg.join(' / ')} asignadas para ${fechaEjec} (máx. recomendado: 8h).<div style="margin-top:8px;display:flex;gap:8px"><button onclick="confirmarTicketSobrecarga()" class="btn btn-xs btn-amber">Guardar igual</button><button onclick="document.getElementById('alert-sobrecarga').style.display='none'" class="btn btn-xs">Cancelar</button></div>`;
+    al.innerHTML=`<strong>⚠ Sobrecarga detectada</strong><br>${sobrecargaMsg.join(' / ')} asignadas para ${fechaEjec} (la jornada de ese día es de ${jornadaEjec}h).<div style="margin-top:8px;display:flex;gap:8px"><button onclick="confirmarTicketSobrecarga()" class="btn btn-xs btn-amber">Guardar igual</button><button onclick="document.getElementById('alert-sobrecarga').style.display='none'" class="btn btn-xs">Cancelar</button></div>`;
     al.style.display='block';
     return;
   }
@@ -832,7 +839,7 @@ function ticketCardHTML(t){
     ? `<div class="tk-sello tk-sello-sinmedir">\u2713 Ejecutado \u00b7 sin tiempo medido</div>`
     : '';
   const cerrado = est.clave==='completado' || est.clave==='noejecutado' || est.clave==='sinmedir';
-  return `<div class="ticket-card${cerrado?' tk-hecho':''}" style="--area-color:${AREA_COLOR[area]||'#8a8985'}">
+  return `<div class="ticket-card${cerrado?' tk-hecho':''}" data-foco="${t.fbId||''}" style="--area-color:${AREA_COLOR[area]||'#8a8985'}">
     <div class="ticket-card-header ${est.clase}">
       <div style="display:flex;align-items:center;gap:8px">${ordenBadge}<div><div class="ticket-card-names">${names}</div><div class="ticket-card-area">${area}</div></div></div>
       <div style="display:flex;align-items:center;gap:7px">${punto}<button class="ticket-remove-btn no-print" onclick="abrirNoEjecutado('${t.fbId}','tareo')" title="Cerrar como no ejecutado">×</button></div>
@@ -1112,6 +1119,41 @@ const ES_ANALISTA_DATA = (w) => w.esAnalistaData === true || w.nombre?.includes(
 
 function getOperariosProductivos() {
   return trabajadores.filter(w => CARGOS_PRODUCTIVOS.includes(w.cargo) && !ES_ANALISTA_DATA(w));
+}
+
+const ES_PRACTICANTE = (w) => String(w && w.cargo || '').toUpperCase().includes('PRACTICANTE');
+const ES_COORDINADOR = (w) => String(w && w.cargo || '').toUpperCase().includes('COORDINADOR');
+
+// Quien aporta capacidad un dia concreto. Tres reglas, y cada una viene de como funciona la
+// planta, no de como esta escrita la planilla:
+//
+//   Operario productivo  capacidad fija, salvo ausencia registrada.
+//   Practicante          no tiene horario fijo, asi que no se le puede dar capacidad por
+//                        adelantado. El dia que tiene tareo es que vino: ese dia cuenta entero.
+//                        Reservarle capacidad los demas dias inflaria la planta con gente que
+//                        no esta.
+//   Coordinador          no es capacidad: supervisa. Cuando ejecuta es una excepcion por falta
+//                        de personal, y sumarlo a la capacidad la disimularia — las horas que
+//                        cubre tienen que verse como uso por encima del 100%.
+//
+// Punto ciego conocido: un practicante que vino y no recibio tareo no cuenta. Es el mismo punto
+// ciego que ya tenia "operarios sin tareo", y preferible a inventarle capacidad seis dias de
+// cada nueve.
+function plantillaDelDia(fechaStr){
+  const ausentes = new Set(getAusenciasDelDia(fechaStr).map(a=>a.trabajador));
+  const conTareo = new Set(historial
+    .filter(t=>t.visibleTareo!==false && t.fechaEjecucion===fechaStr)
+    .flatMap(t=>t.nombres||[]));
+  const operarios = getOperariosProductivos().filter(w=>!ausentes.has(w.nombre));
+  const practicantes = trabajadores.filter(w=>
+    ES_PRACTICANTE(w) && !ausentes.has(w.nombre) && conTareo.has(w.nombre));
+  // Los coordinadores que ejecutan no suman capacidad, pero hay que poder verlos: la pagina
+  // Personal los lista con este dato.
+  const coordinadoresEjecutando = trabajadores.filter(w=>
+    ES_COORDINADOR(w) && !ES_ANALISTA_DATA(w) && !ausentes.has(w.nombre) && conTareo.has(w.nombre));
+  const cabezas = operarios.length + practicantes.length;
+  return {operarios, practicantes, coordinadoresEjecutando, ausentes, cabezas,
+          horas: cabezas * jornadaProductiva(fechaStr)};
 }
 
 function getJornadaLabel(fechaStr) {
@@ -1417,8 +1459,14 @@ function posicionOrdenTicket(t){
   if(idx<0) return null;
   return {pos: idx+1, total: grupo.length};
 }
-function formatHoraDesde8am(horasAcumuladas){
-  let totalMin = Math.round(8*60 + horasAcumuladas*60);
+function formatHoraDesde8am(horasAcumuladas, fechaStr){
+  // El almuerzo no es tiempo de trabajo: quien acumula 4h desde las 8 no empieza lo siguiente a
+  // las 12:00, empieza a las 13:00. Sin esto, toda hora estimada posterior al mediodia se
+  // adelantaba exactamente una hora.
+  let hora = 8 + horasAcumuladas;
+  if(fechaStr!==undefined && hayRefrigerio(fechaStr) && hora >= REFRIGERIO_INI)
+    hora += (REFRIGERIO_FIN - REFRIGERIO_INI);
+  let totalMin = Math.round(hora*60);
   let h = Math.floor(totalMin/60)%24;
   let m = totalMin%60;
   const ampm = h>=12?'pm':'am';
@@ -1442,7 +1490,7 @@ function horaEstimadaTicket(t){
     if(inicio===null || acumulado>inicio) inicio = acumulado;
   }
   if(inicio===null) return '';
-  return formatHoraDesde8am(inicio);
+  return formatHoraDesde8am(inicio, t.fechaEjecucion);
 }
 // Sube o baja la prioridad de un ticket intercambiando su "orden" con el ticket adyacente
 // del mismo trabajador + día. Si alguno de los dos aún no tiene un valor de "orden" explícito
@@ -1571,12 +1619,12 @@ function renderAndree(){
       const esHoyTkt=fechaTkt===hoyStr();
       const esAnterior=fechaStrToDate(fechaTkt)<fechaStrToDate(hoyStr());
       const esFuturo=fechaStrToDate(fechaTkt)>fechaStrToDate(hoyStr());
-      const pendienteVencido=!done&&esHoyTkt&&hora>=17;
+      const pendienteVencido=!done&&esHoyTkt&&hora>=horaFinJornada(hoyStr());
       const alertaRojo=pendienteVencido||(!done&&esAnterior);
       const ordenInfo=posicionOrdenTicket(t);
       const orden=ordenInfo?ordenInfo.pos:null;
       const ordenBadge=orden?`<span title="Orden de ejecución" style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#e8e8e6;font-size:10px;font-weight:700;color:#555;margin-right:6px">${orden}</span>`:'';
-      return `<div class="andree-item ${done?'done':''}" style="${alertaRojo?'border:1.5px solid #E24B4A;background:#fff8f8;':''}">
+      return `<div class="andree-item ${done?'done':''}" data-foco="${t.fbId||''}" style="${alertaRojo?'border:1.5px solid #E24B4A;background:#fff8f8;':''}">
         ${alertaRojo?`<div style="background:#E24B4A;color:#fff;font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px 4px 0 0;margin:-8px -8px 8px -8px">⚠ PENDIENTE DE REGISTRAR TIEMPO</div>`:''}
         <div class="status-dot" style="background:${estadoTicket(t).color}" title="${estadoTicket(t).rotulo}"></div>
         <div class="andree-info">
@@ -1778,13 +1826,54 @@ function jornadaProductiva(fechaStr){
   return 8.5;              // lunes-jueves: 8-17:30h - 1h almuerzo
 }
 
+// ===== REFRIGERIO =====
+// El almuerzo ya estaba descontado en jornadaProductiva desde el principio, pero solo como un
+// numero: 8.5 en vez de 9.5. Nadie sabia DONDE estaba esa hora, asi que el Gantt dibujaba las
+// tareas de corrido por encima del mediodia. Aqui queda escrito el horario, una sola vez.
+const REFRIGERIO_INI = 12, REFRIGERIO_FIN = 13;
+function hayRefrigerio(fechaStr){
+  const parts=String(fechaStr||'').split('/');
+  if(parts.length!==3) return true;
+  const d=new Date(parts[2],parts[1]-1,parts[0]);
+  return d.getDay()!==6;   // el sabado se trabaja de 8 a 13 y no hay almuerzo
+}
+
+// Reparte `dur` horas de trabajo a partir de `cursor` (hora de reloj) saltando el refrigerio.
+// Devuelve los tramos a dibujar — una tarea que cruza el mediodia son dos — y donde queda el
+// cursor. Trabajar con tramos y no con un solo inicio/fin es lo que permite que la barra se
+// parta: una tarea de 4h que arranca a las 10:00 termina a las 15:00, no a las 14:00.
+function tramosTarea(cursor, dur, hayRef){
+  const tramos=[];
+  let resto=Math.max(0, dur||0);
+  let guarda=0;
+  while(resto>0.0001 && guarda++<50){
+    if(hayRef && cursor>=REFRIGERIO_INI && cursor<REFRIGERIO_FIN){ cursor=REFRIGERIO_FIN; continue; }
+    const tope=(hayRef && cursor<REFRIGERIO_INI) ? REFRIGERIO_INI : Infinity;
+    const cabe=Math.min(resto, tope-cursor);
+    tramos.push({inicio:cursor, fin:cursor+cabe});
+    cursor+=cabe; resto-=cabe;
+  }
+  // Una tarea de duracion cero no deja tramo, pero el cursor puede estar dentro del almuerzo:
+  // se empuja igual para que la siguiente no arranque a las 12:30.
+  if(hayRef && cursor>=REFRIGERIO_INI && cursor<REFRIGERIO_FIN) cursor=REFRIGERIO_FIN;
+  return {tramos, cursor};
+}
+
 function renderGanttDiario(){
   const sel=document.getElementById('k-fecha');
   const fechaActiva=sel?sel.value:hoyStr();
   const tickets=historial.filter(t=>t.visibleTareo!==false&&t.fechaEjecucion===fechaActiva);
   const horaInicio=8;
   const horaFin=horaFinJornada(fechaActiva);
-  const duracionTotal=horaFin-horaInicio; // horas
+  const duracionTotal=horaFin-horaInicio; // horas de reloj, almuerzo incluido
+  const hayRef=hayRefrigerio(fechaActiva);
+  const refX=((REFRIGERIO_INI-horaInicio)/duracionTotal)*100;
+  const refW=((REFRIGERIO_FIN-REFRIGERIO_INI)/duracionTotal)*100;
+  // Banda del almuerzo: se dibuja en el eje y detras de cada fila. Sin ella, el hueco que deja
+  // una tarea partida en dos no se distingue de un hueco sin asignar.
+  const bandaRef = hayRef
+    ? `<div title="Refrigerio 12:00-13:00 \u2014 no es tiempo de trabajo" style="position:absolute;left:${refX}%;width:${refW}%;top:0;bottom:0;background:repeating-linear-gradient(45deg,rgba(0,0,0,0.045),rgba(0,0,0,0.045) 5px,transparent 5px,transparent 10px);border-left:1px solid var(--border);border-right:1px solid var(--border);pointer-events:none"></div>`
+    : '';
 
   // Agrupar tickets por trabajador principal
   const porTrab={};
@@ -1846,6 +1935,8 @@ function renderGanttDiario(){
   html+=`<div style="display:flex;margin-bottom:4px">
     <div style="width:${labelW}px;flex-shrink:0;position:sticky;left:0;background:var(--surface-0);z-index:2"></div>
     <div style="position:relative;flex:1;height:${headerH}px;border-bottom:1px solid var(--border)">`;
+  html+=bandaRef;
+  if(hayRef) html+=`<div style="position:absolute;left:${refX+refW/2}%;transform:translateX(-50%);bottom:1px;font-size:9px;color:var(--text-muted);font-weight:600;letter-spacing:.04em;white-space:nowrap">REFRIGERIO</div>`;
   horas.forEach(h=>{
     const x=((h-horaInicio)/duracionTotal)*100;
     html+=`<span style="position:absolute;left:${x}%;transform:translateX(-50%);font-size:11px;color:var(--text-secondary);font-weight:500">${h}:00</span>`;
@@ -1861,15 +1952,19 @@ function renderGanttDiario(){
     const colorText=areaColorText[area]||'#222';
     const nomCorto=nom.split(' ').slice(0,2).join(' ');
 
-    // Encadenar tareas desde 8:00
+    // Encadenar tareas desde 8:00, saltando el refrigerio
     let cursor=horaInicio;
     const bloques=[];
     tks.forEach(t=>{
-      const durH=t.tt||0;
-      bloques.push({t,inicio:cursor,fin:cursor+durH});
-      cursor+=durH;
+      const r=tramosTarea(cursor,t.tt||0,hayRef);
+      bloques.push({t, tramos:r.tramos, inicio:r.tramos.length?r.tramos[0].inicio:cursor, fin:r.cursor});
+      cursor=r.cursor;
     });
-    const hrsLibres=Math.max(0,horaFin-cursor);
+    // Lo libre se mide contra la jornada PRODUCTIVA, no contra el ancho del eje. Con 8h asignadas
+    // un lunes lo libre es 0.5h (jornada 8.5h), no 1.5h: esa hora de diferencia es el almuerzo,
+    // y ofrecerla como hueco asignable era justamente el error.
+    const hrsAsignadas=tks.reduce((s,t)=>s+(t.tt||0),0);
+    const hrsLibres=Math.max(0, jornadaProductiva(fechaActiva)-hrsAsignadas);
     const alerta=hrsLibres>=1;
 
     html+=`<div style="display:flex;align-items:center;margin-bottom:6px">
@@ -1878,6 +1973,8 @@ function renderGanttDiario(){
         <div style="font-size:10px;color:var(--text-secondary)">${area}</div>
       </div>
       <div style="position:relative;flex:1;height:${rowH}px;background:var(--surface-1);border-radius:6px;overflow:hidden;border:0.5px solid var(--border)">`;
+
+    html+=bandaRef;
 
     // Líneas de hora de fondo
     horas.forEach(h=>{
@@ -1904,20 +2001,38 @@ function renderGanttDiario(){
       const dentroTiempo=ttReal&&ttReal<=b.t.tt;
       const pctReal=ttReal?Math.min(100,(ttReal/b.t.tt)*100):0;
       const tooltipTxt=`${ordenNum}° · ${proy} · ${tarea} | ${horaInicioStr}–${horaFinStr} | Plan: ${b.t.tt}h${ttReal?` · Real: ${ttReal}h ${excede?'⚠ EXCEDE':'✓'}` : ' · Sin registrar'}`;
-      const wPx=(b.fin-b.inicio)/duracionTotal*(ganttW);
+      // Se mide sobre el tramo mas ancho, no sobre el total: si la tarea esta partida, el rotulo
+      // tiene que caber en el trozo donde se va a escribir.
+      const anchoMax=(b.tramos&&b.tramos.length)
+        ? Math.max(...b.tramos.map(tr=>tr.fin-tr.inicio))
+        : (b.fin-b.inicio);
+      const wPx=anchoMax/duracionTotal*(ganttW);
       let textoVisible='';
       if(wPx>200) textoVisible=`${ordenNum}° ${proy} · ${tarea.length>18?tarea.substring(0,16)+'…':tarea}`;
       else if(wPx>100) textoVisible=`${ordenNum}° ${tarea.length>12?tarea.substring(0,10)+'…':tarea}`;
       else if(wPx>50) textoVisible=`${ordenNum}° ${tarea.length>4?tarea.substring(0,3)+'…':tarea}`;
       else if(wPx>24) textoVisible=`${ordenNum}°`;
       else textoVisible='';
-      // Bloque planificado
-      html+=`<div title="${tooltipTxt}" style="position:absolute;left:${x}%;width:${w}%;top:4px;bottom:4px;background:${color};border-radius:4px;overflow:hidden;cursor:default;border:${excede?'2px solid #E24B4A':dentroTiempo?'2px solid #27ae60':'none'}">
-        ${ttReal?`<div style="position:absolute;bottom:0;left:0;height:4px;width:${pctReal}%;background:${excede?'#E24B4A':'#27ae60'};border-radius:0 0 0 4px"></div>`:''}
-        <div style="position:absolute;inset:0;display:flex;align-items:center;padding:0 6px;overflow:hidden">
-          <span style="font-size:10px;font-weight:500;color:${colorText};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${textoVisible}${done?(excede?' ⚠':' ✓'):''}</span>
-        </div>
-      </div>`;
+      // Bloque planificado — uno por tramo. El rotulo y la barra de avance van en el tramo mas
+      // ancho: repetirlos en los dos haria leer la misma tarea como si fueran dos.
+      const tramos=b.tramos&&b.tramos.length?b.tramos:[{inicio:b.inicio,fin:b.fin}];
+      let iAncho=0;
+      tramos.forEach((tr,k)=>{ if((tr.fin-tr.inicio)>(tramos[iAncho].fin-tramos[iAncho].inicio)) iAncho=k; });
+      tramos.forEach((tr,k)=>{
+        const xT=((tr.inicio-horaInicio)/duracionTotal)*100;
+        const wT=((tr.fin-tr.inicio)/duracionTotal)*100;
+        const primero=k===0, ultimo=k===tramos.length-1;
+        const radio = tramos.length===1 ? '4px'
+                    : primero ? '4px 0 0 4px'
+                    : ultimo ? '0 4px 4px 0' : '0';
+        const texto = k===iAncho ? textoVisible : '';
+        html+=`<div title="${tooltipTxt}" style="position:absolute;left:${xT}%;width:${wT}%;top:4px;bottom:4px;background:${color};border-radius:${radio};overflow:hidden;cursor:default;border:${excede?'2px solid #E24B4A':dentroTiempo?'2px solid #27ae60':'none'}">
+          ${(ttReal&&k===iAncho)?`<div style="position:absolute;bottom:0;left:0;height:4px;width:${pctReal}%;background:${excede?'#E24B4A':'#27ae60'};border-radius:0 0 0 4px"></div>`:''}
+          <div style="position:absolute;inset:0;display:flex;align-items:center;padding:0 6px;overflow:hidden">
+            <span style="font-size:10px;font-weight:500;color:${colorText};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${texto}${(done&&k===iAncho)?(excede?' ⚠':' ✓'):''}</span>
+          </div>
+        </div>`;
+      });
       // Si el real excede el planificado, mostrar extensión en rojo
       if(excede){
         const xExtra=x+w;
@@ -1948,11 +2063,12 @@ function renderGanttDiario(){
   });
 
   // Resumen alertas
+  // Misma cuenta que dentro de cada fila: jornada productiva menos lo asignado. Antes restaba
+  // del ancho del eje y por eso reclamaba un hueco de 1h a quien solo tenia libre el almuerzo.
+  const jornadaDia=jornadaProductiva(fechaActiva);
   const totalLibres=trabajadoresOrdenados.filter(nom=>{
-    const tks=porTrab[nom];
-    let cursor=horaInicio;
-    tks.forEach(t=>{cursor+=(t.tt||0);});
-    return (horaFin-cursor)>=1;
+    const asignadas=porTrab[nom].reduce((s,t)=>s+(t.tt||0),0);
+    return (jornadaDia-asignadas)>=1;
   }).length;
 
   if(totalLibres>0){
@@ -2021,28 +2137,29 @@ function renderKanban(){
   document.getElementById('k-horas').textContent=horasPlan.toFixed(1)+'h';
   // Capacidad del día según horario
   const jornada=jornadaProductiva(fechaActiva);
-  // Solo operarios productivos: OPERARIO BASE/INTERMEDIO/SUPERIOR, excluye coordinadores, ADM y Andree
-  const cargosProductivos = CARGOS_PRODUCTIVOS;
-  const operariosProductivos=trabajadores.filter(w=>
-    cargosProductivos.includes(w.cargo) &&
-    !ES_ANALISTA_DATA(w) // Andree: analista, no operario
-  );
-  const totalTrab=operariosProductivos.length;
-  const capacidad=totalTrab*jornada;
+  // Una sola fuente para "quién trabaja hoy": operarios presentes + practicantes que vinieron.
+  // Antes esta pantalla armaba su propia cuenta y la página Personal otra distinta.
+  const plantilla=plantillaDelDia(fechaActiva);
+  const ausentes=plantilla.ausentes;
+  const presentes=plantilla.operarios;
+  const totalTrab=plantilla.cabezas;
+  const capacidad=plantilla.horas;
   const libre=Math.max(0,capacidad-horasPlan);
   const pctPlan=capacidad>0?Math.round((horasPlan/capacidad)*100):0;
   document.getElementById('k-horas-sub').textContent=`de ${capacidad.toFixed(1)}h capacidad (${pctPlan}%)`;
   const elLibre=document.getElementById('k-libre');
   elLibre.textContent=libre.toFixed(1)+'h';
   elLibre.style.color=libre>capacidad*0.3?'#EF9F27':libre>0?'#27ae60':'#27ae60';
-  document.getElementById('k-libre-sub').textContent=`${totalTrab} operarios × ${jornada}h jornada`;
+  const nPrac=plantilla.practicantes.length;
+  document.getElementById('k-libre-sub').textContent=
+    `${presentes.length} operario${presentes.length===1?'':'s'}`
+    + (nPrac?` + ${nPrac} practicante${nPrac===1?'':'s'}`:'')
+    + ` × ${jornada}h jornada`;
   document.getElementById('k-comp').textContent=ticketsHoy.filter(t=>t.tu_real).length;
-  // Calcular operarios sin tareo
-  const cargosP=['OPERARIO BASE','OPERARIO INTERMEDIO','OPERARIO SUPERIOR'];
-  const opsDisp=trabajadores.filter(w=>cargosP.includes(w.cargo)&&!ES_ANALISTA_DATA(w));
-  const ausenciasFecha=getAusenciasDelDia(fechaActiva);
-  const ausentes=new Set(ausenciasFecha.map(a=>a.trabajador));
-  const sinTareoK=opsDisp.filter(w=>!ausentes.has(w.nombre)&&!ticketsHoy.some(t=>(t.nombres||[]).includes(w.nombre))).length;
+  // Operarios sin tareo: los presentes que no aparecen en ningún ticket. Antes esta parte
+  // rearmaba la lista de operarios con los tres cargos escritos a mano, en paralelo a
+  // CARGOS_PRODUCTIVOS: dos listas que había que acordarse de cambiar a la vez.
+  const sinTareoK=presentes.filter(w=>!ticketsHoy.some(t=>(t.nombres||[]).includes(w.nombre))).length;
   const elST=document.getElementById('k-sin-tareo');
   if(elST){elST.textContent=sinTareoK;elST.style.color=sinTareoK>0?'#E24B4A':'#27ae60';}
   const cont=document.getElementById('kanban-board');
@@ -2053,8 +2170,15 @@ function renderKanban(){
     const compArea=tarjetas.filter(t=>t.tu_real).length;
     void compArea; // usado implícitamente en kanban-comp badge
     // Capacidad del área
-    const personasArea=trabajadores.filter(w=>w.area===area).length;
-    const capacidad=personasArea*8;
+    // `jornada` es jornadaProductiva(fechaActiva), la misma que usa la capacidad global de la
+    // planta unas lineas mas arriba. Estaba escrito 8 a mano, asi que la misma pantalla decia
+    // 8.5h en el encabezado y 8h en cada tarjeta de area.
+    // La misma regla por área: operarios presentes + practicantes que vinieron. Los
+    // coordinadores quedan fuera aquí también, así que un área que se sostiene con su
+    // coordinador se ve por encima del 100%, que es el dato.
+    const personasArea=plantilla.operarios.filter(w=>w.area===area).length
+                      +plantilla.practicantes.filter(w=>w.area===area).length;
+    const capacidad=personasArea*jornada;
     const pct=capacidad>0?Math.min(100,(horasArea/capacidad)*100):0;
     const horasLibres=Math.max(0,capacidad-horasArea);
     const sobrecarga=horasArea>capacidad;
@@ -2068,7 +2192,7 @@ function renderKanban(){
       const tieneInc=t.incidencias&&t.incidencias.length>0;
       const ordenInfo=posicionOrdenTicket(t);
       const orden=ordenInfo?ordenInfo.pos:null;
-      return `<div class="kanban-card ${done?'kanban-card-done':''} ${tieneInc?'kanban-card-inc':''}">
+      return `<div class="kanban-card ${done?'kanban-card-done':''} ${tieneInc?'kanban-card-inc':''}" data-foco="${t.fbId||''}">
         <div class="kanban-card-top">
           <span class="kanban-card-name">${orden?`<span title="Orden de ejecución" style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:#e8e8e6;font-size:9px;font-weight:700;color:#555;margin-right:4px">${orden}</span>`:''}${names}</span>
           <span>${done?'<span class="kanban-done-badge">✓</span>':''} ${tieneInc?'<span style="color:#f57f17;font-size:10px;font-weight:800">⚠</span>':''}</span>
@@ -2159,7 +2283,7 @@ function renderHist(){
     let diff='—',dc='diff-ok';
     if(t.tu_real){const d=t.tu_real-t.tu;diff=(d>0?'+':'')+d+"'";dc=d>10?'diff-over':d<-5?'diff-under':'diff-ok';}
     const incText=t.incidencias&&t.incidencias.length?`<span style="color:#f57f17;font-size:11px">⚠ ${t.incidencias.map(i=>escapeHtml(i.descripcion)).join(' / ')}</span>`:'—';
-    return `<tr>
+    return `<tr data-foco="${t.fbId||''}">
       <td style="white-space:nowrap">${t.fechaEjecucion||t.fecha}</td>
       <td style="font-weight:600">${names}</td>
       <td style="font-size:11px;color:#888">${area}</td>
@@ -2472,14 +2596,16 @@ function calcularAtencion(){
       titulo:`OF ${of.numero} · ${of.descripcion||''}`,
       detalle: d<0?`Entrega vencida hace ${-d} día${-d>1?'s':''} — sigue en ${of.etapa}`
                   :`Entrega en ${d} día${d===1?'':'s'} — sigue en ${of.etapa}`,
-      pagina:'torre'
+      pagina:'torre',
+      foco:['of-'+of.numero]
     });
   });
 
   // --- 2. OF bloqueadas (una alerta cada una: son excepcionales) ---
   (ofs||[]).filter(of=>of.bloqueada===true).forEach(of=>{
     A.push({sev:3,grupo:'Bloqueos',titulo:`OF ${of.numero} bloqueada`,
-            detalle:`${of.descripcion||''} — detenida en ${of.etapa}`,pagina:'torre'});
+            detalle:`${of.descripcion||''} — detenida en ${of.etapa}`,pagina:'torre',
+            foco:['of-'+of.numero]});
   });
 
   // --- 3. OF estancadas: UNA sola alerta agrupada ---
@@ -2505,7 +2631,8 @@ function calcularAtencion(){
     A.push({sev: estancadas.length>=5?3:2, grupo:'Bloqueos',
       titulo:`${estancadas.length} OF sin cambiar de etapa hace ${maxDias} días o más`,
       detalle:`${desglose}. O el trabajo está detenido, o la Torre de Control no se está actualizando.`,
-      pagina:'torre'});
+      pagina:'torre',
+      foco:estancadas.map(o=>'of-'+o.numero)});
   }
 
   // --- 3. Tickets sin tiempo real dentro de la ventana de arrastre ---
@@ -2531,7 +2658,8 @@ function calcularAtencion(){
       // "sin resolver" y no "sin tiempo real": ahora hay dos formas validas de cerrar un
       // ticket, y esta alerta reclama las dos que faltan, no solo el registro de tiempo.
       detalle: desglose+' \u2014 '+quienes.slice(0,6).join(', ')+(quienes.length>6?` y ${quienes.length-6} m\u00e1s`:''),
-      pagina:'andree'});
+      pagina:'andree',
+      foco:sinTiempo.map(t=>t.fbId).filter(Boolean)});
   }
 
   // --- 3b. Tickets que se hicieron pero nadie midio ---
@@ -2543,7 +2671,8 @@ function calcularAtencion(){
     A.push({sev:1, grupo:'Registro',
       titulo:`${sinMedir.length} ticket${sinMedir.length>1?'s':''} se cerr\u00f3 como hecho sin medir el tiempo`,
       detalle:`${hs.toFixed(1)} h de trabajo real que no alimentan el tiempo est\u00e1ndar de ninguna operaci\u00f3n.`,
-      pagina:'historial'});
+      pagina:'historial',
+      foco:sinMedir.map(t=>t.fbId).filter(Boolean)});
   }
 
   // --- 4. Operarios sin tareo ---
@@ -2563,6 +2692,27 @@ function calcularAtencion(){
       pagina:'tareo'});
   });
 
+  // --- 4b. Tickets asignados a alguien que está ausente ese día ---
+  // La app sabía las dos cosas por separado y no las cruzaba: hoy hay 8h de LIJADO DE HOJAS Y
+  // MARCO a nombre de alguien con descanso médico registrado desde el 8/9. Es el error más caro
+  // que puede tener un tareo — un día entero de nadie — y es el más fácil de detectar.
+  [hoy,manana].forEach(f=>{
+    const ausF=new Set(getAusenciasDelDia(f).map(a=>a.trabajador));
+    if(!ausF.size) return;
+    const choque=historial.filter(t=>t.visibleTareo!==false && t.fechaEjecucion===f
+      && !t.completado && !t.noEjecutado && !t.ejecutadoSinMedir
+      && (t.nombres||[]).some(n=>ausF.has(n)));
+    if(!choque.length) return;
+    const quienes=[...new Set(choque.flatMap(t=>(t.nombres||[]).filter(n=>ausF.has(n))))]
+      .map(n=>n.split(' ').slice(0,2).join(' '));
+    const hs=choque.reduce((s,t)=>s+(t.tt||0),0);
+    A.push({sev:3, grupo:'Carga',
+      titulo:`${choque.length} ticket${choque.length>1?'s':''} asignado${choque.length>1?'s':''} a alguien ausente el ${f}`,
+      detalle:`${quienes.join(', ')} \u2014 ${hs.toFixed(1)}h programadas que nadie va a ejecutar.`,
+      pagina:'tareo',
+      foco:choque.map(t=>t.fbId).filter(Boolean)});
+  });
+
   // --- 5. Sobrecargas ---
   [hoy,manana].forEach(f=>{
     const jornada=jornadaProductiva(f);
@@ -2577,10 +2727,15 @@ function calcularAtencion(){
     // Media hora de margen: diez minutos por encima de la jornada no es una sobrecarga,
     // es redondeo, y avisarlo entrena a la gente a ignorar la pantalla.
     Object.entries(porTrab).filter(([,h])=>h>jornada+0.5).forEach(([n,h])=>{
+      // El Kanban muestra un solo día: si la sobrecarga es la de mañana hay que mover también
+      // el selector de fecha, o "Ver" llevaría a una pantalla donde no está lo que se anuncia.
       A.push({sev: h>jornada+2?3:2, grupo:'Carga',
         titulo:`${n.split(' ').slice(0,2).join(' ')} con ${h.toFixed(1)}h el ${f}`,
         detalle:`La jornada de ese día es de ${jornada}h — sobrecarga de ${(h-jornada).toFixed(1)}h`,
-        pagina:'kanban'});
+        pagina:'kanban',
+        fecha:f,
+        foco:historial.filter(t=>t.visibleTareo!==false&&t.fechaEjecucion===f&&(t.nombres||[]).includes(n))
+                      .map(t=>t.fbId).filter(Boolean)});
     });
   });
 
@@ -2589,9 +2744,71 @@ function calcularAtencion(){
   if(pend.length) A.push({sev:2,grupo:'Sincronización',
     titulo:`${pend.length} registro${pend.length>1?'s':''} sin sincronizar`,
     detalle:'Escritos en este dispositivo pero todavía no confirmados por el servidor. No cierres el navegador hasta que vuelva la conexión.',
-    pagina:'tareo'});
+    pagina:'tareo',
+    foco:pend.map(t=>t.fbId).filter(Boolean)});
 
   return A.sort((a,b)=>b.sev-a.sev);
+}
+
+// ===== FOCO: qué mirar cuando se llega desde una alerta =====
+// "Ver" cambiaba de pestaña y ahí te dejaba: en el Historial, con 548 filas, encontrar el ticket
+// del que habla la alerta era trabajo de buscador humano. La alerta ya sabe cuál es; esto es
+// sólo el cable que lleva ese dato hasta la vista de destino.
+//
+// _foco.pintado evita repetir el scroll: las vistas se redibujan solas con cada snapshot y, sin
+// esa marca, la pantalla saltaría al primer resaltado cada pocos segundos mientras se lee.
+let _foco = null;   // {ids:[], pagina:'', pintado:false}
+
+function irAlerta(i){
+  const a = (window._alertasAtencion||[])[i];
+  if(!a) return;
+  // Una alerta sin foco (p. ej. "operarios sin tareo") apaga el resaltado anterior en vez de
+  // dejar la barra encendida apuntando a algo que ya no se está mirando.
+  limpiarFoco();
+  if(a.foco && a.foco.length) _foco = {ids:a.foco.slice(), pagina:a.pagina, pintado:false};
+  // El Kanban muestra un solo día: si la alerta habla de mañana, se mueve el selector ANTES de
+  // entrar, porque renderKanban lee ese valor al dibujar.
+  if(a.fecha){
+    const k=document.getElementById('k-fecha');
+    if(k && k.value!==a.fecha){
+      const tiene=[...k.options].some(o=>o.value===a.fecha);
+      if(!tiene) k.add(new Option(a.fecha, a.fecha));
+      k.value=a.fecha;
+    }
+  }
+  showPage(a.pagina);
+}
+
+function limpiarFoco(){
+  _foco = null;
+  document.querySelectorAll('.foco-hit').forEach(el=>el.classList.remove('foco-hit'));
+  const b=document.getElementById('foco-bar'); if(b) b.style.display='none';
+}
+
+// Se llama después de cada dibujado de la página enfocada. Marca, cuenta, y la primera vez
+// hace scroll hasta el primero.
+function aplicarFoco(){
+  const bar=document.getElementById('foco-bar');
+  if(!_foco){ if(bar) bar.style.display='none'; return; }
+  let primero=null, n=0;
+  document.querySelectorAll('[data-foco]').forEach(el=>{
+    const hit = el.dataset.foco && _foco.ids.includes(el.dataset.foco);
+    el.classList.toggle('foco-hit', !!hit);
+    if(hit){ n++; if(!primero) primero=el; }
+  });
+  if(bar){
+    bar.style.display='flex';
+    const txt=document.getElementById('foco-txt');
+    // Si no se encontró ninguno se dice, en vez de dejar una barra que promete un resaltado
+    // invisible: puede pasar si un filtro de la vista deja fuera lo que señala la alerta.
+    if(txt) txt.textContent = n
+      ? (n===1?'Resaltado 1 elemento de la alerta':'Resaltados '+n+' elementos de la alerta')
+      : 'Lo que señala la alerta no está visible con los filtros actuales';
+  }
+  if(primero && !_foco.pintado){
+    _foco.pintado=true;
+    try{ primero.scrollIntoView({behavior:'smooth', block:'center'}); }catch(e){ primero.scrollIntoView(); }
+  }
 }
 
 const SEV_ESTILO={
@@ -2624,8 +2841,12 @@ function renderAtencion(){
     }).join(' ');
   }
 
+  // Se guarda la lista tal cual se dibujó: el botón "Ver" necesita el objeto completo de la
+  // alerta (su foco y su fecha), no sólo el nombre de la página.
+  window._alertasAtencion = A;
+
   // Se agrupan por gravedad para que lo urgente quede arriba sin depender de la categoría.
-  cont.innerHTML=A.map(a=>{
+  cont.innerHTML=A.map((a,i)=>{
     const e=SEV_ESTILO[a.sev];
     return `<div style="display:flex;align-items:flex-start;gap:12px;background:var(--surface-0,#fff);border:0.5px solid var(--border);border-left:3px solid ${e.borde};border-radius:8px;padding:12px 14px;margin-bottom:8px">
       <div style="flex:1;min-width:0">
@@ -2635,7 +2856,7 @@ function renderAtencion(){
         </div>
         <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;line-height:1.45">${escapeHtml(a.detalle)}</div>
       </div>
-      <button class="btn btn-xs" onclick="showPage('${a.pagina}')" style="flex-shrink:0;white-space:nowrap">Ver →</button>
+      <button class="btn btn-xs" onclick="irAlerta(${i})" style="flex-shrink:0;white-space:nowrap">Ver →</button>
     </div>`;
   }).join('');
 }
@@ -3224,7 +3445,7 @@ function renderTorre() {
       const prioLabel = of.prioridad==='alta'?'ALTA':of.prioridad==='media'?'MEDIA':'BAJA';
       const prioBg = of.prioridad==='alta'?'#FCEBEB':of.prioridad==='media'?'#FAEEDA':'#EAF3DE';
       const prioTxt = of.prioridad==='alta'?'#A32D2D':of.prioridad==='media'?'#854F0B':'#3B6D11';
-      return `<div style="border-radius:10px;border:1.5px solid ${bloqueado?'#EF9F27':pColor};background:${pColor}11;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.06)">
+      return `<div data-foco="of-${of.numero||''}" style="border-radius:10px;border:1.5px solid ${bloqueado?'#EF9F27':pColor};background:${pColor}11;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.06)">
         <div style="height:5px;background:${pColor}"></div>
         <div style="padding:8px 10px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
@@ -3940,6 +4161,8 @@ function paginaActiva(){
 }
 function refrescarVista(nombre){
   const p = nombre || paginaActiva();
+  // El foco se aplica al final, cuando el HTML de la vista ya existe.
+  if(_foco && _foco.pagina===p) setTimeout(aplicarFoco, 0);
   if(p==='atencion'){ renderAtencion(); }
   else if(p==='tareo'){ renderTicketsHoy(); actualizarHorasTrabajador(); }
   else if(p==='andree'){ renderAndree(); }
@@ -3964,11 +4187,11 @@ function showAlert(pagina,msg,tipo,ms){
   // usuario duda de si guardó y vuelve a darle — que es como aparecen los tickets repetidos.
   if(el._t) clearTimeout(el._t);
   el._t = setTimeout(()=>el.style.display='none', ms || (tipo==='success' ? 7000 : 3500));}
-function showPage(nombre){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();if(ofs&&ofs.length)renderTorre();}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
+function showPage(nombre){if(_foco&&_foco.pagina!==nombre)limpiarFoco();document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();if(ofs&&ofs.length){renderTorre();if(_foco&&_foco.pagina==='torre')setTimeout(aplicarFoco,0);}}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
-window.confirmarTicketSobrecarga=confirmarTicketSobrecarga;window.renderDashboard=renderDashboard;window.abrirReasignar=abrirReasignar;window.cerrarReasignar=cerrarReasignar;window.confirmarReasignar=confirmarReasignar;window.abrirPosponer=abrirPosponer;window.cerrarPosponer=cerrarPosponer;window.confirmarPosponer=confirmarPosponer;window.asignarPendiente=asignarPendiente;window.poblarOFsModal=poblarOFsModal;window.seleccionarOFModal=seleccionarOFModal;window.actualizarColorTC=actualizarColorTC;window.abrirCrearOF=abrirCrearOF;window.abrirEditarOF=abrirEditarOF;window.cerrarOF=cerrarOF;window.guardarOF=guardarOF;window.abrirMoverOF=abrirMoverOF;window.cerrarMoverOF=cerrarMoverOF;window.confirmarMoverOF=confirmarMoverOF;window.onCambiarEtapaMover=onCambiarEtapaMover;window.verificarGateCompleto=verificarGateCompleto;window.abrirBloqueo=abrirBloqueo;window.cerrarBloqueo=cerrarBloqueo;window.guardarBloqueo=guardarBloqueo;window.abrirCrearProyectoTC=abrirCrearProyectoTC;window.cerrarProyectoTC=cerrarProyectoTC;window.selColor=selColor;window.guardarProyectoTC=guardarProyectoTC;window.renderTorre=renderTorre;window.toggleEtapa=toggleEtapa;window.editarProyectoTC=editarProyectoTC;window.agregarProductoUnif=agregarProductoUnif;window.eliminarProductoUnif=eliminarProductoUnif;window.eliminarProyectoTC=eliminarProyectoTC;window.renderConfigProyectosTC=renderConfigProyectosTC;window.cambiarSemana=cambiarSemana;window.moverM3Dia=moverM3Dia;window.abrirM3=abrirM3;window.cerrarM3=cerrarM3;window.calcM3=calcM3;window.guardarM3=guardarM3;window.actualizarMetaM3=actualizarMetaM3;window.registrarM3Real=registrarM3Real;window.eliminarM3=eliminarM3;window.imprimirM3=imprimirM3;window.eliminarPermanente=eliminarPermanente;window.abrirNoEjecutado=abrirNoEjecutado;window.cerrarNoEjecutado=cerrarNoEjecutado;window.guardarNoEjecutado=guardarNoEjecutado;
+window.confirmarTicketSobrecarga=confirmarTicketSobrecarga;window.renderDashboard=renderDashboard;window.abrirReasignar=abrirReasignar;window.cerrarReasignar=cerrarReasignar;window.confirmarReasignar=confirmarReasignar;window.abrirPosponer=abrirPosponer;window.cerrarPosponer=cerrarPosponer;window.confirmarPosponer=confirmarPosponer;window.asignarPendiente=asignarPendiente;window.poblarOFsModal=poblarOFsModal;window.seleccionarOFModal=seleccionarOFModal;window.actualizarColorTC=actualizarColorTC;window.abrirCrearOF=abrirCrearOF;window.abrirEditarOF=abrirEditarOF;window.cerrarOF=cerrarOF;window.guardarOF=guardarOF;window.abrirMoverOF=abrirMoverOF;window.cerrarMoverOF=cerrarMoverOF;window.confirmarMoverOF=confirmarMoverOF;window.onCambiarEtapaMover=onCambiarEtapaMover;window.verificarGateCompleto=verificarGateCompleto;window.abrirBloqueo=abrirBloqueo;window.cerrarBloqueo=cerrarBloqueo;window.guardarBloqueo=guardarBloqueo;window.abrirCrearProyectoTC=abrirCrearProyectoTC;window.cerrarProyectoTC=cerrarProyectoTC;window.selColor=selColor;window.guardarProyectoTC=guardarProyectoTC;window.renderTorre=renderTorre;window.toggleEtapa=toggleEtapa;window.editarProyectoTC=editarProyectoTC;window.agregarProductoUnif=agregarProductoUnif;window.eliminarProductoUnif=eliminarProductoUnif;window.eliminarProyectoTC=eliminarProyectoTC;window.renderConfigProyectosTC=renderConfigProyectosTC;window.cambiarSemana=cambiarSemana;window.moverM3Dia=moverM3Dia;window.abrirM3=abrirM3;window.cerrarM3=cerrarM3;window.calcM3=calcM3;window.guardarM3=guardarM3;window.actualizarMetaM3=actualizarMetaM3;window.registrarM3Real=registrarM3Real;window.eliminarM3=eliminarM3;window.imprimirM3=imprimirM3;window.eliminarPermanente=eliminarPermanente;window.irAlerta=irAlerta;window.limpiarFoco=limpiarFoco;window.abrirNoEjecutado=abrirNoEjecutado;window.cerrarNoEjecutado=cerrarNoEjecutado;window.guardarNoEjecutado=guardarNoEjecutado;
 window.registrarTiempo=registrarTiempo;window.resetTiempo=resetTiempo;
 window.abrirIncidencia=abrirIncidencia;window.cerrarIncidencia=cerrarIncidencia;window.guardarIncidencia=guardarIncidencia;
 window.renderHist=renderHist;window.exportarExcel=exportarExcel;
@@ -4385,15 +4608,19 @@ function renderPersonal() {
   const manStr = manana.toLocaleDateString('es-PE');
   const lbl = fechaActiva===hoy?`Hoy — ${fechaActiva}`:fechaActiva===manStr?`Manana — ${fechaActiva}`:fechaActiva;
   document.getElementById('p-fecha-label').textContent = lbl;
-  const cargosProductivos = CARGOS_PRODUCTIVOS;
-  const operarios = trabajadores.filter(w=>cargosProductivos.includes(w.cargo)&&!ES_ANALISTA_DATA(w));
+  // Practicantes y coordinadores no son capacidad fija, pero cuando tienen tareo cargan horas
+  // reales — 80.9h en la última semana y media — y hasta ahora no aparecían en ninguna pantalla
+  // donde se pudiera ver su carga. Se listan sólo los días que trabajan.
+  const plantillaP = plantillaDelDia(fechaActiva);
+  const operarios = getOperariosProductivos();
+  const eventuales = [...plantillaP.practicantes, ...plantillaP.coordinadoresEjecutando];
   const ausenciasDia = getAusenciasDelDia(fechaActiva);
   const ticketsDia = historial.filter(t=>t.visibleTareo!==false&&t.fechaEjecucion===fechaActiva);
   const jornada = jornadaProductiva(fechaActiva);
   const TIPO_LABELS = {'descanso_medico':'🏥 Descanso medico','obra_externa':'🔧 Obra externa','vacaciones':'🏖️ Vacaciones','falta':'❌ Falta','otro':'📋 Otro'};
   let conTareo=0, sinTareo=0, ausentesCount=0;
   const filas = ORDEN_AREAS_GLOBAL.flatMap(area => {
-    const ops = operarios.filter(w=>w.area===area);
+    const ops = [...operarios.filter(w=>w.area===area), ...eventuales.filter(w=>w.area===area)];
     if(!ops.length) return [];
     const header = `<div style="font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;padding:8px 4px 4px;margin-top:8px">${area}</div>`;
     const rows = ops.map(op => {
@@ -4403,8 +4630,12 @@ function renderPersonal() {
       const pct = jornada>0?Math.min(100,(horasAsig/jornada)*100):0;
       const barColor = pct>90?'#E24B4A':pct>70?'#EF9F27':'#27ae60';
       let estado, estadoBg, estadoColor;
+      // A un practicante o a un coordinador no se le reclama tareo: no es su función tenerlo.
+      // Sólo se listan los días que sí trabajan, así que este caso casi no ocurre.
+      const eventual = ES_PRACTICANTE(op) || ES_COORDINADOR(op);
       if(ausencia){ausentesCount++;estado=TIPO_LABELS[ausencia.tipo]||ausencia.tipo;estadoBg='#FCEBEB';estadoColor='#A32D2D';}
       else if(horasAsig>0){conTareo++;estado=`✅ ${horasAsig.toFixed(1)}h`;estadoBg='#EAF3DE';estadoColor='#3B6D11';}
+      else if(eventual){estado='—';estadoBg='var(--surface-1)';estadoColor='var(--text-muted)';}
       else{sinTareo++;estado='⚠ Sin tareo';estadoBg='#FAEEDA';estadoColor='#854F0B';}
       const nomCorto = op.nombre.split(' ').slice(0,2).join(' ');
       return `<div style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--surface-2);border-radius:8px;border:0.5px solid var(--border)">
@@ -4419,9 +4650,12 @@ function renderPersonal() {
   document.getElementById('p-disponibles').textContent = conTareo;
   document.getElementById('p-sin-tareo').textContent = sinTareo;
   document.getElementById('p-ausentes').textContent = ausentesCount;
-  const dispTotal = operarios.length - ausentesCount;
-  document.getElementById('p-capacidad').textContent = (dispTotal*jornada).toFixed(1)+'h';
-  document.getElementById('p-capacidad-sub').textContent = `${dispTotal} operarios disponibles`;
+  // Misma cuenta que el Kanban, del mismo sitio: dejan de existir dos capacidades para un día.
+  const nPracP = plantillaP.practicantes.length;
+  document.getElementById('p-capacidad').textContent = plantillaP.horas.toFixed(1)+'h';
+  document.getElementById('p-capacidad-sub').textContent =
+    `${plantillaP.operarios.length} operario${plantillaP.operarios.length===1?'':'s'} disponible${plantillaP.operarios.length===1?'':'s'}`
+    + (nPracP?` + ${nPracP} practicante${nPracP===1?'':'s'}`:'');
   document.getElementById('personal-lista').innerHTML = filas.join('');
 }
 
@@ -4542,6 +4776,21 @@ function semanasDelRango(inicioDate, finDate){
   return semanas;
 }
 
+// Horas productivas de una semana concreta, sumando de lunes a sabado. Estaba escrito 46.75
+// a mano — de un comentario que multiplicaba "8.5h de promedio x 5.5 dias" — cuando la semana
+// real es 8.5x4 + 9 (viernes) + 5 (sabado) = 48h. Calcularlo sobre los dias de esa semana en
+// particular ademas permite que, el dia que se decida que un sabado no se trabaja, la
+// capacidad lo sepa sin tocar este numero.
+function capacidadSemana(lunes){
+  let h=0;
+  for(let i=0;i<6;i++){
+    const d=new Date(lunes);
+    d.setDate(lunes.getDate()+i);
+    h+=jornadaProductiva(d.toLocaleDateString('es-PE'));
+  }
+  return h;
+}
+
 function renderPlanificacion(){
   const cont = document.getElementById('plan-content');
   if(!cont) return;
@@ -4648,8 +4897,7 @@ function renderGanttAreas(cont, semanas, inicioRango, finRango){
 
     semanas.forEach((sem,i) => {
       const horas = horasPorAreaSemana[area][i];
-      // Capacidad: numOps × jornada (8.5h L-J promedio × 5.5 días ≈ 46.75h/semana)
-      const capacidadSem = numOps * 46.75;
+      const capacidadSem = numOps * capacidadSemana(sem.lun);
       const pct = capacidadSem > 0 ? Math.min(100, (horas/capacidadSem)*100) : 0;
       const esSemActual = new Date() >= sem.lun && new Date() <= sem.sab;
       const bgColor = pct > 90 ? '#FCEBEB' : pct > 70 ? '#FAEEDA' : pct > 0 ? '#EAF3DE' : 'var(--surface-1)';
@@ -4922,6 +5170,20 @@ nav .right{display:flex;align-items:center;gap:10px;}
 .kanban-comp{font-size:10px;color:rgba(255,255,255,0.9);font-weight:700;}
 .kanban-col-body{padding:0.625rem;display:flex;flex-direction:column;gap:0.5rem;min-height:80px;}
 .kanban-card{background:#f8f7f4;border-radius:8px;padding:0.625rem 0.75rem;border:0.5px solid #eee;}
+/* Resaltado al llegar desde una alerta. Es un marco, no un relleno: el color de fondo de cada
+   tarjeta ya significa algo (estado del ticket, color del proyecto) y pintarlo encima borraría
+   esa informacion justo en el elemento que se quiere leer. */
+.foco-hit{position:relative;box-shadow:0 0 0 3px #17408F, 0 0 0 7px rgba(23,64,143,0.18)!important;border-radius:8px;z-index:1;}
+tr.foco-hit{box-shadow:none!important;}
+tr.foco-hit td{background:#EEF2FB!important;box-shadow:inset 0 2px 0 #17408F, inset 0 -2px 0 #17408F;}
+tr.foco-hit td:first-child{box-shadow:inset 0 2px 0 #17408F, inset 0 -2px 0 #17408F, inset 3px 0 0 #17408F;}
+#foco-bar{display:none;position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:300;
+  align-items:center;gap:12px;background:#17408F;color:#fff;border-radius:22px;
+  padding:8px 10px 8px 16px;font-size:12px;box-shadow:0 4px 16px rgba(0,0,0,0.22);max-width:92vw;}
+#foco-bar button{background:rgba(255,255,255,0.16);color:#fff;border:none;border-radius:16px;
+  padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;}
+#foco-bar button:hover{background:rgba(255,255,255,0.28);}
+@media print{.foco-hit{box-shadow:none!important}tr.foco-hit td{background:none!important;box-shadow:none!important}#foco-bar{display:none!important}}
 .kanban-card-done{opacity:0.55;background:#f0fdf4;border-color:#c8e6c9;}
 .kanban-card-inc{border-color:#ffe082;background:#fffde7;}
 .kanban-card-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;}
@@ -5364,6 +5626,12 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 
 <!-- Menú móvil -->
 <div class="mobile-menu-overlay" id="mobile-menu-overlay" onclick="closeMobileMenu()"></div>
+
+<!-- Barra del resaltado que deja una alerta al pulsar "Ver" -->
+<div id="foco-bar" class="no-print">
+  <span id="foco-txt"></span>
+  <button onclick="limpiarFoco()">Quitar resaltado</button>
+</div>
 <div class="mobile-menu-panel" id="mobile-menu-panel">
   <div class="mobile-menu-header">
     <svg width="20" height="20" viewBox="0 0 100 100" fill="none"><rect width="100" height="100" rx="10" fill="#1B6B35"/><text x="50" y="70" font-family="system-ui" font-size="58" font-weight="800" fill="white" text-anchor="middle">M</text></svg>
