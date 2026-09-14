@@ -21,7 +21,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-11 \u00b7 F2-13';
+const VERSION_APP = 'v2026-09-14 \u00b7 F2-15';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -1380,12 +1380,18 @@ function getAreaEjecucion(ticket) {
 }
 
 // ===== ORDEN DE PRIORIDAD DE TICKETS (poka-yoke: qué tarea va primero) =====
-// Agrupa los tickets activos del mismo trabajador principal + fecha de ejecución, ordenados por
-// el campo "orden" explícito si existe (lo asigna moverOrdenTicket al reordenar); si no existe,
-// cae de vuelta al orden de creación como valor por defecto razonable.
-function gruposOrdenDia(nombrePrincipal, fecha){
+// Agrupa los tickets activos de un trabajador + fecha de ejecución, ordenados por el campo
+// "orden" explícito si existe (lo asigna moverOrdenTicket al reordenar); si no existe, cae de
+// vuelta al orden de creación como valor por defecto razonable.
+//
+// El día de alguien son TODOS los tickets en los que aparece, no solo aquellos en los que va
+// primero. Un ticket compartido ocupa a las dos personas durante todo su tt — no es trabajo que
+// se reparte, es tiempo que las dos pasan ahí — así que entra en los dos días. Mirando sólo
+// nombres[0], el segundo de cada pareja veía su día a la mitad y su secuencia volvía a empezar
+// en 1. Hoy el 28% de los tickets son compartidos.
+function gruposOrdenDia(nombre, fecha){
   return historial
-    .filter(t=>t.visibleTareo!==false && t.fechaEjecucion===fecha && (t.nombres||[])[0]===nombrePrincipal)
+    .filter(t=>t.visibleTareo!==false && t.fechaEjecucion===fecha && (t.nombres||[]).includes(nombre))
     .sort((a,b)=>{
       const oa = a.orden!=null ? a.orden : 9999;
       const ob = b.orden!=null ? b.orden : 9999;
@@ -1402,6 +1408,8 @@ function numeroOrdenTicket(t){
 // Devuelve la posición del ticket dentro del día de su trabajador y cuántos hay en total.
 // El total es lo que decide si tiene sentido mostrar las flechas: con un solo ticket
 // no hay nada que reordenar.
+// En un ticket compartido puede no ser la misma posición para los dos (el 1° de uno puede ser
+// el 3° del otro). La tarjeta muestra una sola cifra: la del primer nombre.
 function posicionOrdenTicket(t){
   if(!t.nombres || !t.nombres.length) return null;
   const grupo = gruposOrdenDia(t.nombres[0], t.fechaEjecucion);
@@ -1421,12 +1429,20 @@ function formatHoraDesde8am(horasAcumuladas){
 // planificados de las tareas anteriores del mismo trabajador ese día.
 function horaEstimadaTicket(t){
   if(!t.nombres || !t.nombres.length) return '';
-  const grupo = gruposOrdenDia(t.nombres[0], t.fechaEjecucion);
-  const idx = grupo.findIndex(x=>x.fbId===t.fbId);
-  if(idx<0) return '';
-  let acumulado = 0;
-  for(let i=0;i<idx;i++) acumulado += (grupo[i].tt||0);
-  return formatHoraDesde8am(acumulado);
+  // Con dos personas el trabajo las ocupa a las dos a la vez, así que no puede empezar hasta
+  // que se desocupe la última: se toma el mayor de los acumulados, no el del primer nombre.
+  // Antes un compartido podía anunciar "desde 8:00 am" con el segundo todavía ocupado.
+  let inicio = null;
+  for(const nombre of t.nombres){
+    const grupo = gruposOrdenDia(nombre, t.fechaEjecucion);
+    const idx = grupo.findIndex(x=>x.fbId===t.fbId);
+    if(idx<0) continue;
+    let acumulado = 0;
+    for(let i=0;i<idx;i++) acumulado += (grupo[i].tt||0);
+    if(inicio===null || acumulado>inicio) inicio = acumulado;
+  }
+  if(inicio===null) return '';
+  return formatHoraDesde8am(inicio);
 }
 // Sube o baja la prioridad de un ticket intercambiando su "orden" con el ticket adyacente
 // del mismo trabajador + día. Si alguno de los dos aún no tiene un valor de "orden" explícito
@@ -2501,7 +2517,9 @@ function calcularAtencion(){
   // escrita donde se lee: lo que se reclama es lo que no esta ni ejecutado ni explicado.
   const sinTiempo=historial.filter(t=>t.visibleAndree!==false&&!t.noEjecutado&&!t.ejecutadoSinMedir&&ventana.includes(t.fechaEjecucion)&&!t.completado);
   if(sinTiempo.length){
-    const quienes=[...new Set(sinTiempo.map(t=>(t.nombres||[])[0]).filter(Boolean))]
+    // Misma corrección que en la sobrecarga: quien iba segundo en un ticket compartido nunca
+    // aparecía en la lista de a quién hay que reclamarle el registro.
+    const quienes=[...new Set(sinTiempo.flatMap(t=>t.nombres||[]).filter(Boolean))]
       .map(n=>n.split(' ').slice(0,2).join(' '));
     const porFecha={};
     sinTiempo.forEach(t=>{ porFecha[t.fechaEjecucion]=(porFecha[t.fechaEjecucion]||0)+1; });
@@ -2550,8 +2568,11 @@ function calcularAtencion(){
     const jornada=jornadaProductiva(f);
     const porTrab={};
     historial.filter(t=>t.visibleTareo!==false&&t.fechaEjecucion===f).forEach(t=>{
-      const n=(t.nombres||[])[0]; if(!n) return;
-      porTrab[n]=(porTrab[n]||0)+(t.tt||0);
+      // El tt completo va a cada persona del ticket. Así ya lo contaban el aviso al crear el
+      // ticket, el semáforo de horas del formulario y la vista de carga por operario; esta
+      // alerta era la única que sumaba sólo al primer nombre, y por eso podía dejar pasar a
+      // alguien con 12h asignadas sin decir nada.
+      (t.nombres||[]).forEach(n=>{ if(n) porTrab[n]=(porTrab[n]||0)+(t.tt||0); });
     });
     // Media hora de margen: diez minutos por encima de la jornada no es una sobrecarga,
     // es redondeo, y avisarlo entrena a la gente a ignorar la pantalla.
@@ -3703,7 +3724,21 @@ async function guardarBloqueo() {
 }
 
 // ===== PROYECTO TC =====
+// El modal es el mismo para crear y para editar. Lo unico que cambiaba por dentro era a donde
+// escribe guardarProyectoTC (addDoc o updateDoc); por fuera siempre decia "Crear proyecto",
+// asi que editar parecia estar creando un duplicado. Aqui se pone el rotulo que corresponde.
+function modoProyectoTC(editando) {
+  const t = document.getElementById('ptc-titulo');
+  const b = document.getElementById('ptc-btn-guardar');
+  if(t) t.textContent = editando ? 'Editar proyecto' : 'Nuevo proyecto';
+  if(b) b.textContent = editando ? 'Guardar cambios' : 'Crear proyecto';
+}
+
 function abrirCrearProyectoTC() {
+  // Explicito: si el modal se cerro por un camino que no limpio el modo, "+ Nuevo proyecto"
+  // pisaria el proyecto que se estaba editando en vez de crear uno.
+  window._editandoProyectoTC = null;
+  modoProyectoTC(false);
   document.getElementById('ptc-nombre').value='';
   document.getElementById('ptc-codigo').value='';
   document.getElementById('ptc-entrega-int').value='';
@@ -3715,8 +3750,16 @@ function cerrarProyectoTC() { document.getElementById('modal-proyecto-tc').style
 function selColor(c) {
   colorSeleccionado = c;
   document.getElementById('ptc-color').value = c;
+  const libre = document.getElementById('ptc-color-libre');
+  // Se sincroniza el selector libre para que siempre muestre el color vigente, venga de un
+  // circulo o del propio selector. Asignarle .value por codigo no vuelve a disparar su oninput.
+  if(libre && String(libre.value).toLowerCase() !== String(c).toLowerCase()) libre.value = c;
   document.querySelectorAll('#ptc-colores div').forEach(el=>{
-    el.style.border = el.dataset.color===c ? '2px solid #1a1a18' : '2px solid transparent';
+    // Anillo blanco por dentro y oscuro por fuera: se distingue sobre los 20 colores, incluido
+    // el negro. Antes el borde de seleccion era negro y sobre el circulo negro no se veia.
+    const sel = el.dataset.color===c;
+    el.style.border = sel ? '2px solid #fff' : '2px solid transparent';
+    el.style.boxShadow = sel ? '0 0 0 2px #1a1a18' : 'none';
   });
 }
 async function guardarProyectoTC() {
@@ -3816,6 +3859,7 @@ function editarProyectoTC(id) {
   const p = proyectosTC.find(x=>x.id===id);
   if(!p) return;
   window._editandoProyectoTC = id;
+  modoProyectoTC(true);
   document.getElementById('ptc-nombre').value = p.nombre||'';
   document.getElementById('ptc-codigo').value = p.codigo||'';
   document.getElementById('ptc-entrega-int').value = p.entregaInterna||'';
@@ -5084,7 +5128,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 <!-- MODAL CREAR PROYECTO TC -->
 <div class="modal-overlay" id="modal-proyecto-tc">
   <div class="modal">
-    <div class="modal-title">Nuevo proyecto</div>
+    <div class="modal-title" id="ptc-titulo">Nuevo proyecto</div>
     <div class="field" style="margin-bottom:0.875rem"><label>Nombre del proyecto</label><input type="text" id="ptc-nombre" placeholder="Ej: Hotel Sheraton - Mobiliario"/></div>
     <div class="field" style="margin-bottom:0.875rem"><label>Código</label><input type="text" id="ptc-codigo" placeholder="Ej: P1"/></div>
     <div class="field" style="margin-bottom:0.875rem">
@@ -5102,6 +5146,18 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
         <div onclick="selColor('#7c3aed')" style="width:28px;height:28px;border-radius:50%;background:#7c3aed;cursor:pointer;border:2px solid transparent" data-color="#7c3aed"></div>
         <div onclick="selColor('#0f766e')" style="width:28px;height:28px;border-radius:50%;background:#0f766e;cursor:pointer;border:2px solid transparent" data-color="#0f766e"></div>
         <div onclick="selColor('#1a1a18')" style="width:28px;height:28px;border-radius:50%;background:#1a1a18;cursor:pointer;border:2px solid transparent" data-color="#1a1a18"></div>
+        <div onclick="selColor('#4338ca')" style="width:28px;height:28px;border-radius:50%;background:#4338ca;cursor:pointer;border:2px solid transparent" data-color="#4338ca"></div>
+        <div onclick="selColor('#a21caf')" style="width:28px;height:28px;border-radius:50%;background:#a21caf;cursor:pointer;border:2px solid transparent" data-color="#a21caf"></div>
+        <div onclick="selColor('#9f1239')" style="width:28px;height:28px;border-radius:50%;background:#9f1239;cursor:pointer;border:2px solid transparent" data-color="#9f1239"></div>
+        <div onclick="selColor('#b45309')" style="width:28px;height:28px;border-radius:50%;background:#b45309;cursor:pointer;border:2px solid transparent" data-color="#b45309"></div>
+        <div onclick="selColor('#65a30d')" style="width:28px;height:28px;border-radius:50%;background:#65a30d;cursor:pointer;border:2px solid transparent" data-color="#65a30d"></div>
+        <div onclick="selColor('#164e63')" style="width:28px;height:28px;border-radius:50%;background:#164e63;cursor:pointer;border:2px solid transparent" data-color="#164e63"></div>
+        <div onclick="selColor('#0369a1')" style="width:28px;height:28px;border-radius:50%;background:#0369a1;cursor:pointer;border:2px solid transparent" data-color="#0369a1"></div>
+        <div onclick="selColor('#57534e')" style="width:28px;height:28px;border-radius:50%;background:#57534e;cursor:pointer;border:2px solid transparent" data-color="#57534e"></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
+        <input type="color" id="ptc-color-libre" value="#1B6B35" oninput="selColor(this.value)" style="width:34px;height:26px;padding:0;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer"/>
+        <span style="font-size:11px;color:var(--text-muted)">¿Ninguno sirve? Elige cualquier otro color</span>
       </div>
       <input type="hidden" id="ptc-color" value="#1B6B35"/>
     </div>
@@ -5111,7 +5167,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     </div>
     <div class="modal-actions">
       <button class="btn" onclick="cerrarProyectoTC()">Cancelar</button>
-      <button class="btn btn-amber" onclick="guardarProyectoTC()">Crear proyecto</button>
+      <button class="btn btn-amber" id="ptc-btn-guardar" onclick="guardarProyectoTC()">Crear proyecto</button>
     </div>
   </div>
 </div>
