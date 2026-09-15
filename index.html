@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MATRANSA — Sistema de Tareos</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
@@ -21,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-15 \u00b7 F2-20';
+const VERSION_APP = 'v2026-09-15 \u00b7 F2-22';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -727,6 +730,7 @@ function limpiarForm(){
   ['t-prototipo','t-reproceso'].forEach(id=>{const c=document.getElementById(id); if(c) c.checked=false;});
   mostrarCausaReproceso();
   document.getElementById('t-n').value='1';document.getElementById('t-tu').value='';document.getElementById('t-tt').value='';
+  rotularCampoCantidad(null);
   document.getElementById('t-fecha-ejec').value=fechaEjecucionDefecto();
 }
 
@@ -835,6 +839,23 @@ function selloCreacion(t){
     : fecha;
 }
 
+// La operacion del catalogo no se dibujaba en ninguna vista, solo se guardaba. Como `tarea`
+// se arma con `detalle || operacion`, en cuanto alguien escribe un detalle la operacion
+// desaparece de la pantalla — y con ella, cualquier forma de notar que se eligio la
+// equivocada. Este bloque la devuelve a la vista, con la unidad al lado.
+function opTicketHTML(t){
+  const cant = cantidadConUnidad(t.n, t.unidad);
+  if(t.fueraCatalogo || !t.operacion){
+    return `<div class="ticket-field"><div class="ticket-field-label">Operaci\u00f3n</div>
+      <div class="ticket-field-value" style="font-size:11px">
+        <span style="color:#8A6410;background:#FFF8E1;border-radius:4px;padding:1px 6px">Fuera de cat\u00e1logo</span>
+        <span style="color:#8a8985"> \u00b7 ${escapeHtml(cant)}</span></div></div>`;
+  }
+  return `<div class="ticket-field"><div class="ticket-field-label">Operaci\u00f3n</div>
+    <div class="ticket-field-value" style="font-size:11px">${escapeHtml(t.operacion)}
+      <span style="color:#8a8985"> \u00b7 ${escapeHtml(cant)}</span></div></div>`;
+}
+
 function ticketCardHTML(t){
   const area=t.nombres&&t.nombres.length>0?getAreaEjecucion(t):'PENDIENTE';
   const nClass=area==='PENDIENTE'?'num-pendiente':(NUM_CLASS[area]||'num-prod');
@@ -864,6 +885,7 @@ function ticketCardHTML(t){
       <div class="ticket-field"><div class="ticket-field-label">Proyecto</div><div class="ticket-field-value" style="font-size:11px">${t.proyectoCodigo?(proyectosTC.find(p=>p.codigo===t.proyectoCodigo)?.nombre||t.proyecto):t.proyecto}</div></div>
       <div class="ticket-field"><div class="ticket-field-label">Producto</div><div class="ticket-field-value" style="font-size:11px">${escapeHtml(t.producto)}</div></div>
       <div class="ticket-field"><div class="ticket-field-label">Tarea</div><div class="ticket-field-value">${escapeHtml(t.tarea)}</div></div>
+      ${opTicketHTML(t)}
       ${sello}
       ${t.esPrototipo?`<div style="margin-top:6px;padding:4px 8px;background:#EEF2FB;border-radius:6px;font-size:11px;color:#17408F;font-weight:600" title="No entra al tiempo est\u00e1ndar">\u25c8 Prototipo</div>`:''}
       ${t.esReproceso?`<div style="margin-top:6px;padding:4px 8px;background:#F7E5E4;border-radius:6px;font-size:11px;color:#8F2C27;font-weight:600" title="No entra al tiempo est\u00e1ndar">\u21ba Reproceso \u00b7 ${escapeHtml(etiquetaReproceso(t.motivoReproceso))}</div>`:''}
@@ -1075,18 +1097,48 @@ function renderTabs(){
   if(!cont) return;
   const activa = (document.querySelector('.page.active')||{}).id;
   const actual = activa ? activa.replace('page-','') : 'atencion';
-  cont.innerHTML = GRUPOS_NAV.map((g,i)=>{
-    // Los grupos sin nombre (Atención al inicio, Notas y Configuración al final) igual
-    // llevan separador cuando no son el primero: sin él, "Notas" se lee como si perteneciera
-    // al grupo Analizar.
-    const rotulo = g.grupo
-      ? `<div class="tab-grupo" data-grupo="${g.grupo}">${g.grupo}</div>`
-      : (i>0 ? '<div class="tab-grupo tab-sep"></div>' : '');
-    return rotulo + g.paginas.map(p=>
-      `<div class="tab${p===actual?' active':''}" data-page="${p}" data-grupo="${g.grupo}" onclick="showPage('${p}')">${ETIQUETAS_NAV[p]}</div>`
-    ).join('');
+  // Doce pestañas en una fila ya no entran: en una pantalla de portátil el menú se corta por
+  // la derecha y Configuración queda fuera. Los grupos con nombre pasan a desplegarse — se ve
+  // el grupo, se abre, se elige — y las páginas sueltas (Atención, Notas, Configuración) se
+  // quedan a la vista porque son las que más se pulsan.
+  cont.innerHTML = GRUPOS_NAV.map(g=>{
+    const item = p =>
+      `<div class="tab${p===actual?' active':''}" data-page="${p}" data-grupo="${g.grupo}">${ETIQUETAS_NAV[p]}</div>`;
+    if(!g.grupo) return g.paginas.map(item).join('');
+    const dentro = g.paginas.includes(actual);
+    return `<div class="tab-menu${dentro?' dentro':''}" data-grupo="${g.grupo}">
+        <button class="tab-menu-btn" aria-expanded="false" aria-haspopup="true">
+          ${g.grupo}<span class="tab-menu-flecha" aria-hidden="true">\u25be</span>
+        </button>
+        <div class="tab-menu-lista" role="menu">${g.paginas.map(item).join('')}</div>
+      </div>`;
   }).join('');
+
+  // Un solo escuchador para todo el menú: los elementos se vuelven a dibujar en cada cambio de
+  // perfil y de página, y colgar un onclick en cada uno los dejaba huérfanos.
+  if(!cont.dataset.enlazado){
+    cont.dataset.enlazado = '1';
+    cont.addEventListener('click', e=>{
+      const btn = e.target.closest('.tab-menu-btn');
+      if(btn){
+        const abierto = btn.getAttribute('aria-expanded')==='true';
+        cerrarMenusNav();
+        if(!abierto) btn.setAttribute('aria-expanded','true');
+        e.stopPropagation();
+        return;
+      }
+      const tab = e.target.closest('.tab[data-page]');
+      if(tab){ cerrarMenusNav(); showPage(tab.dataset.page); }
+    });
+    document.addEventListener('click', e=>{ if(!e.target.closest('nav .tabs')) cerrarMenusNav(); });
+    document.addEventListener('keydown', e=>{ if(e.key==='Escape') cerrarMenusNav(); });
+  }
 }
+function cerrarMenusNav(){
+  document.querySelectorAll('nav .tab-menu-btn[aria-expanded="true"]')
+          .forEach(b=>b.setAttribute('aria-expanded','false'));
+}
+window.cerrarMenusNav=cerrarMenusNav;
 
 function aplicarPerfil() {
   const perfil = PERFILES[perfilActivo];
@@ -1247,23 +1299,23 @@ const CATALOGO_OPERACIONES = [
   {area:'PINTURA DE FIERRO', grupo:'Preparación de superficies', nombre:'Limpieza',      unidad:'pieza', origen:'C', captura:'muestreo'},
   {area:'PINTURA DE FIERRO', grupo:'Preparación de superficies', nombre:'Lijado',        unidad:'pieza', origen:'C', captura:'muestreo'},
   {area:'PINTURA DE FIERRO', grupo:'Preparación de superficies', nombre:'Acondicionado', unidad:'pieza', origen:'C', captura:'muestreo'},
-  {area:'PINTURA DE FIERRO', grupo:'Aplicación',                 nombre:'Pintado',       unidad:'',      origen:'',  captura:'muestreo',   pendiente:true},
+  {area:'PINTURA DE FIERRO', grupo:'Aplicación',                 nombre:'Pintado',       unidad:'pieza',      origen:'',  captura:'muestreo',   pendiente:true},
   // El curado es tiempo de horno: la pieza avanza sin que nadie trabaje en ella.
   {area:'PINTURA DE FIERRO', grupo:'Aplicación',                 nombre:'Curado',        unidad:'lote',  origen:'C', captura:'proceso'},
 
   // ---------- EVA (Electricidad, Vidrio, Acrílico y Vinil) ----------
   // Área nunca medida antes: 9 de 10 operaciones en observación. Se registran con
   // tiempo real y detalle libre; la unidad se define leyendo lo que escriban.
-  {area:'EVA', grupo:'Electricidad', nombre:'Preparación de materiales', unidad:'', origen:'', captura:'inicio-fin', pendiente:true},
+  {area:'EVA', grupo:'Electricidad', nombre:'Preparación de materiales', unidad:'pieza', origen:'', captura:'inicio-fin', pendiente:true},
   {area:'EVA', grupo:'Electricidad', nombre:'Instalación eléctrica',     unidad:'mueble', origen:'C', captura:'inicio-fin'},
-  {area:'EVA', grupo:'Vidrio',       nombre:'Limpieza de vidrio',        unidad:'', origen:'', captura:'inicio-fin', pendiente:true},
-  {area:'EVA', grupo:'Vidrio',       nombre:'Preparación y armado',      unidad:'', origen:'', captura:'inicio-fin', pendiente:true},
-  {area:'EVA', grupo:'Acrílico',     nombre:'Preparación de acrílico',   unidad:'', origen:'', captura:'inicio-fin', pendiente:true},
-  {area:'EVA', grupo:'Acrílico',     nombre:'Pulido de acrílico',        unidad:'', origen:'', captura:'inicio-fin', pendiente:true},
-  {area:'EVA', grupo:'Acrílico',     nombre:'Doblez de acrílico',        unidad:'', origen:'', captura:'inicio-fin', pendiente:true},
-  {area:'EVA', grupo:'Acrílico',     nombre:'Instalación de acrílico',   unidad:'', origen:'', captura:'inicio-fin', pendiente:true},
-  {area:'EVA', grupo:'Vinil',        nombre:'Limpieza para vinil',       unidad:'', origen:'', captura:'inicio-fin', pendiente:true},
-  {area:'EVA', grupo:'Vinil',        nombre:'Pegado de vinil',           unidad:'', origen:'', captura:'inicio-fin', pendiente:true},
+  {area:'EVA', grupo:'Vidrio',       nombre:'Limpieza de vidrio',        unidad:'pieza', origen:'', captura:'inicio-fin', pendiente:true},
+  {area:'EVA', grupo:'Vidrio',       nombre:'Preparación y armado',      unidad:'pieza', origen:'', captura:'inicio-fin', pendiente:true},
+  {area:'EVA', grupo:'Acrílico',     nombre:'Preparación de acrílico',   unidad:'pieza', origen:'', captura:'inicio-fin', pendiente:true},
+  {area:'EVA', grupo:'Acrílico',     nombre:'Pulido de acrílico',        unidad:'pieza', origen:'', captura:'inicio-fin', pendiente:true},
+  {area:'EVA', grupo:'Acrílico',     nombre:'Doblez de acrílico',        unidad:'pieza', origen:'', captura:'inicio-fin', pendiente:true},
+  {area:'EVA', grupo:'Acrílico',     nombre:'Instalación de acrílico',   unidad:'pieza', origen:'', captura:'inicio-fin', pendiente:true},
+  {area:'EVA', grupo:'Vinil',        nombre:'Limpieza para vinil',       unidad:'pieza', origen:'', captura:'inicio-fin', pendiente:true},
+  {area:'EVA', grupo:'Vinil',        nombre:'Pegado de vinil',           unidad:'pieza', origen:'', captura:'inicio-fin', pendiente:true},
 
   // ---------- ENSAMBLE ----------
   // Casi todo se mide "por mueble": es fácil de anotar pero no distingue una silla de un
@@ -1364,11 +1416,53 @@ function actualizarOperaciones(mantener){
 }
 window.actualizarOperaciones = actualizarOperaciones;
 
+// Como se rotula el campo de cantidad y como se lee despues, para cada unidad del catalogo.
+// El singular es para leer un ticket de una sola ("1 union"); el plural, para el resto.
+const ETIQUETAS_UNIDAD = {
+  'pieza':         {campo:'N\u00b0 de piezas',      sing:'pieza',        plur:'piezas'},
+  'metro lineal':  {campo:'Metros lineales',         sing:'metro lineal', plur:'metros lineales'},
+  'punto':         {campo:'N\u00b0 de puntos',      sing:'punto',        plur:'puntos'},
+  'uni\u00f3n':   {campo:'N\u00b0 de uniones',     sing:'uni\u00f3n',  plur:'uniones'},
+  'perforaci\u00f3n':{campo:'N\u00b0 de perforaciones', sing:'perforaci\u00f3n', plur:'perforaciones'},
+  'mueble':        {campo:'N\u00b0 de muebles',     sing:'mueble',       plur:'muebles'},
+  'mueble \u00d7 mano':{campo:'Muebles \u00d7 mano', sing:'mueble \u00d7 mano', plur:'muebles \u00d7 mano'},
+  'bulto':         {campo:'N\u00b0 de bultos',      sing:'bulto',        plur:'bultos'},
+  'lote':          {campo:'N\u00b0 de lotes',       sing:'lote',         plur:'lotes'},
+  'unidad':        {campo:'N\u00b0 de unidades',    sing:'unidad',       plur:'unidades'}
+};
+const ETIQUETA_UNIDAD_SIN = {campo:'Cantidad', sing:'', plur:''};
+function etiquetaUnidad(u){ return ETIQUETAS_UNIDAD[u] || ETIQUETA_UNIDAD_SIN; }
+
+// Como se lee una cantidad con su unidad: "42 piezas", "1 unión", y solo "1" si la
+// operacion todavia no tiene unidad definida.
+// Pone en la etiqueta del campo la unidad de la operacion elegida, y la deja tambien en el
+// marcador de posicion del numero para que se vea al escribir.
+function rotularCampoCantidad(op){
+  const lab = document.getElementById('t-n-label');
+  const inp = document.getElementById('t-n');
+  if(!lab) return;
+  const u = op && op.unidad ? op.unidad : null;
+  const e = etiquetaUnidad(u);
+  lab.textContent = e.campo;
+  lab.title = u ? 'Esta operaci\u00f3n se cuenta en ' + u : 'Operaci\u00f3n sin unidad definida';
+  if(inp) inp.placeholder = e.plur || 'cantidad';
+}
+
+function cantidadConUnidad(n, u){
+  const e = etiquetaUnidad(u);
+  const nombre = (n === 1 ? e.sing : e.plur);
+  return nombre ? n + ' ' + nombre : String(n);
+}
+
 // Muestra la unidad y el método de captura de la operación elegida (solo lectura).
 function mostrarUnidadOperacion(){
   const cont = document.getElementById('t-unidad-info');
   if(!cont) return;
   const sel = document.getElementById('t-operacion');
+  // La etiqueta del campo es lo unico que la gente lee al escribir el numero. Mientras dijo
+  // "N° unidades" para las 59 operaciones, todos contaron piezas — daba igual lo que dijera
+  // el aviso de abajo.
+  rotularCampoCantidad(sel && sel.value ? buscarOperacion(areaFormTareo(), sel.value) : null);
   cont.style.background = '#EEF2FB'; cont.style.color = '#17408F';
   if(sel && sel.value === OPERACION_OTRA){
     cont.style.background = '#FFF8E1'; cont.style.color = '#8A6410';
@@ -1629,6 +1723,11 @@ function renderAndree(){
       const area=t.nombres&&t.nombres.length>0?(trabajadores.find(w=>w.nombre===t.nombres[0])?.area||''):'Sin área';
       const names=t.nombres.map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
       const done=!!t.tu_real;
+      // Andree es quien mide: necesita ver la operacion y en que se cuenta, no solo el detalle.
+      const opTxt = (t.fueraCatalogo || !t.operacion)
+        ? '<span style="color:#8A6410">Fuera de cat\u00e1logo</span>'
+        : escapeHtml(t.operacion);
+      const opHTML = `<div style="font-size:10.5px;color:#8a8985;margin-top:2px">${opTxt} \u00b7 ${escapeHtml(cantidadConUnidad(t.n, t.unidad))}</div>`;
       const incHTML=t.incidencias&&t.incidencias.length?`<div style="margin-top:6px">${t.incidencias.map(inc=>`<div style="padding:4px 8px;background:#fff8e1;border-radius:6px;font-size:11px;color:#f57f17;margin-top:3px">⚠ ${escapeHtml(inc.hora)} — ${escapeHtml(inc.descripcion)}</div>`).join('')}</div>`:'';
       const ahora=new Date();const hora=ahora.getHours()+(ahora.getMinutes()/60);
       const fechaTkt=t.fechaEjecucion||t.fecha||hoyStr();
@@ -1643,7 +1742,7 @@ function renderAndree(){
       return `<div class="andree-item ${done?'done':''}" data-foco="${t.fbId||''}" style="${alertaRojo?'border:1.5px solid #E24B4A;background:#fff8f8;':''}">
         ${alertaRojo?`<div style="background:#E24B4A;color:#fff;font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px 4px 0 0;margin:-8px -8px 8px -8px">⚠ PENDIENTE DE REGISTRAR TIEMPO</div>`:''}
         <div class="status-dot" style="background:${estadoTicket(t).color}" title="${estadoTicket(t).rotulo}"></div>
-        <div class="andree-info">
+        <div class="andree-info">${opHTML}
           <div class="andree-name">${ordenBadge}${names} <span style="font-size:10px;color:#aaa;font-weight:400">· ${area}</span></div>
           <div class="andree-sub">${escapeHtml(t.proyecto)} · ${escapeHtml(t.producto)} · ${escapeHtml(t.tarea)}</div>
           ${incHTML}
@@ -2339,6 +2438,7 @@ function renderHist(){
   if(!datos.length){cont.innerHTML='<div class="empty"><div class="empty-icon">📊</div><div>Sin registros.</div></div>';return;}
   cont.innerHTML=`<table><thead><tr>
     <th>Fecha ejec.</th><th>Trabajador</th><th>Área</th><th>Proyecto</th><th>OF</th><th>Tarea</th>
+    <th>Operación</th>
     <th style="text-align:center">N°</th><th style="text-align:center">t.u. plan</th>
     <th style="text-align:center">t.u. real</th><th style="text-align:center">Dif.</th>
     <th style="text-align:center">T.T.</th><th>Incidencias</th><th></th>
@@ -2355,7 +2455,10 @@ function renderHist(){
       <td style="font-size:11px">${t.proyectoCodigo||(t.proyecto||'').split(' · ')[0]||t.proyecto}</td>
       <td style="font-size:11px;color:#888">${t.ofNumero||'—'}</td>
       <td style="font-size:11px;color:#666">${escapeHtml(t.tarea)}${t.noEjecutado?`<div style="margin-top:2px;font-size:10px;color:#8a8985">\u2298 No ejecutado \u00b7 ${escapeHtml(etiquetaMotivo(t.motivoNoEjecucion))}${t.notaNoEjecucion?' \u2014 '+escapeHtml(t.notaNoEjecucion):''}</div>`:''}${t.esPrototipo?`<div style="margin-top:2px;font-size:10px;color:#17408F">\u25c8 Prototipo</div>`:''}${t.esReproceso?`<div style="margin-top:2px;font-size:10px;color:#8F2C27">\u21ba Reproceso \u00b7 ${escapeHtml(etiquetaReproceso(t.motivoReproceso))}</div>`:''}${t.ejecutadoSinMedir?`<div style="margin-top:2px;font-size:10px;color:#8A6410">\u2713 Ejecutado sin medir${t.notaNoEjecucion?' \u2014 '+escapeHtml(t.notaNoEjecucion):''}</div>`:''}</td>
-      <td style="text-align:center">${t.n}</td>
+      <td style="font-size:11px">${(t.fueraCatalogo||!t.operacion)
+          ? '<span style="color:#8A6410">Fuera de cat\u00e1logo</span>'
+          : escapeHtml(t.operacion)}</td>
+      <td style="text-align:center" title="${escapeHtml(cantidadConUnidad(t.n, t.unidad))}">${t.n}</td>
       <td style="text-align:center">${t.tu}'</td>
       <td style="text-align:center">${t.tu_real?t.tu_real+"'":'—'}</td>
       <td style="text-align:center" class="${dc}">${diff}</td>
@@ -2376,13 +2479,14 @@ function exportarExcel(){
     return true;
   });
   if(!datos.length){showAlert('hist','No hay datos para exportar.','warn');return;}
-  const rows=[['Fecha ejecución','Fecha creación','Trabajador(es)','Área','Proyecto','Producto','Tarea','N°','t.u. plan','t.u. real','Diferencia','T.T. plan','T.T. real','Cierre','Motivo no ejecución','Nota','Tipo de trabajo','Causa reproceso','Incidencias']];
+  const rows=[['Fecha ejecución','Fecha creación','Trabajador(es)','Área','Proyecto','Producto','Tarea','Operación','Unidad','N°','t.u. plan','t.u. real','Diferencia','T.T. plan','T.T. real','Cierre','Motivo no ejecución','Nota','Tipo de trabajo','Causa reproceso','Incidencias']];
   datos.forEach(t=>{
     const area=getAreaEjecucion(t);
     const cierre = t.completado ? 'Ejecutado'
                  : t.ejecutadoSinMedir ? 'Ejecutado sin medir'
                  : t.noEjecutado ? 'No ejecutado' : 'Sin resolver';
-    rows.push([t.fechaEjecucion||t.fecha,t.fechaCreacion||'',(t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / '),area,t.proyecto,t.producto,t.tarea,t.n,t.tu,t.tu_real||'',t.tu_real?(t.tu_real-t.tu):'',t.tt,t.tt_real||'',cierre,t.noEjecutado?etiquetaMotivo(t.motivoNoEjecucion):'',t.notaNoEjecucion||'',t.esPrototipo?'Prototipo':(t.esReproceso?'Reproceso':'Serie'),t.esReproceso?etiquetaReproceso(t.motivoReproceso):'',(t.incidencias||[]).map(i=>`${i.hora}: ${i.descripcion}`).join(' | ')]);
+    rows.push([t.fechaEjecucion||t.fecha,t.fechaCreacion||'',(t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / '),area,t.proyecto,t.producto,t.tarea,
+      t.fueraCatalogo?'(fuera de cat\u00e1logo)':(t.operacion||''), t.unidad||'', t.n,t.tu,t.tu_real||'',t.tu_real?(t.tu_real-t.tu):'',t.tt,t.tt_real||'',cierre,t.noEjecutado?etiquetaMotivo(t.motivoNoEjecucion):'',t.notaNoEjecucion||'',t.esPrototipo?'Prototipo':(t.esReproceso?'Reproceso':'Serie'),t.esReproceso?etiquetaReproceso(t.motivoReproceso):'',(t.incidencias||[]).map(i=>`${i.hora}: ${i.descripcion}`).join(' | ')]);
   });
   const ws=XLSX.utils.aoa_to_sheet(rows);
   const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Historial');
@@ -4252,7 +4356,10 @@ function showAlert(pagina,msg,tipo,ms){
   // usuario duda de si guardó y vuelve a darle — que es como aparecen los tickets repetidos.
   if(el._t) clearTimeout(el._t);
   el._t = setTimeout(()=>el.style.display='none', ms || (tipo==='success' ? 7000 : 3500));}
-function showPage(nombre){if(_foco&&_foco.pagina!==nombre)limpiarFoco();document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');document.querySelector(`[onclick="showPage('${nombre}')"]`).classList.add('active');if(nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();if(ofs&&ofs.length){renderTorre();if(_foco&&_foco.pagina==='torre')setTimeout(aplicarFoco,0);}}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
+function showPage(nombre){if(_foco&&_foco.pagina!==nombre)limpiarFoco();document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');// Antes se buscaba la pestaña activa por el texto de su onclick, lo que obligaba a que el
+// markup del menú no cambiara nunca. data-page es exactamente para esto.
+document.querySelectorAll(`nav .tab[data-page="${nombre}"], .mobile-menu-item[data-page="${nombre}"]`).forEach(el=>el.classList.add('active'));
+document.querySelectorAll('nav .tab-menu').forEach(m=>m.classList.toggle('dentro', !!m.querySelector(`.tab[data-page="${nombre}"]`)));if(nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();if(ofs&&ofs.length){renderTorre();if(_foco&&_foco.pagina==='torre')setTimeout(aplicarFoco,0);}}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
@@ -4786,7 +4893,7 @@ function toggleMobileMenu() {
       if(!visibles.length) return '';
       const rotulo = g.grupo ? `<div class="mobile-menu-grupo">${g.grupo}</div>` : '';
       return rotulo + visibles.map(p=>`
-      <button class="mobile-menu-item ${p===paginaActiva?'active':''}" onclick="showPage('${p}');closeMobileMenu()">
+      <button class="mobile-menu-item ${p===paginaActiva?'active':''}" data-page="${p}" onclick="showPage('${p}');closeMobileMenu()">
         ${ETIQUETAS_NAV[p]||p}
       </button>`).join('');
     }).join('');
@@ -5138,10 +5245,37 @@ onAuthStateChanged(auth, (user) => {
   --radius-lg: 12px;
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
   --shadow:    0 2px 8px rgba(0,0,0,0.08);
+
+  /* ---- Tipografía ----
+     Tres familias con un trabajo cada una, en vez de una sola para todo:
+     rótulo  = Archivo, grotesca industrial, buena en mayúsculas apretadas (etiquetas, títulos)
+     texto   = IBM Plex Sans, pensada para datos, muy legible en tamaños chicos
+     número  = IBM Plex Mono, para horas, cantidades y OF: las cifras alinean en columna
+     Cada una lleva su pila de respaldo: si la red de planta falla, la app no cambia de forma. */
+  --f-rotulo: Archivo, "Segoe UI", system-ui, sans-serif;
+  --f-texto:  "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-num:    "IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+
+  /* ---- Escala de texto. Antes había 10, 10.5, 11, 11.5, 12, 13, 13.5 px repartidos a ojo. ---- */
+  --t-micro: 9.5px;   /* rótulos en mayúscula */
+  --t-mini:  10.5px;  /* metadatos, pies */
+  --t-s:     11.5px;  /* secundario */
+  --t-m:     13px;    /* texto base */
+  --t-l:     15px;    /* títulos de sección */
+  --t-xl:    21px;    /* cifras grandes */
+
+  /* ---- Escala de espacio. Todo múltiplo de 4. ---- */
+  --e-1: 4px; --e-2: 8px; --e-3: 12px; --e-4: 16px; --e-5: 24px; --e-6: 32px;
+
+  /* ---- Rótulo en mayúscula: un solo tratamiento en toda la app ---- */
+  --rotulo-track: .09em;
 }
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 *{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text-primary);min-height:100vh;-webkit-font-smoothing:antialiased;}
+body{font-family:var(--f-texto);font-size:var(--t-m);background:var(--bg);color:var(--text-primary);min-height:100vh;-webkit-font-smoothing:antialiased;}
+/* Las cifras alinean en columna en todo lo que sea número: cantidades, horas, tiempos, OF. */
+.num,td,th,input[type="number"],.metric-value,.ticket-plan,.hist-num{font-variant-numeric:tabular-nums;}
+h1,h2,h3,.card-title,.field label,.metric-label,nav .tab,nav .tab-grupo{font-family:var(--f-rotulo);}
+.num,.mono{font-family:var(--f-num);}
 nav{background:#141413;color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 1.25rem;height:48px;position:sticky;top:0;z-index:100;border-bottom:1px solid rgba(255,255,255,0.06);}
 nav .logo{font-weight:700;font-size:14px;letter-spacing:0.5px;display:flex;align-items:center;gap:8px;}
 nav .logo span{color:#e8a020;}
@@ -5149,6 +5283,28 @@ nav .tabs{display:flex;}
 nav .tab{padding:0 0.75rem;height:48px;display:flex;align-items:center;font-size:12px;font-weight:500;cursor:pointer;color:rgba(255,255,255,0.45);border-bottom:2px solid transparent;transition:all 0.15s;white-space:nowrap;letter-spacing:0.1px;}
 nav .tab:hover{color:rgba(255,255,255,0.85);}
 nav .tab.active{color:#fff;border-bottom-color:#e8a020;}
+nav .tab{font-family:var(--f-rotulo);}
+/* --- Grupos desplegables --- */
+nav .tab-menu{position:relative;display:flex;align-items:center;}
+nav .tab-menu-btn{height:48px;padding:0 0.75rem;display:flex;align-items:center;gap:5px;
+  background:none;border:0;border-bottom:2px solid transparent;font-family:var(--f-rotulo);
+  font-size:12px;font-weight:500;color:rgba(255,255,255,0.45);cursor:pointer;white-space:nowrap;}
+nav .tab-menu-btn:hover{color:rgba(255,255,255,0.85);}
+nav .tab-menu.dentro .tab-menu-btn{color:#fff;border-bottom-color:#e8a020;}
+nav .tab-menu-flecha{font-size:9px;opacity:.6;transition:transform .15s;}
+nav .tab-menu-btn[aria-expanded="true"]{color:#fff;}
+nav .tab-menu-btn[aria-expanded="true"] .tab-menu-flecha{transform:rotate(180deg);}
+nav .tab-menu-lista{display:none;position:absolute;top:48px;left:0;min-width:190px;z-index:120;
+  background:#1f1f1d;border:1px solid rgba(255,255,255,0.10);border-radius:0 0 10px 10px;
+  box-shadow:0 10px 28px rgba(0,0,0,0.38);padding:5px;}
+nav .tab-menu-btn[aria-expanded="true"] + .tab-menu-lista{display:block;}
+/* Dentro del panel oscuro los items necesitan mas contraste que en la barra: ahi el gris
+   tenue distingue lo no elegido, aqui solo los vuelve dificiles de leer. */
+nav .tab-menu-lista .tab{height:34px;padding:0 10px;border-radius:6px;border-bottom:0;width:100%;
+  color:rgba(255,255,255,0.82);font-size:12.5px;}
+nav .tab-menu-lista .tab:hover{background:rgba(255,255,255,0.08);}
+nav .tab-menu-lista .tab.active{background:rgba(232,160,32,0.16);color:#f0b45a;}
+@media(max-width:900px){nav .tab-menu,nav .tabs .tab{display:none;}}
 /* Rótulo de grupo: separa visualmente sin ocupar un clic ni parecer pulsable */
 nav .tab-grupo.tab-sep{padding:0;margin-left:0.55rem;}
 nav .tab-grupo{display:flex;align-items:center;height:48px;padding:0 0.4rem 0 0.85rem;margin-left:0.3rem;font-size:9px;font-weight:700;letter-spacing:0.09em;text-transform:uppercase;color:rgba(255,255,255,0.26);white-space:nowrap;pointer-events:none;border-left:1px solid rgba(255,255,255,0.13);}
@@ -5157,15 +5313,15 @@ nav .right{display:flex;align-items:center;gap:10px;}
 .fecha-nav{font-size:11px;color:rgba(255,255,255,0.4);white-space:nowrap;}
 .page{display:none;padding:1.25rem 1.5rem;max-width:1240px;margin:0 auto;}.page.active{display:block;}
 .card{background:var(--surface-0);border-radius:var(--radius-lg);border:1px solid var(--border);padding:1.25rem 1.5rem;margin-bottom:0.875rem;box-shadow:var(--shadow-sm);}
-.card-title{font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:1rem;}
+.card-title{font-size:var(--t-micro);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:var(--rotulo-track);margin-bottom:var(--e-3);}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0.875rem;}
 .form-grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.875rem;}
 .field{display:flex;flex-direction:column;gap:4px;}
-.field label{font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.4px;}
-.field select,.field input[type="text"],.field input[type="number"]{height:36px;border:1px solid var(--border);border-radius:var(--radius);padding:0 10px;font-size:13px;font-family:inherit;background:var(--surface-0);color:var(--text-primary);width:100%;transition:border-color 0.15s;}
+.field label{font-size:var(--t-micro);font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:var(--rotulo-track);}
+.field select,.field input[type="text"],.field input[type="number"]{height:36px;border:1px solid var(--border);border-radius:var(--radius);padding:0 10px;font-size:var(--t-m);font-family:inherit;background:var(--surface-0);color:var(--text-primary);width:100%;transition:border-color 0.15s;}
 .field select:focus,.field input:focus{outline:none;border-color:#e8a020;box-shadow:0 0 0 3px rgba(232,160,32,0.1);}
 .field-full{grid-column:1/-1;}
-.btn{height:36px;padding:0 1rem;border-radius:var(--radius);font-size:13px;font-weight:500;font-family:inherit;cursor:pointer;border:1px solid var(--border);background:var(--surface-0);color:var(--text-primary);transition:all 0.15s;white-space:nowrap;display:inline-flex;align-items:center;gap:6px;}
+.btn{height:36px;padding:0 1rem;border-radius:var(--radius);font-size:var(--t-m);font-weight:500;font-family:inherit;cursor:pointer;border:1px solid var(--border);background:var(--surface-0);color:var(--text-primary);transition:all 0.15s;white-space:nowrap;display:inline-flex;align-items:center;gap:6px;}
 .btn:hover{background:var(--surface-2);border-color:var(--border-strong);}
 .btn-primary{background:#141413;color:#fff;border-color:#141413;}.btn-primary:hover{background:#2a2a28;}
 .btn-amber{background:#e8a020;color:#fff;border-color:#e8a020;}.btn-amber:hover{background:#cf8f1a;}
@@ -5260,8 +5416,8 @@ tr.foco-hit td:first-child{box-shadow:inset 0 2px 0 #17408F, inset 0 -2px 0 #174
 .kanban-card-tt{font-weight:700;color:#1a1a18;}.kanban-empty{font-size:11px;color:#ccc;text-align:center;padding:1rem 0;}
 .hist-filters{display:flex;gap:0.75rem;flex-wrap:wrap;}
 .hist-filters select{height:34px;border:0.5px solid #ccc;border-radius:8px;padding:0 10px;font-size:13px;background:#fff;}
-table{width:100%;border-collapse:collapse;font-size:13px;}
-th{text-align:left;padding:8px 12px;font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:0.5px;border-bottom:0.5px solid #eee;white-space:nowrap;}
+table{width:100%;border-collapse:collapse;font-size:var(--t-m);}
+th{text-align:left;padding:var(--e-2) var(--e-3);font-size:var(--t-micro);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:var(--rotulo-track);border-bottom:1px solid var(--border);white-space:nowrap;font-family:var(--f-rotulo);background:var(--surface-1);position:sticky;top:0;z-index:2;}
 td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr:last-child td{border-bottom:none;}
 .diff-over{color:#c0392b;font-weight:700;}.diff-under{color:#27ae60;font-weight:700;}.diff-ok{color:#aaa;}
 .proyecto-item{background:#fafaf8;border:0.5px solid #eee;border-radius:8px;padding:0.875rem;margin-bottom:0.75rem;}
@@ -5271,7 +5427,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 .alert{padding:0.625rem 1rem;border-radius:8px;font-size:13px;margin-bottom:0.875rem;}
 .alert-success{background:#e8f5e9;color:#2e7d32;border:0.5px solid #c8e6c9;}
 .alert-warn{background:#fff8e1;color:#f57f17;border:0.5px solid #ffe082;}
-.empty{text-align:center;padding:2.5rem 1rem;color:#ccc;font-size:14px;}.empty-icon{font-size:30px;margin-bottom:0.5rem;}
+.empty{text-align:center;padding:var(--e-6) var(--e-4);color:var(--text-muted);font-size:var(--t-m);}.empty-icon{font-size:30px;margin-bottom:0.5rem;}
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:200;align-items:center;justify-content:center;backdrop-filter:blur(4px);}
 .modal{background:var(--surface-0);border-radius:14px;padding:1.5rem;width:480px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,0.12),0 0 0 1px rgba(0,0,0,0.06);}
 .modal-title{font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:1.25rem;letter-spacing:-0.2px;}
@@ -5784,7 +5940,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
       </div>
     </div>
     <div class="form-grid-3" style="margin-top:0.875rem">
-      <div class="field"><label>N° unidades</label><input type="number" id="t-n" min="1" value="1" oninput="calcTT()" /></div>
+      <div class="field"><label id="t-n-label">N° unidades</label><input type="number" id="t-n" min="1" value="1" oninput="calcTT()" /></div>
       <div class="field"><label>t.u. — tiempo unitario (min)</label><input type="number" id="t-tu" min="1" placeholder="minutos" oninput="calcTT()" /></div>
       <div class="field"><label>T.T. — tiempo total (horas)</label><input type="text" id="t-tt" readonly placeholder="Auto" style="background:#f8f7f4;color:#999;" /></div>
     </div>
