@@ -21,7 +21,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-14 \u00b7 F2-19';
+const VERSION_APP = 'v2026-09-15 \u00b7 F2-20';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -107,12 +107,25 @@ const AREA_COLOR={"HABILITADO":"#7c3aed","ENSAMBLE":"#2563eb","FIERRO":"#ea580c"
 //
 // "cuentaPlan: false" marca los motivos que NO son incumplimiento del plan sino error de
 // captura: un duplicado no dice nada sobre la planificacion y no debe ensuciar ese indicador.
+// "duplicado" es el unico motivo que no cuenta contra el plan, porque no es trabajo que se dejo
+// de hacer: es un ticket de mas. Por eso mismo es el que hay que custodiar — mientras fue la
+// unica salida sin nota y sin consecuencia, se llevo el 49% de los cierres, y solo un tercio de
+// esos tenia de verdad un ticket gemelo. Ahora la opcion solo aparece cuando la app encuentra
+// el gemelo; si no lo encuentra, el cierre honesto es "cancelado", que si cuenta.
 const MOTIVOS_NO_EJECUCION = [
   {cod:'reprogramado', etq:'Se reprogram\u00f3 para otro d\u00eda',              cuentaPlan:true},
   {cod:'prioridad',    etq:'Cambi\u00f3 la prioridad \u2014 se hizo otra cosa',  cuentaPlan:true},
   {cod:'insumo',       etq:'Falt\u00f3 material, m\u00e1quina o herramienta',    cuentaPlan:true},
   {cod:'no_llego',     etq:'No se lleg\u00f3 \u2014 falt\u00f3 tiempo',         cuentaPlan:true},
-  {cod:'error',        etq:'Se cre\u00f3 por error o est\u00e1 duplicado',       cuentaPlan:false}
+  {cod:'cancelado',    etq:'Ya no se va a hacer \u2014 se cancel\u00f3',         cuentaPlan:true},
+  {cod:'duplicado',    etq:'Ya existe este mismo ticket',                          cuentaPlan:false,
+                       requiereGemelo:true}
+];
+
+// Motivos que ya no se ofrecen pero siguen vivos en el historial. Sin esto, los 32 tickets
+// cerrados como 'error' aparecerian en el Historial y en el Excel con el codigo crudo.
+const MOTIVOS_HISTORICOS = [
+  {cod:'error', etq:'Se cre\u00f3 por error o est\u00e1 duplicado (motivo retirado)', cuentaPlan:false}
 ];
 // Causas de reproceso. Son pocas a propósito: la pregunta que tienen que contestar es de quién
 // es el costo, no el detalle técnico, que va en el Detalle del ticket.
@@ -134,10 +147,13 @@ const CIERRE_SIN_MEDIR = '__sin_medir__';
 // En estos dos motivos la nota ES el dato. "Cambio de prioridad" sin explicacion no dice nada:
 // el numero interesante no es cuantos tickets se cayeron, es a favor de que se cayeron. En los
 // otros tres (error, reprogramado, no se llego) la nota no agrega nada y sigue siendo opcional.
-const MOTIVOS_EXIGEN_NOTA = ['prioridad', 'insumo'];
+// En estos tres la nota ES el dato. "Se cancelo" sin explicacion vale lo mismo que el viejo
+// "se creo por error": saca el ticket de la vista y no deja nada que se pueda leer despues.
+const MOTIVOS_EXIGEN_NOTA = ['prioridad', 'insumo', 'cancelado'];
 
 function etiquetaMotivo(cod){
-  const m = MOTIVOS_NO_EJECUCION.find(x => x.cod === cod);
+  const m = MOTIVOS_NO_EJECUCION.find(x => x.cod === cod)
+         || MOTIVOS_HISTORICOS.find(x => x.cod === cod);
   return m ? m.etq : (cod || 'Sin motivo');
 }
 
@@ -1674,6 +1690,36 @@ async function resetTiempo(fbId){await escribir('deshacer el tiempo registrado',
 // Ahora ese mismo clic pide el motivo. No es una rutina nueva en planta, es la misma accion
 // registrando lo que antes se perdia; por eso se engancha aqui y no en un boton aparte.
 let fbIdNoEjec=null, paginaNoEjec='tareo';
+// Busca otro ticket que sea el mismo trabajo: misma fecha de ejecucion, misma tarea, mismo
+// producto y al menos una persona en comun. Se exige el producto a proposito — la misma
+// operacion sobre dos muebles distintos el mismo dia no es un duplicado, es el trabajo del dia.
+//
+// Calibrado contra el backup del 14/9: con esta regla, 12 de los 32 cierres por "error" tenian
+// gemelo de verdad y 20 no. Y solo el 9% de los tickets vigentes tiene un gemelo, asi que la
+// opcion aparece pocas veces — que es justamente lo que se busca.
+let gemeloNoEjec = null;   // el ticket del que este seria duplicado, si existe
+
+// Como se nombra al gemelo en el aviso y en la nota. Se escribe con datos que un humano pueda
+// reconocer despues en el Historial, no con el id del documento.
+function resumenGemelo(g){
+  if(!g) return '';
+  const quien=(g.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
+  return quien+' \u00b7 '+(g.tarea||'')+' \u00b7 '+(g.n||'')+' und';
+}
+
+function ticketGemelo(t){
+  if(!t) return null;
+  const norm = s => String(s||'').trim().toUpperCase();
+  const nom = new Set(t.nombres||[]);
+  return (historial||[]).find(o =>
+    o.fbId !== t.fbId &&
+    o.fechaEjecucion === t.fechaEjecucion &&
+    norm(o.tarea) === norm(t.tarea) &&
+    norm(o.producto) === norm(t.producto) &&
+    (o.nombres||[]).some(n => nom.has(n))
+  ) || null;
+}
+
 function abrirNoEjecutado(fbId, pagina){
   const t=historial.find(x=>x.fbId===fbId);
   // Un ticket con tiempo real ya registrado no puede cerrarse como no ejecutado: seria decir
@@ -1693,9 +1739,13 @@ function abrirNoEjecutado(fbId, pagina){
     `<div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#8a8985;margin:10px 0 5px">${txt}</div>`;
   // Los dos grupos se separan a propósito: no son seis motivos del mismo tipo. El de abajo dice
   // que el trabajo SÍ se hizo, y eso cuenta al revés en las métricas.
+  // El gemelo se busca una sola vez al abrir y se guarda: lo usa la opcion, el aviso y el
+  // guardado, y recorrer el historial en cada clic del radio no aporta nada.
+  gemeloNoEjec = ticketGemelo(t);
+  const disponibles = MOTIVOS_NO_EJECUCION.filter(m => !m.requiereGemelo || gemeloNoEjec);
   cont.innerHTML =
     rotuloGrupo('No se ejecut\u00f3') +
-    MOTIVOS_NO_EJECUCION.map((m,i)=>opcion(m.cod, m.etq, i===0)).join('') +
+    disponibles.map((m,i)=>opcion(m.cod, m.etq, i===0)).join('') +
     rotuloGrupo('S\u00ed se ejecut\u00f3') +
     opcion(CIERRE_SIN_MEDIR, 'Se termin\u00f3, pero no se registr\u00f3 el tiempo', false);
   document.getElementById('ne-nota').value='';
@@ -1714,8 +1764,14 @@ function actualizarAvisoCierre(){
   const btn=document.getElementById('ne-btn');
   if(!av) return;
   const sinMedir = sel && sel.value===CIERRE_SIN_MEDIR;
+  const esDuplicado = sel && sel.value==='duplicado';
   av.innerHTML = sinMedir
     ? 'Cuenta como trabajo hecho, pero <strong>no aporta al tiempo est\u00e1ndar</strong> de la operaci\u00f3n. Se cuenta aparte para saber cu\u00e1ntos se est\u00e1n cerrando sin medir.'
+    : esDuplicado
+    ? 'Es el \u00fanico cierre que <strong>no cuenta contra el plan</strong>, porque no es trabajo que se dej\u00f3 de hacer.'
+      + (gemeloNoEjec ? ' Queda anotado que es duplicado de: <strong>'+escapeHtml(resumenGemelo(gemeloNoEjec))+'</strong>.' : '')
+    : (sel && sel.value==='cancelado')
+    ? 'Cuenta como trabajo planificado que <strong>no se hizo</strong>. Escribe en la nota por qu\u00e9 se cancel\u00f3: es lo \u00fanico que va a quedar.'
     : (sel && MOTIVOS_EXIGEN_NOTA.includes(sel.value))
     ? 'En este motivo <strong>la nota es obligatoria</strong>: es donde queda a favor de qu\u00e9 se dej\u00f3 de hacer, o qu\u00e9 material falt\u00f3.'
     : 'El ticket sale del tareo y de la vista de Andree, y queda en el historial con el motivo. No se elimina.';
@@ -1723,7 +1779,7 @@ function actualizarAvisoCierre(){
 }
 window.actualizarAvisoCierre=actualizarAvisoCierre;
 
-function cerrarNoEjecutado(){ document.getElementById('modal-noejec').style.display='none'; fbIdNoEjec=null; }
+function cerrarNoEjecutado(){ document.getElementById('modal-noejec').style.display='none'; fbIdNoEjec=null; gemeloNoEjec=null; }
 async function guardarNoEjecutado(){
   if(!fbIdNoEjec) return;
   const sel=document.querySelector('input[name="ne-motivo"]:checked');
@@ -1737,7 +1793,10 @@ async function guardarNoEjecutado(){
       campoNota.focus();
     }
     const av=document.getElementById('ne-aviso');
-    if(av) av.innerHTML='<span style="color:#b32e26;font-weight:600">Escribe la nota:</span> en este motivo es el dato que importa. \u00bfA favor de qu\u00e9 se dej\u00f3 de hacer, o qu\u00e9 material falt\u00f3?';
+    if(av) av.innerHTML='<span style="color:#b32e26;font-weight:600">Escribe la nota:</span> '
+      + (sel.value==='cancelado'
+         ? 'en un cierre por cancelaci\u00f3n es lo \u00fanico que va a quedar. \u00bfPor qu\u00e9 ya no se hace?'
+         : 'en este motivo es el dato que importa. \u00bfA favor de qu\u00e9 se dej\u00f3 de hacer, o qu\u00e9 material falt\u00f3?');
     return;
   }
   if(campoNota){ campoNota.style.borderColor=''; campoNota.style.boxShadow=''; }
@@ -1759,7 +1818,13 @@ async function guardarNoEjecutado(){
         noEjecutado:true,
         motivoNoEjecucion:sel.value,
         fechaNoEjecucion:new Date().toISOString()
-      });
+      },
+      // De que ticket es duplicado. Se guarda el id (para poder auditarlo) y ademas se deja
+      // escrito en la nota, que es lo que se lee en el Historial y en el Excel.
+      (sel.value==='duplicado' && gemeloNoEjec) ? {
+        duplicadoDe: gemeloNoEjec.fbId || null,
+        notaNoEjecucion: nota || ('Duplicado de: ' + resumenGemelo(gemeloNoEjec))
+      } : {});
   const ok=await escribir(sinMedir?'cerrar el ticket sin tiempo medido':'marcar el ticket como no ejecutado',
     ()=>updateDoc(doc(db,'historial',fbIdNoEjec),datos),
     {pagina:paginaNoEjec, trabajando:'Guardando...',
