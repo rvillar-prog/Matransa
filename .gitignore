@@ -1,0 +1,34 @@
+# ---------------------------------------------------------------------------
+# ESTE REPO ES PUBLICO. Nada que identifique a una persona puede entrar aqui.
+# Los backups traen los nombres completos de los 37 trabajadores, sus horas y
+# sus ausencias (incluidos descansos medicos). Nunca deben subirse.
+# ---------------------------------------------------------------------------
+*.json
+!package.json
+!package-lock.json
+backup*.json
+MATRANSA_backup*
+
+# Itemizados y cotizaciones: informacion comercial de MATRANSA y sus clientes
+*.xlsx
+*.xls
+*.pdf
+
+# Handoffs y notas internas
+HANDOFF*.md
+ESTADO*.md
+Docs/
+Backups/
+Itemizados/
+Tests/
+
+# Restos de trabajo
+index_parcheado.html
+base.html
+*.diff
+patch_*.py
+*.tmp
+*.bak
+node_modules/
+.DS_Store
+Thumbs.db

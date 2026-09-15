@@ -1,0 +1,8 @@
+# Normaliza los finales de linea. Sin esto, editar el archivo desde Windows y
+# desde Linux hace que git marque las 6.000 lineas como cambiadas y el diff
+# deja de servir para revisar que se toco de verdad.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.pdf binary
+*.xlsx binary
