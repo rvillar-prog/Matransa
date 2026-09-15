@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-16 \u00b7 F2-23';
+const VERSION_APP = 'v2026-09-16 \u00b7 F2-24';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -251,6 +251,7 @@ function requiereAdmin(){
 }
 
 async function init() {
+  enlazarControlesHoy();
   const v=document.getElementById('config-version');
   if(v) v.textContent='MATRANSA \u00b7 '+VERSION_APP;
   const hoy=new Date();
@@ -1016,7 +1017,7 @@ const PERFILES = {
     rol: 'Admin',
     icono: '👤',
     color: '#1a1a18',
-    pestanas: ['atencion','personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','notas','config'],
+    pestanas: ['hoy','atencion','personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','notas','config'],
     admin: true
   },
   'pablo': {
@@ -1024,7 +1025,7 @@ const PERFILES = {
     rol: 'Operaciones',
     icono: '📋',
     color: 'var(--info-fuerte)',
-    pestanas: ['atencion','personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','notas','config'],
+    pestanas: ['hoy','atencion','personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','notas','config'],
     admin: false
   },
   'andree': {
@@ -1032,7 +1033,7 @@ const PERFILES = {
     rol: 'Registro',
     icono: '⏱',
     color: 'var(--ok)',
-    pestanas: ['atencion','personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','notas','config'],
+    pestanas: ['hoy','atencion','personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','notas','config'],
     admin: false
   },
   'neicer': {
@@ -1040,7 +1041,7 @@ const PERFILES = {
     rol: 'Supervisión',
     icono: '👁',
     color: '#7c3aed',
-    pestanas: ['atencion','personal','torre','kanban','historial','notas'],
+    pestanas: ['hoy','atencion','personal','torre','kanban','historial','notas'],
     admin: false
   }
 };
@@ -1078,14 +1079,14 @@ function guardarPerfil(key) {
 // Esta constante es la única fuente: de aquí salen la barra de escritorio y el menú móvil,
 // que antes se mantenían por separado y ya se habían desincronizado.
 const GRUPOS_NAV = [
-  { grupo:'',          paginas:['atencion'] },
+  { grupo:'',          paginas:['hoy','atencion'] },
   { grupo:'Operar',    paginas:['tareo','andree','kanban'] },
   { grupo:'Controlar', paginas:['torre','planificacion','personal','m3'] },
   { grupo:'Analizar',  paginas:['dashboard','historial'] },
   { grupo:'',          paginas:['notas','config'] },
 ];
 const ETIQUETAS_NAV = {
-  atencion:'Atención', tareo:'Generar tareo', andree:'Registro Andree', kanban:'Kanban',
+  hoy:'Hoy en planta', atencion:'Atención', tareo:'Generar tareo', andree:'Registro Andree', kanban:'Kanban',
   torre:'Torre de Control', planificacion:'Planificación', personal:'Personal',
   m3:'M³ Semanal', dashboard:'Dashboard', historial:'Historial',
   notas:'Notas', config:'Configuración'
@@ -1104,7 +1105,7 @@ function renderTabs(){
   // quedan a la vista porque son las que más se pulsan.
   cont.innerHTML = GRUPOS_NAV.map(g=>{
     const item = p =>
-      `<div class="tab${p===actual?' active':''}" data-page="${p}" data-grupo="${g.grupo}">${ETIQUETAS_NAV[p]}</div>`;
+      `<div class="tab${p===actual?' active':''}" data-page="${p}" data-grupo="${g.grupo}">${ETIQUETAS_NAV[p]}${insigniaNav(p)}</div>`;
     if(!g.grupo) return g.paginas.map(item).join('');
     const dentro = g.paginas.includes(actual);
     return `<div class="tab-menu${dentro?' dentro':''}" data-grupo="${g.grupo}">
@@ -1135,6 +1136,17 @@ function renderTabs(){
     document.addEventListener('keydown', e=>{ if(e.key==='Escape') cerrarMenusNav(); });
   }
 }
+// El numero de alertas en la propia pestana. Antes habia que entrar a Atencion para saber si
+// habia algo; ahora la pestana lo dice, que es la mitad del valor de tener alertas.
+function insigniaNav(p){
+  if(p!=='atencion') return '';
+  try{
+    const n = calcularAtencion().filter(a=>a.sev>=2).length;
+    if(!n) return '';
+    return `<span class="tab-insignia">${n}</span>`;
+  }catch(e){ return ''; }
+}
+
 function cerrarMenusNav(){
   document.querySelectorAll('nav .tab-menu-btn[aria-expanded="true"]')
           .forEach(b=>b.setAttribute('aria-expanded','false'));
@@ -1955,6 +1967,254 @@ async function guardarIncidencia(){
 }
 
 // ===== KANBAN =====
+// ===== HOY EN PLANTA =====
+// La pantalla de mando del dia. No reimplementa reglas: pide la capacidad a plantillaDelDia,
+// el reparto de la jornada a tramosTarea y el estado de cada ticket a estadoTicket. Si manana
+// cambia el horario del refrigerio, esta vista se entera sola.
+let hoyGrupo = 'persona', hoyZoom = 1;
+
+function fechasHoyVista(){
+  const f = [hoyStr()];
+  const sig = diaSiguienteHabil();
+  if(sig && sig !== f[0]) f.push(sig);
+  return f;
+}
+function fechaHoyVista(){
+  const s = document.getElementById('hoy-dia');
+  return (s && s.value) ? s.value : hoyStr();
+}
+
+function renderHoy(){
+  const cont = document.getElementById('hoy-board');
+  if(!cont) return;
+  const sel = document.getElementById('hoy-dia');
+  if(sel && !sel.dataset.poblado){
+    sel.innerHTML = fechasHoyVista().map((f,i)=>
+      `<option value="${f}">${i===0?'Hoy':'Siguiente'} \u2014 ${f}</option>`).join('');
+    sel.dataset.poblado = '1';
+  }
+  const fecha = fechaHoyVista();
+  const H0 = 8, H1 = horaFinJornada(fecha), span = H1 - H0;
+  const hayRef = hayRefrigerio(fecha);
+  const jornada = jornadaProductiva(fecha);
+  const pct = h => ((h - H0) / span) * 100;
+  const hhmm = h => Math.floor(h) + ':' + String(Math.round((h%1)*60)).padStart(2,'0');
+  const corto = n => n.split(/\s+/).filter(Boolean).slice(0,2).join(' ');
+
+  const delDia = historial.filter(t => t.fechaEjecucion === fecha);
+  const activos = delDia.filter(t => t.visibleTareo !== false && !t.noEjecutado);
+  const cerrados = delDia.filter(t => t.noEjecutado);
+  const plantilla = plantillaDelDia(fecha);
+
+  document.getElementById('hoy-fecha').textContent =
+    getJornadaLabel(fecha) + ' \u00b7 ' + fecha;
+
+  // ---- franja de cifras ----
+  const carga = {};
+  activos.forEach(t => (t.nombres||[]).forEach(n => { if(n) carga[n] = (carga[n]||0) + (t.tt||0); }));
+  const horas = Object.values(carga).reduce((a,b)=>a+b, 0);
+  const cap = plantilla.horas;
+  const medidos = activos.filter(t => t.completado && t.tu_real).length;
+  const sobre = Object.entries(carga).filter(([,h]) => h > jornada + 0.5);
+  const uso = cap > 0 ? Math.round(horas / cap * 100) : 0;
+  const tile = (lab, val, sub, cls) =>
+    `<div class="hoy-kpi ${cls||''}"><span class="lab">${lab}</span>` +
+    `<span class="val num">${val}</span><span class="sub">${escapeHtml(sub)}</span></div>`;
+  document.getElementById('hoy-kpis').innerHTML =
+    tile('Carga del día', uso + '%', horas.toFixed(1) + ' h de ' + cap.toFixed(1) + ' h', uso > 100 ? 'ojo' : '') +
+    tile('Tiempo registrado', medidos + '/' + activos.length,
+         activos.length ? Math.round(medidos/activos.length*100) + '% de lo que se está haciendo' : 'sin tickets',
+         (activos.length && medidos/activos.length < 0.5) ? 'ojo' : '') +
+    tile('No se ejecutó', cerrados.length,
+         delDia.length ? Math.round(cerrados.length/delDia.length*100) + '% de lo programado' : '\u2014',
+         cerrados.length ? 'alerta' : '') +
+    tile('Sobre la jornada', sobre.length,
+         sobre.length ? sobre.map(([n]) => corto(n).split(' ')[0]).slice(0,3).join(', ')
+                      : 'nadie por encima de ' + (jornada+0.5) + ' h',
+         sobre.length ? 'alerta' : '') +
+    tile('En planta', plantilla.cabezas,
+         plantilla.operarios.length + ' operario' + (plantilla.operarios.length===1?'':'s') +
+         ' \u00b7 ' + plantilla.practicantes.length + ' practicante' + (plantilla.practicantes.length===1?'':'s') +
+         ' \u00b7 ' + plantilla.ausentes.size + ' ausente' + (plantilla.ausentes.size===1?'':'s'));
+
+  if(!activos.length){
+    cont.innerHTML = '<div class="empty"><div class="empty-icon">\u23f1</div><div>No hay tareas para ' + fecha + '.</div></div>';
+    document.getElementById('hoy-leyenda').innerHTML = '';
+    return;
+  }
+
+  // ---- el tablero ----
+  const ahora = new Date();
+  const horaAhora = ahora.getHours() + ahora.getMinutes()/60;
+  const nowX = (fecha === hoyStr() && horaAhora >= H0 && horaAhora <= H1) ? pct(horaAhora) : null;
+  const fondo = () => {
+    let s = '';
+    for(let x = H0 + 1; x < H1; x++) s += `<div class="hoy-gl" style="left:${pct(x)}%"></div>`;
+    if(hayRef) s += `<div class="hoy-ref" style="left:${pct(REFRIGERIO_INI)}%;width:${pct(REFRIGERIO_FIN)-pct(REFRIGERIO_INI)}%" title="Refrigerio"></div>`;
+    if(nowX !== null) s += `<div class="hoy-now" style="left:${nowX}%"></div>`;
+    return s;
+  };
+
+  function fila(nombre, sub, acc, tks, conHueco){
+    let cursor = H0, barras = fondo(), i = 0;
+    tks.forEach(t => {
+      i++;
+      const r = tramosTarea(cursor, t.tt||0, hayRef);
+      const est = estadoTicket(t);
+      const anchoMax = r.tramos.length ? Math.max(...r.tramos.map(x=>x.fin-x.inicio)) : 0;
+      const px = anchoMax / span * 900;
+      const rot = px > 150 ? i + '\u00b0 ' + escapeHtml(t.tarea||'')
+                : px > 60 ? escapeHtml((t.tarea||'').slice(0,18))
+                : px > 26 ? i + '\u00b0' : '';
+      let iAncho = 0;
+      r.tramos.forEach((tr,k)=>{ if((tr.fin-tr.inicio) > (r.tramos[iAncho].fin-r.tramos[iAncho].inicio)) iAncho = k; });
+      r.tramos.forEach((tr,k) => {
+        if(tr.inicio >= H1) return;
+        const fin = Math.min(tr.fin, H1);
+        const w = pct(fin) - pct(tr.inicio);
+        const radio = r.tramos.length === 1 ? '' : (k === 0 ? ' m1' : ' m2');
+        barras += `<button class="hoy-bar ${est.clave}${radio}" data-tk="${t.fbId}"
+          style="left:${pct(tr.inicio)}%;width:${w}%;--acc:${acc}"
+          title="${escapeHtml(t.tarea||'')} \u00b7 ${hhmm(tr.inicio)}\u2013${hhmm(fin)}">${k===iAncho?rot:''}</button>`;
+      });
+      cursor = r.cursor;
+    });
+    if(conHueco){
+      const asignadas = tks.reduce((s,t)=>s+(t.tt||0), 0);
+      const libre = Math.max(0, jornada - asignadas);
+      if(libre >= 1 && cursor < H1)
+        barras += `<div class="hoy-libre" style="left:${pct(cursor)}%;width:${pct(H1)-pct(cursor)}%">${libre.toFixed(1)} h libre</div>`;
+      else if(cursor > H1)
+        barras += `<div class="hoy-exceso" title="Se pasa ${(cursor-H1).toFixed(1)} h del fin de jornada">+${(cursor-H1).toFixed(1)} h</div>`;
+    }
+    return `<div class="hoy-fila">
+      <div class="hoy-lbl" style="--acc:${acc}">
+        <span class="nm">${escapeHtml(nombre)}</span><span class="cg">${escapeHtml(sub)}</span>
+      </div>
+      <div class="hoy-track">${barras}</div></div>`;
+  }
+
+  let eje = '<div class="hoy-eje"><div class="sp"></div><div class="hoy-track">' + (hayRef
+      ? `<div class="hoy-ref" style="left:${pct(REFRIGERIO_INI)}%;width:${pct(REFRIGERIO_FIN)-pct(REFRIGERIO_INI)}%"></div>
+         <div class="hoy-ref-rot" style="left:${(pct(REFRIGERIO_INI)+pct(REFRIGERIO_FIN))/2}%">REFRIGERIO</div>` : '');
+  for(let x = H0; x <= H1; x++) eje += `<div class="hoy-h num" style="left:${pct(x)}%">${x}:00</div>`;
+  eje += '</div></div>';
+
+  let out = eje;
+  if(hoyGrupo === 'of'){
+    const ofs2 = [...new Set(activos.map(t => t.ofNumero || 'sin OF'))].sort();
+    ofs2.forEach(of => {
+      const tks = activos.filter(t => (t.ofNumero || 'sin OF') === of)
+                         .sort((a,b)=>(a.orden??99)-(b.orden??99));
+      const gente = [...new Set(tks.flatMap(t=>t.nombres||[]))];
+      const p = (proyectosTC||[]).find(x => x.codigo === tks[0].proyectoCodigo);
+      out += `<div class="hoy-grupo"><div class="hoy-ghead">
+          <span class="nom">OF ${escapeHtml(of)}</span>
+          <span class="hoy-chip">${escapeHtml(p ? p.nombre : (tks[0].proyectoCodigo||'\u2014'))}</span>
+          <span class="meta num">${gente.length} personas \u00b7 ${tks.reduce((s,t)=>s+(t.tt||0)*(t.nombres||[]).length,0).toFixed(1)} h</span>
+        </div>`;
+      out += fila((tks[0].producto||'').split('|').pop().trim() || ('OF ' + of),
+                  gente.map(corto).join(', '), 'var(--text-secondary)', tks, false);
+      out += '</div>';
+    });
+  } else {
+    ORDEN_AREAS_GLOBAL.forEach(area => {
+      const tksArea = activos.filter(t => getAreaEjecucion(t) === area);
+      if(!tksArea.length) return;
+      const acc = AREA_COLOR[area] || 'var(--ar-mant)';
+      const gente = [...new Set(tksArea.flatMap(t=>t.nombres||[]))].sort();
+      out += `<div class="hoy-grupo"><div class="hoy-ghead">
+          <span class="nom" style="color:${acc}">${escapeHtml(area)}</span>
+          <span class="meta num">${gente.length} personas \u00b7 ${tksArea.reduce((s,t)=>s+(t.tt||0),0).toFixed(1)} h</span>
+        </div>`;
+      if(hoyGrupo === 'area'){
+        out += fila(area, gente.length + ' personas', acc,
+                    tksArea.slice().sort((a,b)=>(a.orden??99)-(b.orden??99)), false);
+      } else {
+        gente.forEach(nom => {
+          const tks = gruposOrdenDia(nom, fecha).filter(t => !t.noEjecutado);
+          if(!tks.length) return;
+          const w = trabajadores.find(x => x.nombre === nom) || {};
+          const h = carga[nom] || 0;
+          const extra = ES_PRACTICANTE(w) ? ' \u00b7 practicante'
+                      : ES_COORDINADOR(w) ? ' \u00b7 coordinador' : '';
+          out += fila(corto(nom),
+                      h.toFixed(1) + ' h' + (h > jornada + 0.5 ? ' \u00b7 sobre jornada' : '') + extra,
+                      acc, tks, true);
+        });
+      }
+      out += '</div>';
+    });
+  }
+  cont.innerHTML = out;
+  cont.querySelectorAll('.hoy-bar').forEach(b =>
+    b.addEventListener('click', () => abrirPanelHoy(b.dataset.tk)));
+
+  document.getElementById('hoy-leyenda').innerHTML =
+    ['<span class="hoy-chip ok">Medido</span>',
+     '<span class="hoy-chip">En curso</span>',
+     '<span class="hoy-chip warn">Hueco sin asignar</span>',
+     '<span class="hoy-chip crit">Sobre la jornada</span>',
+     '<span class="hoy-chip">Franja rayada = refrigerio</span>',
+     nowX !== null ? '<span class="hoy-chip">Línea roja = hora actual</span>' : ''].join('');
+}
+
+function abrirPanelHoy(fbId){
+  const t = historial.find(x => x.fbId === fbId);
+  const pnl = document.getElementById('hoy-panel');
+  if(!t || !pnl) return;
+  const p = (proyectosTC||[]).find(x => x.codigo === t.proyectoCodigo);
+  const est = estadoTicket(t);
+  const dif = t.tu_real != null ? t.tu_real - t.tu : null;
+  pnl.innerHTML = `
+    <button class="hoy-x" onclick="document.getElementById('hoy-panel').hidden=true" aria-label="Cerrar">\u00d7</button>
+    <div><span class="hoy-rot">${escapeHtml(p ? p.nombre : (t.proyecto||''))}</span>
+      <h3>${escapeHtml(t.tarea||'')}</h3></div>
+    <div><span class="hoy-chip" style="color:${est.color};border-color:${est.color}">${escapeHtml(est.rotulo)}</span>
+      ${t.esPrototipo?'<span class="hoy-chip">\u25c8 Prototipo</span>':''}
+      ${t.esReproceso?'<span class="hoy-chip warn">\u21ba Reproceso</span>':''}</div>
+    <dl class="hoy-kv">
+      <dt>Quién</dt><dd>${escapeHtml((t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' \u00b7 '))}</dd>
+      <dt>Producto</dt><dd>${escapeHtml(t.producto||'\u2014')}</dd>
+      <dt>OF</dt><dd class="num">${escapeHtml(t.ofNumero||'\u2014')}</dd>
+      <dt>Operación</dt><dd>${t.fueraCatalogo||!t.operacion
+          ? '<span style="color:var(--warn)">Fuera de catálogo</span>'
+          : escapeHtml(t.operacion)}</dd>
+      <dt>Cantidad</dt><dd class="num">${escapeHtml(cantidadConUnidad(t.n, t.unidad))} \u00d7 ${t.tu}\u2032 = ${t.tt} h</dd>
+      <dt>Real</dt><dd class="num">${t.tu_real != null
+          ? t.tu_real + '\u2032 por unidad (' + (dif>0?'+':'') + dif + '\u2032)'
+          : '<span style="color:var(--text-muted)">sin registrar</span>'}</dd>
+    </dl>
+    ${(t.incidencias||[]).map(i=>`<div class="hoy-nota">${escapeHtml(i.descripcion||'')}</div>`).join('')}`;
+  pnl.hidden = false;
+}
+
+function segHoy(id, fn){
+  const el = document.getElementById(id);
+  if(!el || el.dataset.enlazado) return;
+  el.dataset.enlazado = '1';
+  el.addEventListener('click', e => {
+    const b = e.target.closest('button'); if(!b) return;
+    [...el.children].forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    fn(b.dataset.v);
+  });
+}
+function enlazarControlesHoy(){
+  segHoy('hoy-grupo', v => { hoyGrupo = v; renderHoy(); });
+  // El zoom cambia la altura de las filas Y el tamano del texto: en "Detalle" caben rotulos
+  // que en "Compacto" no. Encoger la letra y despues agrandar la pantalla no es zoom.
+  segHoy('hoy-zoom', v => {
+    hoyZoom = parseFloat(v);
+    const r = document.getElementById('page-hoy');
+    if(r){
+      r.style.setProperty('--hoy-alto', hoyZoom);
+      r.style.setProperty('--hoy-fs', (10 + 2.2 * hoyZoom).toFixed(1) + 'px');
+    }
+    renderHoy();
+  });
+}
+window.renderHoy = renderHoy;
+
 // ===== GANTT DIARIO =====
 let kanbanVista = 'areas'; // 'areas' | 'gantt'
 
@@ -4333,7 +4593,8 @@ function refrescarVista(nombre){
   const p = nombre || paginaActiva();
   // El foco se aplica al final, cuando el HTML de la vista ya existe.
   if(_foco && _foco.pagina===p) setTimeout(aplicarFoco, 0);
-  if(p==='atencion'){ renderAtencion(); }
+  if(p==='hoy'){ enlazarControlesHoy(); renderHoy(); }
+  else if(p==='atencion'){ renderAtencion(); }
   else if(p==='tareo'){ renderTicketsHoy(); actualizarHorasTrabajador(); }
   else if(p==='andree'){ renderAndree(); }
   else if(p==='kanban'){ const k=document.getElementById('k-fecha'); if(k)k.dataset.poblado=''; renderKanban(); }
@@ -4360,7 +4621,7 @@ function showAlert(pagina,msg,tipo,ms){
 function showPage(nombre){if(_foco&&_foco.pagina!==nombre)limpiarFoco();document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');// Antes se buscaba la pestaña activa por el texto de su onclick, lo que obligaba a que el
 // markup del menú no cambiara nunca. data-page es exactamente para esto.
 document.querySelectorAll(`nav .tab[data-page="${nombre}"], .mobile-menu-item[data-page="${nombre}"]`).forEach(el=>el.classList.add('active'));
-document.querySelectorAll('nav .tab-menu').forEach(m=>m.classList.toggle('dentro', !!m.querySelector(`.tab[data-page="${nombre}"]`)));if(nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();if(ofs&&ofs.length){renderTorre();if(_foco&&_foco.pagina==='torre')setTimeout(aplicarFoco,0);}}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
+document.querySelectorAll('nav .tab-menu').forEach(m=>m.classList.toggle('dentro', !!m.querySelector(`.tab[data-page="${nombre}"]`)));if(nombre==='hoy'||nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();if(ofs&&ofs.length){renderTorre();if(_foco&&_foco.pagina==='torre')setTimeout(aplicarFoco,0);}}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
@@ -5322,6 +5583,110 @@ nav .tab:hover{color:rgba(255,255,255,0.85);}
 nav .tab.active{color:#fff;border-bottom-color:#e8a020;}
 nav .tab{font-family:var(--f-rotulo);}
 /* --- Grupos desplegables --- */
+/* ================= HOY EN PLANTA =================
+   Dirección B, la que eligió Ricardo: cada fila es una tarjeta, hay aire entre ellas y el
+   texto es mayor. Todo el color sale de los tokens de F2-23; aquí no hay ni un hex suelto. */
+#page-hoy{--hoy-alto:1;--hoy-fs:12.2px;}
+.hoy-top{display:flex;align-items:center;gap:var(--e-4);flex-wrap:wrap;margin-bottom:var(--e-3);}
+.hoy-titulo{display:flex;align-items:baseline;gap:var(--e-2);margin-right:auto;}
+.hoy-titulo h2{font-size:20px;font-weight:700;letter-spacing:-0.01em;}
+.hoy-fecha{font-size:var(--t-s);color:var(--text-secondary);}
+.hoy-ctl{display:flex;align-items:center;gap:6px;}
+.hoy-rot{font-family:var(--f-rotulo);font-size:var(--t-micro);font-weight:700;
+  letter-spacing:var(--rotulo-track);text-transform:uppercase;color:var(--text-muted);white-space:nowrap;}
+.hoy-sel{height:30px;border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--surface-0);color:var(--text-primary);font:inherit;font-size:var(--t-s);padding:0 8px;}
+.hoy-seg{display:flex;border:1px solid var(--border);border-radius:var(--radius);
+  overflow:hidden;background:var(--surface-0);}
+.hoy-seg button{border:0;background:none;padding:6px 12px;font:inherit;font-size:var(--t-s);
+  color:var(--text-secondary);border-right:1px solid var(--border);cursor:pointer;}
+.hoy-seg button:last-child{border-right:0;}
+.hoy-seg button[aria-pressed="true"]{background:var(--text-primary);color:var(--text-inverso);font-weight:600;}
+
+.hoy-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));
+  gap:var(--e-2);margin-bottom:var(--e-3);}
+.hoy-kpi{background:var(--surface-0);border:1px solid var(--border);border-radius:var(--radius-lg);
+  padding:var(--e-3) var(--e-4);display:flex;flex-direction:column;gap:2px;box-shadow:var(--shadow-sm);}
+.hoy-kpi .lab{font-family:var(--f-rotulo);font-size:var(--t-micro);font-weight:700;
+  letter-spacing:var(--rotulo-track);text-transform:uppercase;color:var(--text-muted);}
+.hoy-kpi .val{font-family:var(--f-num);font-size:26px;font-weight:600;line-height:1.15;letter-spacing:-.02em;}
+.hoy-kpi .sub{font-size:var(--t-mini);color:var(--text-secondary);}
+.hoy-kpi.alerta{background:var(--crit-fondo);border-color:var(--crit-borde);}
+.hoy-kpi.alerta .val,.hoy-kpi.alerta .lab{color:var(--crit);}
+.hoy-kpi.ojo{background:var(--warn-fondo);border-color:var(--warn-borde);}
+.hoy-kpi.ojo .val,.hoy-kpi.ojo .lab{color:var(--warn);}
+
+.hoy-eje{display:flex;background:var(--surface-0);border:1px solid var(--border);
+  border-radius:var(--radius);margin-bottom:var(--e-2);}
+.hoy-eje .sp{width:210px;flex:0 0 210px;}
+.hoy-eje .hoy-track{height:26px;}
+.hoy-h{position:absolute;top:7px;transform:translateX(-50%);font-size:var(--t-micro);color:var(--text-muted);}
+.hoy-ref-rot{position:absolute;bottom:1px;transform:translateX(-50%);font-family:var(--f-rotulo);
+  font-size:8.5px;font-weight:700;letter-spacing:.06em;color:var(--text-muted);white-space:nowrap;}
+.hoy-grupo{margin-bottom:var(--e-3);}
+.hoy-ghead{display:flex;align-items:center;gap:var(--e-2);padding:var(--e-2) 4px var(--e-1);}
+.hoy-ghead .nom{font-family:var(--f-rotulo);font-size:var(--t-s);font-weight:700;
+  letter-spacing:var(--rotulo-track);text-transform:uppercase;}
+.hoy-ghead .meta{margin-left:auto;font-size:var(--t-mini);color:var(--text-secondary);}
+.hoy-fila{display:flex;align-items:stretch;background:var(--surface-0);border:1px solid var(--border);
+  border-radius:var(--radius-lg);margin-bottom:6px;overflow:hidden;}
+.hoy-fila:hover{border-color:var(--border-strong);}
+.hoy-lbl{width:210px;flex:0 0 210px;padding:8px 10px 8px 14px;display:flex;flex-direction:column;
+  justify-content:center;gap:1px;min-width:0;position:relative;}
+.hoy-lbl::before{content:"";position:absolute;left:5px;top:8px;bottom:8px;width:4px;
+  background:var(--acc);border-radius:2px;}
+.hoy-lbl .nm{font-size:var(--hoy-fs);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.hoy-lbl .cg{font-size:var(--t-mini);color:var(--text-secondary);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;}
+.hoy-track{position:relative;flex:1;min-width:0;height:calc(34px * var(--hoy-alto) + 10px);}
+.hoy-gl{position:absolute;top:0;bottom:0;width:1px;background:var(--border);opacity:.5;}
+.hoy-ref{position:absolute;top:0;bottom:0;pointer-events:none;
+  background:repeating-linear-gradient(45deg,rgba(120,116,105,.10),rgba(120,116,105,.10) 4px,transparent 4px,transparent 9px);
+  border-left:1px solid var(--border);border-right:1px solid var(--border);}
+.hoy-now{position:absolute;top:0;bottom:0;width:2px;background:var(--crit-fuerte);opacity:.8;z-index:6;pointer-events:none;}
+.hoy-bar{position:absolute;top:5px;bottom:5px;border:0;border-radius:8px;padding:0 8px;
+  display:flex;align-items:center;overflow:hidden;background:var(--acc);color:var(--text-inverso);
+  font:inherit;font-size:var(--hoy-fs);font-weight:500;white-space:nowrap;cursor:pointer;text-align:left;}
+.hoy-bar.m1{border-radius:8px 0 0 8px;}
+.hoy-bar.m2{border-radius:0 8px 8px 0;}
+.hoy-bar:hover{filter:brightness(1.07);}
+.hoy-bar.completado{box-shadow:inset 0 -4px 0 var(--ok-fuerte);}
+.hoy-bar.sinmedir{box-shadow:inset 0 -4px 0 var(--warn-fuerte);}
+.hoy-bar.vencido{box-shadow:inset 0 -4px 0 var(--crit-fuerte);}
+.hoy-libre{position:absolute;top:5px;bottom:5px;border:1px dashed var(--warn-borde);
+  background:var(--warn-fondo);border-radius:8px;display:flex;align-items:center;justify-content:center;
+  font-size:var(--t-mini);color:var(--warn);pointer-events:none;overflow:hidden;white-space:nowrap;}
+.hoy-exceso{position:absolute;top:5px;bottom:5px;right:0;width:54px;background:var(--crit-fondo);
+  border-left:2px solid var(--crit-fuerte);border-radius:0 8px 8px 0;display:flex;align-items:center;
+  justify-content:center;font-family:var(--f-num);font-size:var(--t-mini);font-weight:600;
+  color:var(--crit);pointer-events:none;z-index:5;}
+.hoy-chip{display:inline-flex;align-items:center;gap:4px;font-size:var(--t-mini);padding:2px 9px;
+  border-radius:99px;border:1px solid var(--border);background:var(--surface-1);color:var(--text-secondary);}
+.hoy-chip.ok{background:var(--ok-fondo);color:var(--ok);border-color:transparent;}
+.hoy-chip.warn{background:var(--warn-fondo);color:var(--warn);border-color:transparent;}
+.hoy-chip.crit{background:var(--crit-fondo);color:var(--crit);border-color:transparent;}
+.hoy-leyenda{display:flex;flex-wrap:wrap;gap:6px;margin-top:var(--e-3);}
+
+.hoy-panel[hidden]{display:none;}
+.hoy-panel{position:fixed;top:48px;right:0;bottom:0;width:min(400px,92vw);background:var(--surface-0);
+  border-left:1px solid var(--border);box-shadow:-8px 0 26px rgba(0,0,0,.14);z-index:150;
+  display:flex;flex-direction:column;gap:var(--e-3);padding:var(--e-4);overflow-y:auto;}
+.hoy-panel h3{font-size:var(--t-l);font-weight:700;}
+.hoy-x{position:absolute;top:10px;right:10px;width:28px;height:28px;border:1px solid var(--border);
+  background:var(--surface-1);border-radius:var(--radius);cursor:pointer;line-height:1;}
+.hoy-kv{display:grid;grid-template-columns:96px 1fr;gap:5px 10px;font-size:var(--t-s);margin:0;}
+.hoy-kv dt{font-family:var(--f-rotulo);font-size:var(--t-micro);font-weight:700;
+  letter-spacing:var(--rotulo-track);text-transform:uppercase;color:var(--text-muted);padding-top:2px;}
+.hoy-kv dd{margin:0;}
+.hoy-nota{background:var(--warn-fondo);border-left:3px solid var(--warn-fuerte);padding:9px 11px;
+  border-radius:0 var(--radius) var(--radius) 0;font-size:var(--t-s);color:var(--warn);line-height:1.5;}
+.tab-insignia{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;
+  padding:0 4px;margin-left:6px;border-radius:99px;background:var(--crit-fuerte);color:#fff;
+  font-family:var(--f-num);font-size:9.5px;font-weight:600;}
+@media(max-width:820px){
+  .hoy-eje .sp,.hoy-lbl{width:120px;flex:0 0 120px;}
+  .hoy-titulo h2{font-size:17px;}
+}
 nav .tab-menu{position:relative;display:flex;align-items:center;}
 nav .tab-menu-btn{height:48px;padding:0 0.75rem;display:flex;align-items:center;gap:5px;
   background:none;border:0;border-bottom:2px solid transparent;font-family:var(--f-rotulo);
@@ -5945,7 +6310,41 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 </div>
 
 <!-- ATENCIÓN REQUERIDA -->
-<div class="page active" id="page-atencion">
+<div class="page active" id="page-hoy">
+  <div class="hoy-top">
+    <div class="hoy-titulo">
+      <h2>Hoy en planta</h2>
+      <span class="hoy-fecha num" id="hoy-fecha"></span>
+    </div>
+    <div class="hoy-ctl">
+      <span class="hoy-rot">Día</span>
+      <select id="hoy-dia" class="hoy-sel" onchange="renderHoy()"></select>
+    </div>
+    <div class="hoy-ctl">
+      <span class="hoy-rot">Agrupar</span>
+      <div class="hoy-seg" id="hoy-grupo">
+        <button data-v="persona" aria-pressed="true">Persona</button>
+        <button data-v="area" aria-pressed="false">Área</button>
+        <button data-v="of" aria-pressed="false">OF</button>
+      </div>
+    </div>
+    <div class="hoy-ctl">
+      <span class="hoy-rot">Zoom</span>
+      <div class="hoy-seg" id="hoy-zoom">
+        <button data-v="0.75" aria-pressed="false">Compacto</button>
+        <button data-v="1" aria-pressed="true">Normal</button>
+        <button data-v="1.7" aria-pressed="false">Detalle</button>
+      </div>
+    </div>
+  </div>
+  <div class="hoy-kpis" id="hoy-kpis"></div>
+  <div id="hoy-board"></div>
+  <div class="hoy-leyenda" id="hoy-leyenda"></div>
+</div>
+
+<div class="hoy-panel" id="hoy-panel" hidden></div>
+
+<div class="page" id="page-atencion">
   <div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:1rem">
     <div>
       <div style="font-size:20px;font-weight:700;letter-spacing:-0.01em">Atención requerida</div>
