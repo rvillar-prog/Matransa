@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-17 \u00b7 F2-28';
+const VERSION_APP = 'v2026-09-17 \u00b7 F2-29';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -6384,14 +6384,22 @@ function esAdmin(){ return !!(usuarioActivo && usuarioActivo.admin); }
 function getPerfil(){ return usuarioActivo ? usuarioActivo.correo : null; }
 
 // ----- Pantalla de entrada ---------------------------------------------------------------
-function mostrarLogin(msg, tono){
+// El aviso se guarda aparte del DOM a proposito. Cuando algo falla despues de autenticar —por
+// ejemplo, que no haya ficha— hay que cerrar la sesion, y ese signOut dispara otra vez
+// onAuthStateChanged, que vuelve a pintar la pantalla de entrada. Si el mensaje viviera solo en
+// el DOM, ese segundo dibujado lo borraria y el usuario veria la pantalla inicial sin ninguna
+// explicacion: un fallo que se presenta como "no paso nada" es peor que el fallo.
+let _avisoLogin = '';
+
+function mostrarLogin(msg){
+  if(msg !== undefined) _avisoLogin = msg;
   const p = document.getElementById('pantalla-login');
   if(p) p.style.display = 'flex';
   const e = document.getElementById('login-aviso');
   if(e){
-    e.textContent = msg || '';
-    e.className = 'login-aviso' + (msg ? (' ' + (tono || 'error')) : '');
-    e.style.display = msg ? 'block' : 'none';
+    e.textContent = _avisoLogin || '';
+    e.className = 'login-aviso' + (_avisoLogin ? ' error' : '');
+    e.style.display = _avisoLogin ? 'block' : 'none';
   }
   const b = document.getElementById('login-btn');
   if(b) b.disabled = false;
@@ -6404,8 +6412,7 @@ function ocultarLogin(){
 
 async function entrarConGoogle(){
   const b = document.getElementById('login-btn');
-  if(b) b.disabled = true;
-  mostrarLogin('', '');
+  mostrarLogin('');           // se borra el aviso del intento anterior
   if(b) b.disabled = true;
   try{
     const prov = new GoogleAuthProvider();
@@ -6418,7 +6425,7 @@ async function entrarConGoogle(){
     console.error('Error al entrar:', err);
     const c = err && err.code || '';
     if(c === 'auth/popup-closed-by-user' || c === 'auth/cancelled-popup-request'){
-      mostrarLogin('', '');
+      mostrarLogin('');
     }else if(c === 'auth/popup-blocked'){
       mostrarLogin('El navegador bloqueó la ventana de Google. Permite las ventanas emergentes para este sitio y vuelve a intentar.');
     }else if(c === 'auth/unauthorized-domain'){
@@ -6477,7 +6484,13 @@ function escucharFichaPropia(correo){
     },
     err => {
       console.error('No se pudo leer la ficha de usuario:', err);
-      mostrarLogin('No se pudo verificar tu acceso. Revisa tu conexión y vuelve a intentar.');
+      // El caso real: las reglas de Firestore no permiten leer `usuarios`. Se dice, porque
+      // "revisa tu conexion" manda a buscar donde no es.
+      const permisos = String(err && err.code || '').includes('permission-denied');
+      mostrarLogin(permisos
+        ? 'Entraste con ' + correo + ', pero Firestore no deja leer la colección `usuarios`. '
+          + 'Hay que publicar las reglas que la incluyen.'
+        : 'No se pudo verificar tu acceso (' + (err && err.code || 'error') + '). Revisa la conexión y vuelve a intentar.');
       signOut(auth).catch(()=>{});
     });
 }
