@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-17 \u00b7 F2-29';
+const VERSION_APP = 'v2026-09-17 \u00b7 F2-30';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -1181,6 +1181,98 @@ function getJornadaLabel(fechaStr) {
   return dias[d.getDay()];
 }
 
+// ===== LOS TRES UNIVERSOS DE UN TICKET (F2-30) =====
+//
+// Cinco pantallas contaban "los tickets del dia" de cinco maneras distintas, y ninguna decia
+// cual estaba usando. En la misma fila de "Hoy en planta" convivian un 3/26 y un 23 que era el
+// "46% de lo programado" — dos denominadores, 26 y 50, pegados uno al lado del otro. Un jefe
+// que abre dos pestanas y ve dos cifras distintas para lo mismo deja de creerle al sistema
+// entero, y hace bien.
+//
+// Aqui queda escrito una sola vez. Tres universos, y cada tarjeta dice en su subtitulo sobre
+// cual esta calculando:
+//
+//   PROGRAMADO   lo que cuenta contra el plan. Es el denominador honesto: si se planifico,
+//                cuenta, se haya hecho o no. Solo se cae lo que nunca debio existir.
+//   VIGENTE      lo que sigue en pie ahora mismo: ni cerrado por motivo ni retirado del tareo.
+//   MEDIDO       lo que tiene cronometro. Es lo unico que alimenta el estandar.
+//
+// Y una cuarta categoria que hasta ahora se contaba como fracaso de produccion y no lo es:
+//
+//   DESCARTADO   el ticket no debio existir (motivo 'error' o 'duplicado'). Sobre los 89
+//                cierres del backup, 23 se cerraron en menos de una hora desde que se crearon,
+//                y 20 de esos con motivo 'error'. Eso no es trabajo que fallo: es ruido de
+//                armar el tareo a mano. Mezclarlo con "falto material" pinta de rojo una cifra
+//                que no significa nada, y de paso esconde el dato que si importa — cuanto
+//                cuesta generar el tareo.
+
+// Un ticket cuenta contra el plan salvo que su cierre diga que no debio existir. La marca
+// `cuentaPlan` ya vivia en MOTIVOS_NO_EJECUCION; lo que faltaba era usarla fuera del Dashboard.
+function cuentaContraPlan(t){
+  if(!t || !t.noEjecutado) return true;
+  const cod = t.motivoNoEjecucion;
+  const m = (typeof MOTIVOS_NO_EJECUCION !== 'undefined' ? MOTIVOS_NO_EJECUCION.find(x=>x.cod===cod) : null)
+         || (typeof MOTIVOS_HISTORICOS   !== 'undefined' ? MOTIVOS_HISTORICOS.find(x=>x.cod===cod)   : null);
+  return m ? m.cuentaPlan !== false : true;
+}
+
+function esDescartado(t){ return !!(t && t.noEjecutado && !cuentaContraPlan(t)); }
+function esVigente(t){    return !!(t && t.visibleTareo !== false && !t.noEjecutado); }
+function esMedido(t){     return !!(t && t.tu_real != null); }
+function esResuelto(t){   return !!(t && (t.completado || t.ejecutadoSinMedir || t.tu_real != null)); }
+
+// Todo lo que las pantallas del dia necesitan contar, calculado una vez y con nombre.
+function universosDelDia(fecha){
+  const todos       = historial.filter(t => (t.fechaEjecucion || t.fecha) === fecha);
+  const programados = todos.filter(cuentaContraPlan);
+  return {
+    fecha,
+    todos,
+    programados,
+    vigentes:    programados.filter(esVigente),
+    medidos:     programados.filter(esMedido),
+    resueltos:   programados.filter(esResuelto),
+    noHechos:    programados.filter(t => t.noEjecutado),
+    descartados: todos.filter(esDescartado)
+  };
+}
+
+// Horas asignadas a personas. Un ticket de dos personas dura `tt` para las dos, asi que se
+// carga entero a cada una — la misma regla que en el resto de la app.
+function horasPorPersona(tickets){
+  const carga = {};
+  tickets.forEach(t => (t.nombres||[]).forEach(n => { if(n) carga[n] = (carga[n]||0) + (t.tt||0); }));
+  return carga;
+}
+
+// El rotulo de capacidad, escrito igual en todas partes. Antes cada pantalla armaba su propia
+// frase y "147.2 h de 170.0 h" no decia de donde salian las 170.
+function textoCapacidad(plantilla, fecha){
+  const j = jornadaProductiva(fecha);
+  const nOp = plantilla.operarios.length, nPr = plantilla.practicantes.length;
+  return plural(nOp, 'operario', 'operarios')
+       + (nPr ? ' + ' + plural(nPr, 'practicante', 'practicantes') : '')
+       + ' × ' + j + ' h';
+}
+
+// Una linea que dice cuantos tickets se crearon y se descartaron. No es una alarma y por eso no
+// se pinta: es un dato de calidad del tareo, no de produccion.
+function lineaDescartados(u){
+  if(!u.descartados.length) return '';
+  const rapidos = u.descartados.filter(t => {
+    if(!t.guardado || !t.fechaNoEjecucion) return false;
+    return (new Date(t.fechaNoEjecucion) - new Date(t.guardado)) <= 3600000;
+  }).length;
+  return '<div class="nota-descartes" title="Motivos ‘se creó por error’ y ‘duplicado’. '
+    + 'No cuentan contra el plan porque no son trabajo que falló, sino tickets que no debían existir.">'
+    + plural(u.descartados.length, 'ticket descartado', 'tickets descartados')
+    + ' — no cuentan contra el plan'
+    + (rapidos ? ' · ' + rapidos + (rapidos===1
+                   ? ' se cerró a menos de una hora de haberse creado'
+                   : ' se cerraron a menos de una hora de haberse creado') : '')
+    + '</div>';
+}
+
 // ===== HELPERS CENTRALIZADOS =====
 const ORDEN_AREAS_GLOBAL = ['HABILITADO','ENSAMBLE','FIERRO','PINTURA DE FIERRO','EVA','ACABADO','MANTENIMIENTO','PROD-ADMIN'];
 
@@ -1660,12 +1752,20 @@ function renderAndree(){
     return true;
   }));
   const manT=sortTicketsByArea(historial.filter(t=>t.visibleAndree!==false&&fechaStrToDate(t.fechaEjecucion||t.fecha||hoy)>fechaStrToDate(hoy)));
-  document.getElementById('m-total').textContent=hoyT.length;
-  const comp=hoyT.filter(t=>t.tu_real);
-  document.getElementById('m-comp').textContent=comp.length;
-  document.getElementById('m-hplan').textContent=hoyT.reduce((s,t)=>s+t.tt,0).toFixed(1)+'h';
-  if(comp.length)document.getElementById('m-hreal').textContent=comp.reduce((s,t)=>s+(t.n*t.tu_real/60),0).toFixed(1)+'h';
-  else document.getElementById('m-hreal').textContent='—';
+  // Estas tarjetas describen EL DIA, no la lista de abajo. La lista tiene su propio filtro de
+  // vista (esconde los completados despues de las 17h) y si las cifras lo siguieran, Andree y
+  // Ricardo verian numeros distintos para el mismo dia — que es justo lo que se vino a arreglar.
+  const UA = universosDelDia(hoy);
+  const ponerA = (id, val, sub) => {
+    const e = document.getElementById(id); if(e) e.textContent = val;
+    const s = document.getElementById(id + '-sub'); if(s) s.textContent = sub;
+  };
+  ponerA('m-total', UA.programados.length, 'programados para hoy');
+  ponerA('m-comp',  UA.medidos.length,
+         UA.programados.length ? Math.round(UA.medidos.length/UA.programados.length*100) + '% de lo programado' : '\u2014');
+  ponerA('m-hplan', UA.programados.reduce((s,t)=>s+(t.tt||0),0).toFixed(1)+'h', 'de los tickets programados');
+  ponerA('m-hreal', UA.medidos.length ? UA.medidos.reduce((s,t)=>s+(t.tt_real!=null?t.tt_real:(t.n*t.tu_real/60)),0).toFixed(1)+'h' : '\u2014',
+         UA.medidos.length ? plural(UA.medidos.length, 'ticket medido', 'tickets medidos') : 'todavía sin mediciones');
   const lista=document.getElementById('andree-list');
   if(!hoyT.length&&!manT.length){lista.innerHTML='<div class="empty"><div class="empty-icon">⏱</div><div>No hay tareas.</div></div>';return;}
   function renderTickets(tickets){
@@ -1938,41 +2038,47 @@ function renderHoy(){
   const hhmm = h => Math.floor(h) + ':' + String(Math.round((h%1)*60)).padStart(2,'0');
   const corto = n => n.split(/\s+/).filter(Boolean).slice(0,2).join(' ');
 
-  const delDia = historial.filter(t => t.fechaEjecucion === fecha);
-  const activos = delDia.filter(t => t.visibleTareo !== false && !t.noEjecutado);
-  const cerrados = delDia.filter(t => t.noEjecutado);
+  const U = universosDelDia(fecha);
+  const activos = U.vigentes;
   const plantilla = plantillaDelDia(fecha);
 
   document.getElementById('hoy-fecha').textContent =
     getJornadaLabel(fecha) + ' \u00b7 ' + fecha;
 
   // ---- franja de cifras ----
-  const carga = {};
-  activos.forEach(t => (t.nombres||[]).forEach(n => { if(n) carga[n] = (carga[n]||0) + (t.tt||0); }));
+  const carga = horasPorPersona(activos);
   const horas = Object.values(carga).reduce((a,b)=>a+b, 0);
   const cap = plantilla.horas;
-  const medidos = activos.filter(t => t.completado && t.tu_real).length;
+  // Denominador unico para las dos tarjetas de tickets: lo PROGRAMADO. Si se planifico cuenta,
+  // se haya hecho o no; solo se cae lo que nunca debio existir.
+  const nProg = U.programados.length;
+  const medidos = U.medidos.length;
+  const noHechos = U.noHechos.length;
   const sobre = Object.entries(carga).filter(([,h]) => h > jornada + 0.5);
   const uso = cap > 0 ? Math.round(horas / cap * 100) : 0;
+  const base = n => nProg ? (n + ' de ' + nProg + ' tickets programados') : 'sin tickets programados';
   const tile = (lab, val, sub, cls) =>
     `<div class="hoy-kpi ${cls||''}"><span class="lab">${lab}</span>` +
     `<span class="val num">${val}</span><span class="sub">${escapeHtml(sub)}</span></div>`;
   document.getElementById('hoy-kpis').innerHTML =
-    tile('Carga del día', uso + '%', horas.toFixed(1) + ' h de ' + cap.toFixed(1) + ' h', uso > 100 ? 'ojo' : '') +
-    tile('Tiempo registrado', medidos + '/' + activos.length,
-         activos.length ? Math.round(medidos/activos.length*100) + '% de lo que se está haciendo' : 'sin tickets',
-         (activos.length && medidos/activos.length < 0.5) ? 'ojo' : '') +
-    tile('No se ejecutó', cerrados.length,
-         delDia.length ? Math.round(cerrados.length/delDia.length*100) + '% de lo programado' : '\u2014',
-         cerrados.length ? 'alerta' : '') +
+    tile('Carga del día', uso + '%',
+         horas.toFixed(1) + ' h asignadas de ' + cap.toFixed(1) + ' h \u00b7 ' + textoCapacidad(plantilla, fecha),
+         uso > 100 ? 'ojo' : '') +
+    tile('Medido', medidos + ' / ' + nProg, base(medidos),
+         (nProg && medidos/nProg < 0.5) ? 'ojo' : '') +
+    // Solo lo que fallo de verdad: falto material, cambio la prioridad, no se llego, se cancelo,
+    // se reprogramo. Los "se creo por error" salen de aqui y van a su propia linea, en gris.
+    tile('No se hizo', noHechos, base(noHechos), noHechos ? 'alerta' : '') +
     tile('Sobre la jornada', sobre.length,
          sobre.length ? sobre.map(([n]) => corto(n).split(' ')[0]).slice(0,3).join(', ')
                       : 'nadie por encima de ' + (jornada+0.5) + ' h',
          sobre.length ? 'alerta' : '') +
     tile('En planta', plantilla.cabezas,
-         plantilla.operarios.length + ' operario' + (plantilla.operarios.length===1?'':'s') +
-         ' \u00b7 ' + plantilla.practicantes.length + ' practicante' + (plantilla.practicantes.length===1?'':'s') +
-         ' \u00b7 ' + plantilla.ausentes.size + ' ausente' + (plantilla.ausentes.size===1?'':'s'));
+         plural(plantilla.operarios.length, 'operario', 'operarios') +
+         ' \u00b7 ' + plural(plantilla.practicantes.length, 'practicante', 'practicantes') +
+         ' \u00b7 ' + plural(plantilla.ausentes.size, 'ausente', 'ausentes'));
+  const elDesc = document.getElementById('hoy-descartes');
+  if(elDesc) elDesc.innerHTML = lineaDescartados(U);
 
   if(!activos.length){
     cont.innerHTML = '<div class="empty"><div class="empty-icon">\u23f1</div><div>No hay tareas para ' + fecha + '.</div></div>';
@@ -2493,8 +2599,13 @@ function renderKanban(){
   poblarSelectorKanban();
   const sel=document.getElementById('k-fecha');
   const fechaActiva=sel?sel.value:hoyStr();
-  const ticketsHoy=historial.filter(t=>t.visibleTareo!==false&&t.fechaEjecucion===fechaActiva);
-  document.getElementById('k-total').textContent=ticketsHoy.length;
+  const UK=universosDelDia(fechaActiva);
+  const ticketsHoy=UK.vigentes;
+  document.getElementById('k-total').textContent=UK.programados.length;
+  const subTotal=document.getElementById('k-total-sub');
+  if(subTotal) subTotal.textContent = UK.vigentes.length===UK.programados.length
+    ? 'todos siguen en pie'
+    : UK.vigentes.length + ' siguen en pie \u00b7 ' + UK.noHechos.length + ' no se hicieron';
   const horasPlan=ticketsHoy.reduce((s,t)=>s+t.tt,0);
   document.getElementById('k-horas').textContent=horasPlan.toFixed(1)+'h';
   // Capacidad del día según horario
@@ -2510,14 +2621,20 @@ function renderKanban(){
   const pctPlan=capacidad>0?Math.round((horasPlan/capacidad)*100):0;
   document.getElementById('k-horas-sub').textContent=`de ${capacidad.toFixed(1)}h capacidad (${pctPlan}%)`;
   const elLibre=document.getElementById('k-libre');
-  elLibre.textContent=libre.toFixed(1)+'h';
-  elLibre.style.color=libre>capacidad*0.3?'var(--warn-fuerte)':libre>0?'var(--ok-fuerte)':'var(--ok-fuerte)';
-  const nPrac=plantilla.practicantes.length;
-  document.getElementById('k-libre-sub').textContent=
-    `${presentes.length} operario${presentes.length===1?'':'s'}`
-    + (nPrac?` + ${nPrac} practicante${nPrac===1?'':'s'}`:'')
-    + ` × ${jornada}h jornada`;
-  document.getElementById('k-comp').textContent=ticketsHoy.filter(t=>t.tu_real).length;
+  // Capacidad libre a las ocho de la mañana es lo normal, no una alarma. El ambar se reserva
+  // para el caso que si pide una decision: haber repartido mas horas de las que hay.
+  const sobrepasada = horasPlan > capacidad;
+  elLibre.textContent = sobrepasada ? '+'+(horasPlan-capacidad).toFixed(1)+'h' : libre.toFixed(1)+'h';
+  elLibre.style.color = sobrepasada ? 'var(--crit)' : 'var(--text-primary)';
+  const labLibre=document.getElementById('k-libre-lab');
+  if(labLibre) labLibre.textContent = sobrepasada ? 'Por encima de la capacidad' : 'Capacidad libre';
+  document.getElementById('k-libre-sub').textContent = sobrepasada
+    ? 'hay mas horas repartidas que jornada disponible'
+    : textoCapacidad(plantilla, fechaActiva);
+  document.getElementById('k-comp').textContent=UK.medidos.length;
+  const subComp=document.getElementById('k-comp-sub');
+  if(subComp) subComp.textContent = UK.programados.length
+    ? UK.medidos.length + ' de ' + UK.programados.length + ' programados' : 'sin tickets';
   // Operarios sin tareo: los presentes que no aparecen en ningún ticket. Antes esta parte
   // rearmaba la lista de operarios con los tres cargos escritos a mano, en paralelo a
   // CARGOS_PRODUCTIVOS: dos listas que había que acordarse de cambiar a la vez.
@@ -5945,11 +6062,8 @@ function renderPersonal() {
   document.getElementById('p-sin-tareo').textContent = sinTareo;
   document.getElementById('p-ausentes').textContent = ausentesCount;
   // Misma cuenta que el Kanban, del mismo sitio: dejan de existir dos capacidades para un día.
-  const nPracP = plantillaP.practicantes.length;
   document.getElementById('p-capacidad').textContent = plantillaP.horas.toFixed(1)+'h';
-  document.getElementById('p-capacidad-sub').textContent =
-    `${plantillaP.operarios.length} operario${plantillaP.operarios.length===1?'':'s'} disponible${plantillaP.operarios.length===1?'':'s'}`
-    + (nPracP?` + ${nPracP} practicante${nPracP===1?'':'s'}`:'');
+  document.getElementById('p-capacidad-sub').textContent = textoCapacidad(plantillaP, fechaActiva);
   document.getElementById('personal-lista').innerHTML = filas.join('');
 }
 
@@ -6933,6 +7047,10 @@ nav .right{display:flex;align-items:center;gap:10px;}
 nav #perfil-indicator{color:var(--text-muted)!important;border-color:var(--border)!important;}
 nav #perfil-indicator:hover{background:var(--surface-2);}
 .page{display:none;padding:1.25rem 1.5rem;max-width:1240px;margin:0 auto;}.page.active{display:block;}
+/* Los descartes no son una alarma: son un dato de calidad del tareo. Por eso no llevan color.
+   La regla C2 de la app dice que el color marca la excepcion; esto es informacion de fondo. */
+.nota-descartes{font-size:var(--t-mini);color:var(--text-muted);margin:-4px 0 var(--e-4);
+  padding-left:2px;cursor:help;border-left:2px solid var(--border);padding-left:8px;}
 
 /* ===================== ENTRADA ===================== */
 /* Tapa la app entera. Mientras esto se ve, no hay ni un dato en pantalla: la sesion se
@@ -7766,6 +7884,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     </div>
   </div>
   <div class="hoy-kpis" id="hoy-kpis"></div>
+  <div id="hoy-descartes"></div>
   <div id="hoy-board"></div>
   <div class="hoy-leyenda" id="hoy-leyenda"></div>
 </div>
@@ -7839,10 +7958,10 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 <!-- ANDREE -->
 <div class="page" id="page-andree">
   <div class="metrics">
-    <div class="metric"><div class="metric-label">Tareas hoy</div><div class="metric-value" id="m-total">0</div><div class="metric-sub">tickets del día</div></div>
-    <div class="metric"><div class="metric-label">Completadas</div><div class="metric-value" id="m-comp" style="color:var(--ok)">0</div><div class="metric-sub">con tiempo real</div></div>
-    <div class="metric"><div class="metric-label">Horas plan</div><div class="metric-value" id="m-hplan">0h</div><div class="metric-sub">estimadas totales</div></div>
-    <div class="metric"><div class="metric-label">Horas reales</div><div class="metric-value" id="m-hreal">—</div><div class="metric-sub">registradas hoy</div></div>
+    <div class="metric"><div class="metric-label">Tickets programados</div><div class="metric-value" id="m-total">0</div><div class="metric-sub" id="m-total-sub">programados para hoy</div></div>
+    <div class="metric"><div class="metric-label">Medidos</div><div class="metric-value" id="m-comp" style="color:var(--ok)">0</div><div class="metric-sub" id="m-comp-sub">con tiempo real</div></div>
+    <div class="metric"><div class="metric-label">Horas plan</div><div class="metric-value" id="m-hplan">0h</div><div class="metric-sub" id="m-hplan-sub">de los tickets programados</div></div>
+    <div class="metric"><div class="metric-label">Horas reales</div><div class="metric-value" id="m-hreal">—</div><div class="metric-sub" id="m-hreal-sub">medidas</div></div>
   </div>
   <div class="card">
     <div class="card-title">Tareas del día — registro de tiempos reales</div>
@@ -7865,11 +7984,11 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     </div>
   </div>
   <div class="kanban-metrics metrics">
-    <div class="metric"><div class="metric-label">Tickets del día</div><div class="metric-value" id="k-total">0</div><div class="metric-sub">en todas las áreas</div></div>
+    <div class="metric"><div class="metric-label">Tickets programados</div><div class="metric-value" id="k-total">0</div><div class="metric-sub" id="k-total-sub">en todas las áreas</div></div>
     <div class="metric"><div class="metric-label">Horas planificadas</div><div class="metric-value" id="k-horas">0h</div><div class="metric-sub" id="k-horas-sub">de capacidad total</div></div>
-    <div class="metric"><div class="metric-label">Horas sin planificar</div><div class="metric-value" id="k-libre" style="color:var(--warn-fuerte)">0h</div><div class="metric-sub" id="k-libre-sub">capacidad disponible</div></div>
+    <div class="metric"><div class="metric-label" id="k-libre-lab">Capacidad libre</div><div class="metric-value" id="k-libre">0h</div><div class="metric-sub" id="k-libre-sub">capacidad disponible</div></div>
     <div class="metric" style="cursor:pointer" onclick="irPersonalSinTareo()" title="Ver en pestaña Personal"><div class="metric-label">Sin tareo asignado</div><div class="metric-value" id="k-sin-tareo" style="color:var(--crit)">0</div><div class="metric-sub">operarios disponibles</div></div>
-    <div class="metric"><div class="metric-label">Completados</div><div class="metric-value" id="k-comp" style="color:var(--ok)">0</div><div class="metric-sub">con tiempo registrado</div></div>
+    <div class="metric"><div class="metric-label">Medidos</div><div class="metric-value" id="k-comp" style="color:var(--ok)">0</div><div class="metric-sub" id="k-comp-sub">con tiempo registrado</div></div>
   </div>
   <div class="kanban-scroll"><div class="kanban-board" id="kanban-board"></div></div>
   <div id="gantt-diario" style="display:none;overflow-x:auto"></div>
@@ -7893,9 +8012,9 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 <div class="page" id="page-personal">
   <div id="alert-personal" style="display:none" class="alert"></div>
   <div class="metrics" style="margin-bottom:1rem">
-    <div class="metric"><div class="metric-label">Operarios disponibles</div><div class="metric-value" id="p-disponibles">0</div><div class="metric-sub">con tareo asignado</div></div>
-    <div class="metric"><div class="metric-label">Sin tareo</div><div class="metric-value" id="p-sin-tareo" style="color:var(--warn-fuerte)">0</div><div class="metric-sub">disponibles sin asignar</div></div>
-    <div class="metric"><div class="metric-label">Ausentes</div><div class="metric-value" id="p-ausentes" style="color:var(--crit)">0</div><div class="metric-sub">no disponibles hoy</div></div>
+    <div class="metric"><div class="metric-label">Con tareo</div><div class="metric-value" id="p-disponibles">0</div><div class="metric-sub">personas con trabajo asignado hoy</div></div>
+    <div class="metric"><div class="metric-label">Sin tareo</div><div class="metric-value" id="p-sin-tareo" style="color:var(--warn-fuerte)">0</div><div class="metric-sub">presentes sin nada asignado</div></div>
+    <div class="metric"><div class="metric-label">Ausentes</div><div class="metric-value" id="p-ausentes" style="color:var(--crit)">0</div><div class="metric-sub">con ausencia registrada hoy</div></div>
     <div class="metric"><div class="metric-label">Capacidad real</div><div class="metric-value" id="p-capacidad">0h</div><div class="metric-sub" id="p-capacidad-sub">operarios disponibles</div></div>
   </div>
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:8px">

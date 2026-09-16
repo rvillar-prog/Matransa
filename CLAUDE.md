@@ -6,10 +6,10 @@
 Archivo único `index.html` — HTML + JS vanilla como módulo ES, **sin build**. Se publica en
 GitHub Pages: `https://rvillar-prog.github.io/Matransa`.
 
-Backend: Firestore `matransa-c562c`, auth anónima, `initializeFirestore` con
-`persistentLocalCache` + `persistentMultipleTabManager`.
+Backend: Firestore `matransa-c562c`, **entrada con Google corporativo** (@matransaperu.com),
+`initializeFirestore` con `persistentLocalCache` + `persistentMultipleTabManager`.
 Colecciones: `historial`, `trabajadores`, `proyectosTC`, `proyectos`, `ofs`, `planM3`,
-`ausencias`, `notas`.
+`ausencias`, `notas`, `usuarios`.
 
 La versión viva se declara en `VERSION_APP`, en las primeras líneas del archivo a propósito
 (para poder leerla sin recorrerlo entero), y se muestra en la pestaña Configuración.
@@ -39,7 +39,7 @@ node arnes.mjs
 
 Encuentra solo `../Matransa/index.html` y `../Backups/`. Si faltan los backups corre las
 pruebas que solo miran el código y avisa. Se puede forzar con `MATRANSA_HTML` y
-`MATRANSA_BACKUPS`. Hoy son **350 pruebas**; la sección 7 necesita `backup5.json`.
+`MATRANSA_BACKUPS`. Hoy son **354 pruebas**; la sección 7 necesita `backup5.json`.
 
 ---
 
@@ -177,6 +177,44 @@ los índices de columna con 6 pruebas.
 
 ---
 
+## Sesión y permisos (F2-28)
+
+Se entra con la cuenta de Google del dominio. La identidad la pone Google; la **autorización**
+la pone Firestore:
+
+```
+usuarios/{correo} = { nombre, rol, admin, pestanas[], activo }
+```
+
+**Autenticado no es autorizado.** Cualquiera con un Gmail puede autenticarse; sin ficha no ve
+un dato. La ficha se edita desde Configuración → Usuarios y permisos, no desde la consola de
+Firebase: los permisos cambian con la realidad y esa es una decisión de jefatura, no una tarea
+de programador. Se aplican en vivo — la ficha propia se escucha con `onSnapshot`.
+
+- Una ficha **sin** `pestanas` vale por todas. Es el arranque: la primera cuenta se crea a mano
+  en la consola con tres campos.
+- `PLANTILLAS_ACCESO` son puntos de partida, no jaulas. Lo que manda es el arreglo `pestanas`.
+- **Al último administrador no se le puede quitar el permiso**, ni a uno mismo el acceso: si no,
+  la única salida sería la consola de Firebase.
+- Los nombres de las personas ya **no** están en el código — viven en la ficha. El repo es
+  público; que estuvieran ahí era una fuga.
+- `requiereAdmin()` ya no es decorativo. Antes leía `perfilActivo` desde `localStorage` y
+  bastaba escribir una línea en la consola del navegador para ser administrador.
+
+### Orden de encendido, si hay que repetirlo
+1. Proveedor Google habilitado + `rvillar-prog.github.io` en dominios autorizados
+2. Ficha propia a mano en Firestore
+3. Código con login publicado
+4. Reglas **puente** (incluyen `usuarios`, el resto sigue en `request.auth != null`)
+5. Las cuatro cuentas entran
+6. Reglas **estrictas** + apagar el proveedor Anónimo
+
+Saltarse el 4 deja a todo el mundo fuera: las reglas anteriores negaban `usuarios` por el
+`match /{document=**} { allow read, write: if false; }` final, y sin poder leer la ficha la app
+cierra la sesión. Los dos archivos viven en `..\Docs\firestore_*.rules`.
+
+---
+
 ## Trampas conocidas
 
 - **`fechaCreacion` tiene formato mixto** (ISO en los nuevos, dd/mm/aaaa en los viejos).
@@ -201,6 +239,10 @@ los índices de columna con 6 pruebas.
   local— el día no cuadra. Fue el bug F2-27: las ausencias no descontaban capacidad, y sólo se
   veía fuera de UTC. Para cualquier fecha guardada como `AAAA-MM-DD` usar **`fechaISOLocal()`**;
   para las `d/m/aaaa`, `fechaStrToDate()`. Nunca `new Date(texto)` a secas.
+- **Un error que se presenta como "no pasó nada" es peor que el error.** Pasó en el login: al
+  fallar la lectura de la ficha se mostraba el aviso y acto seguido se cerraba la sesión, lo que
+  redibujaba la pantalla de entrada y borraba el mensaje. El aviso vive ahora en `_avisoLogin`,
+  fuera del DOM, y sobrevive al redibujado.
 - **El arnés hay que correrlo en la zona horaria de la planta.** El contenedor donde se
   desarrolla está en UTC y ahí varios bugs de fecha son invisibles. Desde `Tests\`:
   `node arnes.mjs` en la máquina de Ricardo (Lima) es la prueba que vale. Una prueba de fecha
@@ -255,10 +297,20 @@ Generarlo a mano cuesta hoy 2 personas × 2 horas diarias.
 
 ## Pendiente que no es de código
 
-**Seguridad de Firestore.** El repo es público, la config de Firebase está dentro, y las reglas
-solo piden `request.auth != null` con auth anónima: cualquiera puede leer o borrar la base
-entera, incluidos nombres, horas y ausencias de 37 personas. Propuesto y no hecho: reglas por
-colección, prohibir `delete`, App Check.
+**Cerrar la migración de seguridad.** Hecho: reglas por colección, borrado de `historial`
+prohibido, validación de forma, login con Google y permisos por ficha. **Falta:**
+
+1. Publicar `Docs\firestore_ESTRICTAS_manana.rules` — exige dominio, correo verificado y ficha
+   vigente. Hasta que eso pase, el servidor sigue aceptando cualquier sesión.
+2. **Apagar el proveedor Anónimo** en Authentication. Mientras siga encendido, la llave vieja
+   funciona aunque la app ya no la use.
+3. Verificar después que los cuatro siguen entrando.
+
+**App Check** queda para después: bloquea el uso de la config desde un script externo, pero no
+impide que alguien con la URL abra la app. Eso lo cierra el login, que ya está.
+
+**MFA obligatorio desde el 20/10/2026** en la cuenta de Google de Ricardo, o pierde el acceso a
+su propia consola.
 
 ---
 
