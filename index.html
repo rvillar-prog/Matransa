@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-16 \u00b7 F2-24';
+const VERSION_APP = 'v2026-09-17 \u00b7 F2-27';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -2730,6 +2730,19 @@ function renderHist(){
   }).join('')}</tbody></table>`;
 }
 
+// Una sola definicion de las columnas del Excel. La usan el Historial y el Dashboard, asi que
+// una columna nueva llega a los dos y no se pueden desincronizar.
+const CABECERA_EXCEL = ['Fecha ejecución','Fecha creación','Trabajador(es)','Área','Proyecto','Producto','Tarea','Operación','Unidad','N°','t.u. plan','t.u. real','Diferencia','T.T. plan','T.T. real','Cierre','Motivo no ejecución','Nota','Tipo de trabajo','Causa reproceso','Incidencias'];
+
+function filaExcel(t){
+  const area=getAreaEjecucion(t);
+  const cierre = t.completado ? 'Ejecutado'
+               : t.ejecutadoSinMedir ? 'Ejecutado sin medir'
+               : t.noEjecutado ? 'No ejecutado' : 'Sin resolver';
+  return [t.fechaEjecucion||t.fecha,t.fechaCreacion||'',(t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / '),area,t.proyecto,t.producto,t.tarea,
+      t.fueraCatalogo?'(fuera de cat\u00e1logo)':(t.operacion||''), t.unidad||'', t.n,t.tu,t.tu_real||'',t.tu_real?(t.tu_real-t.tu):'',t.tt,t.tt_real||'',cierre,t.noEjecutado?etiquetaMotivo(t.motivoNoEjecucion):'',t.notaNoEjecucion||'',t.esPrototipo?'Prototipo':(t.esReproceso?'Reproceso':'Serie'),t.esReproceso?etiquetaReproceso(t.motivoReproceso):'',(t.incidencias||[]).map(i=>`${i.hora}: ${i.descripcion}`).join(' | ')];
+}
+
 function exportarExcel(){
   const ff=document.getElementById('h-fecha').value,ft=document.getElementById('h-trab').value,fp=document.getElementById('h-proy').value;
   let datos=historial.filter(t=>{
@@ -2740,116 +2753,1008 @@ function exportarExcel(){
     return true;
   });
   if(!datos.length){showAlert('hist','No hay datos para exportar.','warn');return;}
-  const rows=[['Fecha ejecución','Fecha creación','Trabajador(es)','Área','Proyecto','Producto','Tarea','Operación','Unidad','N°','t.u. plan','t.u. real','Diferencia','T.T. plan','T.T. real','Cierre','Motivo no ejecución','Nota','Tipo de trabajo','Causa reproceso','Incidencias']];
-  datos.forEach(t=>{
-    const area=getAreaEjecucion(t);
-    const cierre = t.completado ? 'Ejecutado'
-                 : t.ejecutadoSinMedir ? 'Ejecutado sin medir'
-                 : t.noEjecutado ? 'No ejecutado' : 'Sin resolver';
-    rows.push([t.fechaEjecucion||t.fecha,t.fechaCreacion||'',(t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / '),area,t.proyecto,t.producto,t.tarea,
-      t.fueraCatalogo?'(fuera de cat\u00e1logo)':(t.operacion||''), t.unidad||'', t.n,t.tu,t.tu_real||'',t.tu_real?(t.tu_real-t.tu):'',t.tt,t.tt_real||'',cierre,t.noEjecutado?etiquetaMotivo(t.motivoNoEjecucion):'',t.notaNoEjecucion||'',t.esPrototipo?'Prototipo':(t.esReproceso?'Reproceso':'Serie'),t.esReproceso?etiquetaReproceso(t.motivoReproceso):'',(t.incidencias||[]).map(i=>`${i.hora}: ${i.descripcion}`).join(' | ')]);
-  });
+  const rows=[CABECERA_EXCEL.slice()];
+  datos.forEach(t=>rows.push(filaExcel(t)));
   const ws=XLSX.utils.aoa_to_sheet(rows);
   const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Historial');
   XLSX.writeFile(wb,`MATRANSA_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
+// ===== DASHBOARD — CENTRO DE CONTROL DE OPERACIONES (F2-26) =====
+//
+// Lo que habia antes eran cuatro metricas y dos tablas sobre TODO el historial de una vez. No
+// respondia ninguna pregunta de gestion: decia cuantos tickets hay, no que hacer manana.
+//
+// ---------------------------------------------------------------------------------------
+// LOS DOS UNIVERSOS. Es lo unico que hay que entender para leer el resto del archivo.
+// ---------------------------------------------------------------------------------------
+//
+//   CUMPLIMIENTO  ->  dashPlan(r)     tickets del rango que cuentan contra el plan.
+//                                     Solo se cae lo que nunca debio existir: el motivo
+//                                     'duplicado' y el 'error' retirado. Un ticket cerrado
+//                                     como "falto material" SI cuenta: se planifico y no se
+//                                     hizo, que es exactamente lo que el cumplimiento mide.
+//
+//   MEDICION      ->  dashMedidos(r)  todo ticket con tu_real, SIN MIRAR visibleTareo.
+//
+// El segundo universo es un cambio de fondo y hay que decir por que. El Dashboard viejo
+// filtraba por visibleTareo!==false. Esa bandera la escribia la version vieja de la app al
+// COMPLETAR un ticket, asi que 114 de las 247 mediciones del backup del 14/9 estaban mudas:
+// trabajo hecho y cronometrado que no entraba en la eficiencia, ni en el Pareto, ni en la
+// deteccion de estandares. Una medicion es una medicion. Que el ticket ya no se dibuje en el
+// tareo de hoy no borra el cronometro.
+//
+// Los dos universos NO se mezclan en una misma resta. Cuando se comparan plan y real, el plan
+// es el de los tickets medidos — nunca el total planificado. De mezclarlos salia el caso que
+// no cuadraba: plan 70.9 / real 57.3 / eficiencia 108%.
+//
+//   EFICIENCIA = horas plan de los medidos / horas reales de los medidos x 100
+//
+// Es la misma formula que ya usaba la app (planCompletados/real). No se toca. Lo que se quita
+// es la columna de al lado, que mostraba un plan que la formula no usaba.
+//
+// ---------------------------------------------------------------------------------------
+// Sin dependencias: el proyecto no tiene libreria de graficos y no se le agrega ninguna. Las
+// lineas, el Pareto y el scatter son SVG en linea. Las barras son HTML, como el Gantt.
+// ---------------------------------------------------------------------------------------
+
+// Criterios iniciales, no verdades universales. Se editan aqui, en un solo sitio, y la
+// pantalla dice cual esta usando.
+const DASH_UMBRALES = {
+  cargaBaja: 80,          // < esto: hay capacidad libre
+  cargaAlta: 95,          // >= esto: utilizacion alta
+  cargaSobre: 100,        // > esto: sobrecapacidad
+  minEjecuciones: 5,      // mediciones minimas para opinar de un estandar
+  desvEstandarPct: 20,    // % de desviacion media que levanta la sospecha
+  consistencia: 0.7,      // fraccion de mediciones que deben ir en el mismo sentido
+  horasPerdidasMin: 1,    // horas para que una operacion sea "desviacion significativa"
+  minTicketsArea: 3,      // tickets minimos para juzgar un area
+  brechaPP: 10            // puntos porcentuales por debajo de la media de planta que marcan
+};
+
+let dashFiltro = {rango:'30d', desde:'', hasta:'', trabajador:'', area:'', proyecto:''};
+
+const DASH_RANGOS = [
+  ['hoy','Hoy'], ['semana','Esta semana'], ['semana-1','Semana anterior'],
+  ['mes','Este mes'], ['7d','7 d\u00edas'], ['14d','14 d\u00edas'], ['30d','30 d\u00edas'],
+  ['90d','90 d\u00edas'], ['todo','Todo'], ['custom','Personalizado']
+];
+
+function dashFechaCorta(d){ return d.toLocaleDateString('es-PE',{day:'2-digit',month:'2-digit'}); }
+
+// Rango activo. Siempre devuelve dos Date con las horas puestas en los extremos del dia, para
+// que la comparacion no dependa de a que hora se guardo nada.
+function dashRango(){
+  const hoy = fechaStrToDate(hoyStr());
+  let d0 = new Date(hoy), d1 = new Date(hoy);
+  const r = dashFiltro.rango;
+  if(r==='semana' || r==='semana-1'){
+    const dow = (hoy.getDay()+6)%7;                 // lunes = 0
+    d0 = new Date(hoy); d0.setDate(hoy.getDate()-dow-(r==='semana-1'?7:0));
+    d1 = new Date(d0);  d1.setDate(d0.getDate()+5); // lunes a sabado
+  } else if(r==='mes'){
+    d0 = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+    d1 = new Date(hoy.getFullYear(), hoy.getMonth()+1, 0);
+  } else if(r==='7d'||r==='14d'||r==='30d'||r==='90d'){
+    d0 = new Date(hoy); d0.setDate(hoy.getDate()-(parseInt(r,10)-1));
+  } else if(r==='todo'){
+    const fs = historial.map(t=>t.fechaEjecucion||t.fecha).filter(Boolean).map(fechaStrToDate)
+                        .filter(d=>d && !isNaN(d));
+    if(fs.length){ d0 = new Date(Math.min.apply(null,fs)); d1 = new Date(Math.max.apply(null,fs)); }
+  } else if(r==='custom'){
+    const a = dashFiltro.desde ? new Date(dashFiltro.desde+'T00:00:00') : null;
+    const b = dashFiltro.hasta ? new Date(dashFiltro.hasta+'T00:00:00') : null;
+    if(a && !isNaN(a)) d0 = a;
+    if(b && !isNaN(b)) d1 = b;
+    if(d1 < d0) { const tmp = d0; d0 = d1; d1 = tmp; }
+  }
+  d0.setHours(0,0,0,0); d1.setHours(23,59,59,999);
+  const etq = (DASH_RANGOS.find(x=>x[0]===r)||['','']) [1];
+  return {desde:d0, hasta:d1, etq, texto: dashFechaCorta(d0)+' al '+dashFechaCorta(d1)};
+}
+
+// Periodo anterior: mismo largo, pegado justo antes. Sirve para el "+6% vs periodo anterior".
+function dashRangoPrevio(r){
+  const ms = r.hasta.getTime() - r.desde.getTime();
+  const hasta = new Date(r.desde.getTime()-1);
+  const desde = new Date(hasta.getTime()-ms);
+  return {desde, hasta, etq:'periodo anterior', texto: dashFechaCorta(desde)+' al '+dashFechaCorta(hasta)};
+}
+
+function dashCodProyecto(t){
+  return t.proyectoCodigo || (t.proyecto && String(t.proyecto).split(' · ')[0]) || t.proyecto || '';
+}
+
+function dashPasaFiltro(t){
+  if(dashFiltro.trabajador && !(t.nombres||[]).includes(dashFiltro.trabajador)) return false;
+  if(dashFiltro.area && getAreaEjecucion(t)!==dashFiltro.area) return false;
+  if(dashFiltro.proyecto && dashCodProyecto(t)!==dashFiltro.proyecto) return false;
+  return true;
+}
+
+function dashEnRango(t, r){
+  const f = t.fechaEjecucion||t.fecha;
+  if(!f) return false;
+  const d = fechaStrToDate(f);
+  return d && !isNaN(d) && d>=r.desde && d<=r.hasta;
+}
+
+// Un motivo de no ejecucion que NO cuenta contra el plan es uno que dice que el ticket no
+// debio existir. Los demas cuentan: se planificaron y no se hicieron.
+function dashCuentaPlan(t){
+  if(!t.noEjecutado) return true;
+  const cod = t.motivoNoEjecucion;
+  const m = (typeof MOTIVOS_NO_EJECUCION!=='undefined' ? MOTIVOS_NO_EJECUCION.find(x=>x.cod===cod) : null)
+         || (typeof MOTIVOS_HISTORICOS!=='undefined' ? MOTIVOS_HISTORICOS.find(x=>x.cod===cod) : null);
+  return m ? m.cuentaPlan!==false : true;
+}
+
+function dashResuelto(t){ return !!(t.completado || t.ejecutadoSinMedir || t.tu_real!=null); }
+
+// tt_real esta en todos los tickets medidos del backup, pero si faltara se recalcula igual que
+// en el resto de la app.
+function dashTTReal(t){ return t.tt_real!=null ? t.tt_real : (t.n*t.tu_real/60); }
+
+function dashMedidos(r){
+  return historial.filter(t=>t.tu_real!=null && dashEnRango(t,r) && dashPasaFiltro(t));
+}
+function dashPlan(r){
+  return historial.filter(t=>dashEnRango(t,r) && dashPasaFiltro(t) && dashCuentaPlan(t));
+}
+
+function dashKPIs(r){
+  const med = dashMedidos(r), plan = dashPlan(r);
+  const hplanMed = med.reduce((s,t)=>s+(t.tt||0),0);
+  const hreal    = med.reduce((s,t)=>s+dashTTReal(t),0);
+  const hplanTot = plan.reduce((s,t)=>s+(t.tt||0),0);
+  const resueltos = plan.filter(dashResuelto).length;
+  return {
+    nMed: med.length, nPlan: plan.length, resueltos,
+    hplanMed, hplanTot, hreal,
+    desv: med.length ? hreal-hplanMed : null,
+    efic: hreal>0 ? hplanMed/hreal*100 : null,
+    cumpl: plan.length ? resueltos/plan.length*100 : null
+  };
+}
+
+// ----- Por area -------------------------------------------------------------------------
+// carga y cumplimiento salen del universo de plan; plan/real y eficiencia del de medicion.
+function dashPorArea(r){
+  const M = {};
+  const tocar = a => (M[a] = M[a] || {area:a, planMed:0, real:0, nMed:0, carga:0, nPlan:0, resueltos:0, difs:[]});
+  ORDEN_AREAS_GLOBAL.forEach(tocar);
+  dashMedidos(r).forEach(t=>{
+    const a = getAreaEjecucion(t); tocar(a);
+    M[a].planMed += (t.tt||0); M[a].real += dashTTReal(t); M[a].nMed++;
+    M[a].difs.push(t.tu_real-t.tu);
+  });
+  dashPlan(r).forEach(t=>{
+    const a = getAreaEjecucion(t); tocar(a);
+    M[a].carga += (t.tt||0); M[a].nPlan++; if(dashResuelto(t)) M[a].resueltos++;
+  });
+  return Object.values(M).filter(x=>x.nPlan||x.nMed).map(x=>{
+    x.efic  = x.real>0 ? x.planMed/x.real*100 : null;
+    x.desv  = x.nMed ? x.real-x.planMed : null;
+    x.cumpl = x.nPlan ? x.resueltos/x.nPlan*100 : null;
+    return x;
+  }).sort((a,b)=>getAreaIndex(a.area)-getAreaIndex(b.area));
+}
+
+// ----- Capacidad ------------------------------------------------------------------------
+// Mismas tres reglas que plantillaDelDia, pero acumuladas por area y por rango:
+//   operario productivo  capacidad fija salvo ausencia registrada
+//   practicante          solo el dia que tuvo tareo, y ese dia entero
+//   coordinador          nunca
+//
+// Punto ciego que hay que tener presente al leer el numero: la CAPACIDAD se cuenta por el area
+// base del trabajador y la CARGA por el area donde ocurrio el trabajo. Cuando alguien de
+// Ensamble hace una operacion de Acabado, la carga cae en Acabado y la capacidad sigue en
+// Ensamble. No es un error de cuenta: es la senal de que Acabado se sostiene con gente prestada.
+function dashDiasHabiles(r){
+  const out=[]; const d=new Date(r.desde); let guarda=0;
+  while(d<=r.hasta && guarda++<400){
+    if(d.getDay()!==0) out.push(d.toLocaleDateString('es-PE'));
+    d.setDate(d.getDate()+1);
+  }
+  return out;
+}
+
+function dashCapacidades(r){
+  const dias = dashDiasHabiles(r);
+  const cap = {};
+  ORDEN_AREAS_GLOBAL.forEach(a=>cap[a]=0);
+  const ops  = getOperariosProductivos();
+  const prac = trabajadores.filter(ES_PRACTICANTE);
+  dias.forEach(f=>{
+    const ausentes = new Set(getAusenciasDelDia(f).map(a=>a.trabajador));
+    const j = jornadaProductiva(f);
+    ops.forEach(w=>{ if(!ausentes.has(w.nombre)) cap[w.area]=(cap[w.area]||0)+j; });
+    if(prac.length){
+      const conTareo = new Set(historial.filter(t=>t.visibleTareo!==false && t.fechaEjecucion===f)
+                                        .flatMap(t=>t.nombres||[]));
+      prac.forEach(w=>{ if(!ausentes.has(w.nombre) && conTareo.has(w.nombre)) cap[w.area]=(cap[w.area]||0)+j; });
+    }
+  });
+  return {cap, dias};
+}
+
+function dashEstadoCarga(pct){
+  if(pct===null) return {cls:'nd', etq:'sin dato'};
+  if(pct>DASH_UMBRALES.cargaSobre) return {cls:'crit', etq:'sobrecapacidad'};
+  if(pct>=DASH_UMBRALES.cargaAlta) return {cls:'warn', etq:'utilizaci\u00f3n alta'};
+  if(pct>=DASH_UMBRALES.cargaBaja) return {cls:'ok',   etq:'saludable'};
+  return {cls:'info', etq:'capacidad libre'};
+}
+
+// ----- Agrupacion por operacion ----------------------------------------------------------
+// La clave es la operacion del catalogo. Cuando el ticket no la trae — 75 de 247 en el backup —
+// se agrupa por el texto de la tarea, que es texto libre y agrupa peor. Se marca como tal en
+// pantalla en vez de disimularlo.
+function dashClave(t){
+  if(t.operacion) return {k:'op'+t.operacion, etq:t.operacion, cat:true};
+  const ta = String(t.tarea||'—').trim();
+  return {k:'ta'+ta.toUpperCase(), etq:ta, cat:false};
+}
+
+function dashGrupos(r){
+  const G = {};
+  dashMedidos(r).forEach(t=>{
+    const c = dashClave(t);
+    const g = G[c.k] = G[c.k] || {clave:c.k, etq:c.etq, cat:c.cat, n:0, hplan:0, hreal:0,
+                                  sumTu:0, sumTuReal:0, pos:0, neg:0, areas:{}};
+    g.n++; g.hplan += (t.tt||0); g.hreal += dashTTReal(t);
+    g.sumTu += t.tu; g.sumTuReal += t.tu_real;
+    const d = t.tu_real - t.tu;
+    if(d>0) g.pos++; else if(d<0) g.neg++;
+    const a = getAreaEjecucion(t); g.areas[a] = (g.areas[a]||0)+1;
+  });
+  return Object.values(G).map(g=>{
+    g.horas = g.hreal - g.hplan;
+    g.tuPlan = g.sumTu/g.n;
+    g.tuReal = g.sumTuReal/g.n;
+    g.difTu  = g.tuReal - g.tuPlan;
+    g.pct    = g.tuPlan>0 ? (g.tuReal/g.tuPlan-1)*100 : 0;
+    g.consistencia = Math.max(g.pos,g.neg)/g.n;
+    g.area = Object.entries(g.areas).sort((a,b)=>b[1]-a[1])[0][0];
+    return g;
+  });
+}
+
+// Estandar sospechoso: muchas ejecuciones, desviacion media grande Y casi todas en el mismo
+// sentido. Las tres condiciones juntas son lo que separa un estandar mal calibrado de un dia
+// malo. Un solo ticket de 3 horas no mueve nada aqui.
+function dashEstandares(grupos){
+  const min = DASH_UMBRALES.minEjecuciones;
+  const conMuestra = grupos.filter(g=>g.n>=min);
+  const sospechosos = conMuestra.filter(g=>
+    Math.abs(g.pct)>=DASH_UMBRALES.desvEstandarPct && g.consistencia>=DASH_UMBRALES.consistencia
+  ).sort((a,b)=>Math.abs(b.pct)-Math.abs(a.pct));
+  return {sospechosos, conMuestra: conMuestra.length, total: grupos.length, min};
+}
+
+// Pareto: ordena por HORAS perdidas, no por minutos de t.u. Una operacion que desvia 5' pero se
+// repite 200 veces cuesta mas que una que desvia 180' una sola vez, y es la primera la que hay
+// que ir a mirar.
+function dashPareto(grupos){
+  const sobre = grupos.filter(g=>g.horas>0).sort((a,b)=>b.horas-a.horas);
+  const total = sobre.reduce((s,g)=>s+g.horas,0);
+  let acum = 0;
+  return {filas: sobre.map(g=>{ acum+=g.horas; return {g, acum, pctAcum: total>0?acum/total*100:0}; }), total};
+}
+
+// ----- Serie diaria ----------------------------------------------------------------------
+// Los dias sin actividad quedan en null: hueco en la linea, no un cero que arrastraria el
+// promedio hacia abajo e inventaria una caida que no ocurrio.
+function dashSerieDiaria(r){
+  const dias = dashDiasHabiles(r);
+  const idx = {};
+  dias.forEach(f=>idx[f]={f, hplan:0, hreal:0, nPlan:0, resueltos:0});
+  dashMedidos(r).forEach(t=>{
+    const d = idx[t.fechaEjecucion||t.fecha];
+    if(d){ d.hplan += (t.tt||0); d.hreal += dashTTReal(t); }
+  });
+  dashPlan(r).forEach(t=>{
+    const d = idx[t.fechaEjecucion||t.fecha];
+    if(d){ d.nPlan++; if(dashResuelto(t)) d.resueltos++; }
+  });
+  return dias.map(f=>{
+    const d = idx[f];
+    return {f, efic: d.hreal>0 ? d.hplan/d.hreal*100 : null,
+               cumpl: d.nPlan ? d.resueltos/d.nPlan*100 : null, nPlan:d.nPlan};
+  });
+}
+
+// Recta de minimos cuadrados sobre los puntos que existen. Solo se dibuja con 7 o mas: con
+// menos, la "tendencia" es ruido con aspecto de conclusion.
+function dashTendencia(serie, campo){
+  const pts = serie.map((p,i)=>({x:i, y:p[campo]})).filter(p=>p.y!=null);
+  if(pts.length<7) return null;
+  const n = pts.length;
+  const sx = pts.reduce((s,p)=>s+p.x,0), sy = pts.reduce((s,p)=>s+p.y,0);
+  const sxy = pts.reduce((s,p)=>s+p.x*p.y,0), sxx = pts.reduce((s,p)=>s+p.x*p.x,0);
+  const den = n*sxx - sx*sx;
+  if(!den) return null;
+  const m = (n*sxy - sx*sy)/den, b = (sy - m*sx)/n;
+  return {m, b, n, desde: b, hasta: m*(serie.length-1)+b};
+}
+// ----- Utilidades de dibujo --------------------------------------------------------------
+const DASH_AREA_VAR = {
+  'HABILITADO':'--ar-habilitado', 'ENSAMBLE':'--ar-ensamble', 'FIERRO':'--ar-fierro',
+  'PINTURA DE FIERRO':'--ar-pintura', 'EVA':'--ar-eva', 'ACABADO':'--ar-acabado',
+  'MANTENIMIENTO':'--ar-mant', 'PROD-ADMIN':'--ar-prod'
+};
+function dashColorArea(a){ return 'var(' + (DASH_AREA_VAR[a]||'--ar-mant') + ')'; }
+// "3 operacion"+"es" da "operaciónes". El plural va entero o no va.
+function plural(n, sing, plu){ return n + ' ' + (n===1 ? sing : plu); }
+function dashH(n){ return (Math.round(n*10)/10).toFixed(1)+' h'; }
+function dashPct(n){ return n==null ? '\u2014' : Math.round(n)+'%'; }
+function dashMin(n){ return (n>0?'+':'')+Math.round(n)+"'"; }
+// invertir=true para las metricas donde subir es malo: en la desviacion, -11 h es una mejora,
+// y pintarla de rojo por llevar signo menos seria exactamente al reves de lo que pasa.
+function dashDelta(act, prev, unidad, invertir){
+  if(act==null||prev==null) return '<span class="dsh-delta nd">sin comparaci\u00f3n</span>';
+  const d = act-prev;
+  if(Math.abs(d)<0.5) return '<span class="dsh-delta nd">igual que el periodo anterior</span>';
+  const bueno = invertir ? d<0 : d>0;
+  const cls = bueno ? 'up' : 'down';
+  return '<span class="dsh-delta '+cls+'">'+(d>0?'\u25b2 +':'\u25bc ')+(Math.round(d*10)/10)+(unidad||'')+
+         ' vs periodo anterior</span>';
+}
+
+// ----- SECCION 1 — KPI -------------------------------------------------------------------
+function dashKPIHTML(r){
+  const k = dashKPIs(r);
+  const p = dashKPIs(dashRangoPrevio(r));
+  const efCls = k.efic==null ? '' : (k.efic>=100 ? 'ok' : k.efic>=85 ? 'warn' : 'crit');
+  const cuCls = k.cumpl==null ? '' : (k.cumpl>=90 ? 'ok' : k.cumpl>=75 ? 'warn' : 'crit');
+  const dvCls = k.desv==null ? '' : (k.desv>0.5 ? 'crit' : k.desv<-0.5 ? 'ok' : '');
+  const tile = (lab, val, cls, expl, delta) =>
+    '<div class="dsh-kpi '+(cls||'')+'">'+
+      '<div class="dsh-kpi-lab">'+lab+'</div>'+
+      '<div class="dsh-kpi-val">'+val+'</div>'+
+      '<div class="dsh-kpi-exp">'+expl+'</div>'+
+      (delta||'')+
+    '</div>';
+  return '<div class="dsh-kpis">'+
+    tile('Cumplimiento', dashPct(k.cumpl), cuCls,
+         k.resueltos+' de '+k.nPlan+' tickets planificados quedaron resueltos',
+         dashDelta(k.cumpl, p.cumpl, '%')) +
+    tile('Eficiencia', dashPct(k.efic), efCls,
+         'plan / real sobre los '+k.nMed+' tickets medidos. >100% = m\u00e1s r\u00e1pido que el est\u00e1ndar',
+         dashDelta(k.efic, p.efic, '%')) +
+    tile('Horas planificadas', dashH(k.hplanTot), '',
+         'de ellas '+dashH(k.hplanMed)+' tienen medici\u00f3n', '') +
+    tile('Horas reales', dashH(k.hreal), '',
+         'cronometradas sobre '+k.nMed+' tickets', '') +
+    tile('Desviaci\u00f3n', k.desv==null?'\u2014':(k.desv>0?'+':'')+dashH(k.desv).replace(' h','')+' h', dvCls,
+         'real menos plan, sobre las '+dashH(k.hplanMed)+' medidas',
+         dashDelta(k.desv, p.desv, ' h', true)) +
+  '</div>';
+}
+
+// ----- SECCION 2 — Plan vs real por area -------------------------------------------------
+function dashAreasBarrasHTML(areas){
+  const con = areas.filter(a=>a.nMed>0);
+  if(!con.length) return '<div class="dsh-nd">Ning\u00fan ticket del rango tiene tiempo medido, as\u00ed que no hay real contra el que comparar.</div>';
+  const max = Math.max.apply(null, con.map(a=>Math.max(a.planMed, a.real)));
+  return '<div class="dsh-barras">'+ con.map(a=>{
+    const wp = max>0 ? a.planMed/max*100 : 0, wr = max>0 ? a.real/max*100 : 0;
+    const dif = a.real-a.planMed;
+    const tip = a.area+' \u2014 plan '+dashH(a.planMed)+' \u00b7 real '+dashH(a.real)+
+                ' \u00b7 diferencia '+(dif>0?'+':'')+dashH(dif)+' \u00b7 eficiencia '+dashPct(a.efic);
+    return '<div class="dsh-barrow" title="'+escapeHtml(tip)+'" onclick="dashFiltrarArea(\''+
+             escapeHtml(a.area)+'\')" tabindex="0">'+
+      '<div class="dsh-barlab">'+escapeHtml(a.area)+'</div>'+
+      '<div class="dsh-barpair">'+
+        '<div class="dsh-bar plan" style="width:'+wp.toFixed(1)+'%"></div>'+
+        '<div class="dsh-bar real" style="width:'+wr.toFixed(1)+'%;background:'+dashColorArea(a.area)+'"></div>'+
+      '</div>'+
+      '<div class="dsh-barfig"><b class="num">'+dashPct(a.efic)+'</b><span>'+
+         (dif>0?'+':'')+(Math.round(dif*10)/10)+' h</span></div>'+
+    '</div>';
+  }).join('') + '</div>' +
+  '<div class="dsh-leyenda"><span class="sw plan"></span>plan (gris, arriba) &nbsp; '+
+  '<span class="sw real"></span>real (color del \u00e1rea, abajo)'+
+  ' &nbsp;&nbsp;<span class="dsh-nota">clic en un \u00e1rea para filtrar todo el tablero por ella</span></div>';
+}
+
+// ----- SECCION 3 — Tendencia -------------------------------------------------------------
+// SVG a mano. Los tramos se cortan donde no hay dato: una linea que salta por encima de un dia
+// sin tareo estaria dibujando una continuidad que no existe.
+function dashLineasSVG(serie, opciones){
+  const W=760, H=210, mL=38, mR=14, mT=14, mB=26;
+  const n = serie.length;
+  if(!n) return '<div class="dsh-nd">Sin d\u00edas en el rango.</div>';
+  const vals = [].concat.apply([], opciones.series.map(s=>serie.map(p=>p[s.campo]).filter(v=>v!=null)));
+  if(!vals.length) return '<div class="dsh-nd">No hay ning\u00fan dia con datos en este rango.</div>';
+  let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+  lo = Math.min(lo, 60); hi = Math.max(hi, 120);
+  lo = Math.floor(lo/20)*20; hi = Math.ceil(hi/20)*20;
+  const x = i => mL + (n<=1 ? (W-mL-mR)/2 : i*(W-mL-mR)/(n-1));
+  const y = v => mT + (hi===lo ? (H-mT-mB)/2 : (hi-v)/(hi-lo)*(H-mT-mB));
+  let s = '<svg class="dsh-svg" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" role="img">';
+  // rejilla
+  for(let v=lo; v<=hi; v+=20){
+    const yy = y(v);
+    s += '<line x1="'+mL+'" y1="'+yy.toFixed(1)+'" x2="'+(W-mR)+'" y2="'+yy.toFixed(1)+
+         '" class="dsh-grid'+(v===100?' cien':'')+'"/>'+
+         '<text x="'+(mL-6)+'" y="'+(yy+3.5).toFixed(1)+'" class="dsh-axis" text-anchor="end">'+v+'%</text>';
+  }
+  // series, cortadas en los huecos
+  opciones.series.forEach(se=>{
+    let seg = [];
+    const cerrar = () => {
+      if(seg.length===1) s += '<circle cx="'+seg[0][0].toFixed(1)+'" cy="'+seg[0][1].toFixed(1)+
+                              '" r="2.6" fill="'+se.color+'"/>';
+      else if(seg.length>1) s += '<polyline points="'+seg.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ')+
+                                 '" fill="none" stroke="'+se.color+'" stroke-width="2" stroke-linejoin="round"/>';
+      seg = [];
+    };
+    serie.forEach((p,i)=>{ if(p[se.campo]==null) cerrar(); else seg.push([x(i), y(p[se.campo])]); });
+    cerrar();
+    serie.forEach((p,i)=>{
+      if(p[se.campo]==null) return;
+      s += '<circle cx="'+x(i).toFixed(1)+'" cy="'+y(p[se.campo]).toFixed(1)+'" r="2.4" fill="'+se.color+'">'+
+           '<title>'+escapeHtml(p.f+' \u2014 '+se.etq+': '+Math.round(p[se.campo])+'%')+'</title></circle>';
+    });
+    if(opciones.tendencia){
+      const tr = dashTendencia(serie, se.campo);
+      if(tr) s += '<line x1="'+x(0).toFixed(1)+'" y1="'+y(tr.desde).toFixed(1)+'" x2="'+x(n-1).toFixed(1)+
+                  '" y2="'+y(tr.hasta).toFixed(1)+'" stroke="'+se.color+
+                  '" stroke-width="1.2" stroke-dasharray="5 4" opacity=".55"><title>'+
+                  escapeHtml('Tendencia de '+se.etq+' sobre '+tr.n+' d\u00edas con datos')+'</title></line>';
+    }
+  });
+  // eje x: primero, ultimo y algunos del medio
+  const paso = Math.max(1, Math.ceil(n/9));
+  serie.forEach((p,i)=>{
+    if(i%paso && i!==n-1) return;
+    s += '<text x="'+x(i).toFixed(1)+'" y="'+(H-8)+'" class="dsh-axis" text-anchor="middle">'+
+         escapeHtml(p.f.split('/').slice(0,2).join('/'))+'</text>';
+  });
+  return s+'</svg>';
+}
+
+function dashTendenciaHTML(r){
+  const serie = dashSerieDiaria(r);
+  const conDatos = serie.filter(p=>p.efic!=null||p.cumpl!=null).length;
+  const svg = dashLineasSVG(serie, {tendencia:true, series:[
+    {campo:'efic',  etq:'Eficiencia',   color:'var(--mt-verde)'},
+    {campo:'cumpl', etq:'Cumplimiento', color:'var(--info-fuerte)'}
+  ]});
+  return svg +
+    '<div class="dsh-leyenda"><span class="sw" style="background:var(--mt-verde)"></span>eficiencia'+
+    ' &nbsp; <span class="sw" style="background:var(--info-fuerte)"></span>cumplimiento'+
+    ' &nbsp;&nbsp;<span class="dsh-nota">'+conDatos+' de '+serie.length+
+    ' d\u00edas h\u00e1biles del rango tienen datos. Los dem\u00e1s quedan como hueco, no como cero.'+
+    (conDatos<7?' Con menos de 7 d\u00edas no se dibuja l\u00ednea de tendencia: ser\u00eda ruido con forma de conclusi\u00f3n.':'')+
+    '</span></div>';
+}
+
+// ----- SECCION 4 — Carga vs capacidad ----------------------------------------------------
+function dashCargaHTML(r, areas){
+  if(dashFiltro.trabajador){
+    return '<div class="dsh-nd">Con un trabajador filtrado la capacidad del \u00e1rea no significa nada '+
+           '(la carga ser\u00eda de una persona y la capacidad de todo el \u00e1rea). Quita el filtro de '+
+           'trabajador para ver este bloque.</div>';
+  }
+  const {cap, dias} = dashCapacidades(r);
+  const filas = areas.filter(a=>a.carga>0 || cap[a.area]>0);
+  if(!filas.length) return '<div class="dsh-nd">Sin carga ni capacidad en el rango.</div>';
+  const maxPct = Math.max(120, Math.max.apply(null, filas.map(a=>cap[a.area]>0?a.carga/cap[a.area]*100:0)));
+  return '<div class="dsh-carga">'+ filas.map(a=>{
+    const c = cap[a.area]||0;
+    const pct = c>0 ? a.carga/c*100 : null;
+    const st = dashEstadoCarga(pct);
+    const tip = a.area+' \u2014 carga '+dashH(a.carga)+' \u00b7 capacidad '+dashH(c)+
+                ' \u00b7 '+(pct==null?'sin capacidad registrada':(Math.round(pct)+'% \u00b7 '+st.etq)) +
+                (pct!=null && pct>100 ? ' \u00b7 faltan '+dashH(a.carga-c) : (pct!=null?' \u00b7 libres '+dashH(c-a.carga):''));
+    return '<div class="dsh-cargarow '+st.cls+'" title="'+escapeHtml(tip)+'" onclick="dashFiltrarArea(\''+
+             escapeHtml(a.area)+'\')" tabindex="0">'+
+      '<div class="dsh-barlab">'+escapeHtml(a.area)+'</div>'+
+      '<div class="dsh-cargapista"><div class="dsh-cargabar" style="width:'+
+        (pct==null?0:Math.min(100, pct/maxPct*100)).toFixed(1)+'%"></div>'+
+        '<div class="dsh-carga100" style="left:'+(100/maxPct*100).toFixed(1)+'%"></div></div>'+
+      '<div class="dsh-barfig"><b class="num">'+dashPct(pct)+'</b><span>'+
+        (Math.round(a.carga*10)/10)+' / '+(Math.round(c*10)/10)+' h</span></div>'+
+    '</div>';
+  }).join('') + '</div>' +
+  '<div class="dsh-nota">Capacidad = operarios del \u00e1rea, menos ausencias, por jornada, sobre los '+
+  dias.length+' d\u00edas h\u00e1biles del rango. Practicantes solo los d\u00edas con tareo; coordinadores nunca. '+
+  'La l\u00ednea vertical marca el 100%.<br>Umbrales en uso, editables en <code>DASH_UMBRALES</code>: '+
+  'menos de '+DASH_UMBRALES.cargaBaja+'% capacidad libre \u00b7 '+DASH_UMBRALES.cargaBaja+'\u2013'+
+  DASH_UMBRALES.cargaAlta+'% saludable \u00b7 '+DASH_UMBRALES.cargaAlta+'\u2013'+DASH_UMBRALES.cargaSobre+
+  '% utilizaci\u00f3n alta \u00b7 m\u00e1s de '+DASH_UMBRALES.cargaSobre+'% sobrecapacidad. '+
+  'Son un criterio inicial, no una verdad.<br>La capacidad se cuenta por el \u00e1rea base del '+
+  'trabajador y la carga por el \u00e1rea donde ocurri\u00f3 el trabajo: un \u00e1rea por encima del 100% '+
+  'puede estar sosteniendose con gente prestada de otra.</div>';
+}
+
+// ----- SECCION 5 — Pareto ----------------------------------------------------------------
+// Un eje con 7.9h / 5.9h / 3.9h no se lee: los cortes tienen que caer en numeros redondos.
+function dashEscalon(max){
+  if(!(max>0)) return 1;
+  const bruto = max/4;
+  const pot = Math.pow(10, Math.floor(Math.log10(bruto)));
+  const norm = bruto/pot;
+  const paso = norm<=1 ? 1 : norm<=2 ? 2 : norm<=2.5 ? 2.5 : norm<=5 ? 5 : 10;
+  return paso*pot;
+}
+
+function dashParetoHTML(grupos){
+  const P = dashPareto(grupos);
+  if(!P.filas.length) return '<div class="dsh-nd">Ninguna operaci\u00f3n del rango termin\u00f3 por encima de su plan.</div>';
+  const filas = P.filas.slice(0,12);
+  const max = filas[0].g.horas;
+  // Pareto vertical, que es la forma canonica: barras de mayor a menor y la curva acumulada
+  // subiendo por encima con su propio eje a la derecha. La primera version dibujaba la curva
+  // atravesando las barras horizontales y se comia las etiquetas.
+  const W=760, H=340, mL=46, mR=46, mT=16, mB=104;
+  const n = filas.length;
+  const paso = (W-mL-mR)/n;
+  const bw = Math.min(46, paso*0.62);
+  const cx = k => mL + paso*(k+0.5);
+  const y  = v => mT + (1 - v/max)*(H-mT-mB);
+  const yp = v => mT + (1 - v/100)*(H-mT-mB);
+  // El viewBox arranca en -78 para dejarle sitio a las etiquetas giradas de la primera barra,
+  // que si no se salen por la izquierda del grafico.
+  let s = '<svg class="dsh-svg" viewBox="-78 0 '+(W+78)+' '+H+'" role="img">';
+  const escalon = dashEscalon(max);
+  for(let v=0; v<=max+escalon*0.01; v+=escalon){
+    const yy = y(v);
+    s += '<line x1="'+mL+'" y1="'+yy.toFixed(1)+'" x2="'+(W-mR)+'" y2="'+yy.toFixed(1)+'" class="dsh-grid"/>'+
+         '<text x="'+(mL-6)+'" y="'+(yy+3.5).toFixed(1)+'" class="dsh-axis" text-anchor="end">'+
+           (Math.round(v*10)/10)+' h</text>';
+  }
+  for(let k=0;k<=4;k++){
+    s += '<text x="'+(W-mR+6)+'" y="'+(yp(k*25)+3.5).toFixed(1)+'" class="dsh-axis">'+(k*25)+'%</text>';
+  }
+  // el 80% acumulado, que es la linea que de verdad se lee en un Pareto
+  s += '<line x1="'+mL+'" y1="'+yp(80).toFixed(1)+'" x2="'+(W-mR)+'" y2="'+yp(80).toFixed(1)+
+       '" stroke="var(--crit)" stroke-width="1" stroke-dasharray="3 3" opacity=".45"><title>80% acumulado</title></line>';
+  filas.forEach((f,k)=>{
+    const tip = f.g.etq+' \u2014 '+plural(f.g.n,'ejecuci\u00f3n','ejecuciones')+' \u00b7 '+
+                dashH(f.g.horas)+' por encima del plan \u00b7 t.u. plan '+Math.round(f.g.tuPlan)+
+                "' vs real "+Math.round(f.g.tuReal)+"' ("+dashMin(f.g.difTu)+') \u00b7 acumulado '+
+                Math.round(f.pctAcum)+'%'+(f.g.cat?'':' \u00b7 agrupado por texto de tarea');
+    const yy = y(f.g.horas);
+    s += '<g><title>'+escapeHtml(tip)+'</title>'+
+      '<rect x="'+(cx(k)-bw/2).toFixed(1)+'" y="'+yy.toFixed(1)+'" width="'+bw.toFixed(1)+
+        '" height="'+(y(0)-yy).toFixed(1)+'" rx="3" fill="'+dashColorArea(f.g.area)+'" opacity=".88"/>'+
+      '<text x="'+cx(k).toFixed(1)+'" y="'+(yy-4).toFixed(1)+'" class="dsh-axis" text-anchor="middle">'+
+        (Math.round(f.g.horas*10)/10)+'</text>'+
+      '<text x="'+cx(k).toFixed(1)+'" y="'+(y(0)+11)+'" class="dsh-axis dsh-rot" text-anchor="end" '+
+        'transform="rotate(-38 '+cx(k).toFixed(1)+' '+(y(0)+11)+')">'+
+        escapeHtml(f.g.etq.length>22 ? f.g.etq.slice(0,21)+'\u2026' : f.g.etq)+'</text></g>';
+  });
+  const pts = filas.map((f,k)=>[cx(k), yp(f.pctAcum)]);
+  s += '<polyline points="'+pts.map(q=>q[0].toFixed(1)+','+q[1].toFixed(1)).join(' ')+
+       '" fill="none" stroke="var(--crit)" stroke-width="1.6"/>';
+  pts.forEach((q,k)=>{
+    s += '<circle cx="'+q[0].toFixed(1)+'" cy="'+q[1].toFixed(1)+'" r="2.8" fill="var(--crit)"><title>'+
+         escapeHtml('acumulado '+Math.round(filas[k].pctAcum)+'% \u2014 '+filas[k].g.etq)+'</title></circle>';
+  });
+  s += '<text x="'+(W-mR+6)+'" y="'+(mT-4)+'" class="dsh-axis">acum.</text></svg>';
+  const n80 = P.filas.findIndex(f=>f.pctAcum>=80)+1;
+  return s + '<div class="dsh-nota">Ordenado por HORAS por encima del plan, no por minutos de t.u.: '+
+    'una operaci\u00f3n que desv\u00eda 5\u2032 pero se repite 200 veces cuesta m\u00e1s que una que '+
+    'desv\u00eda 180\u2032 una sola vez. La curva roja es el acumulado (eje derecho) y la punteada '+
+    'marca el 80%.<br>'+
+    (P.filas.length>filas.length ? 'Se dibujan las '+filas.length+' primeras de '+P.filas.length+'. ' : '')+
+    (n80>0 ? '<b>'+plural(n80,'operaci\u00f3n','operaciones')+' '+(n80===1?'explica':'explican')+' el 80% de las '+
+             dashH(P.total)+' perdidas del rango.</b>'
+           : '')+
+    '</div>' + dashBajoPlanHTML(grupos);
+}
+
+// Las que terminan por debajo del plan van aparte, no mezcladas: son informacion distinta
+// (probablemente estandar alto), y meterlas en el mismo grafico taparia las que cuestan.
+function dashBajoPlanHTML(grupos){
+  const bajo = grupos.filter(g=>g.horas<0).sort((a,b)=>a.horas-b.horas).slice(0,5);
+  if(!bajo.length) return '';
+  return '<details class="dsh-det"><summary>'+bajo.length+' operaciones terminaron por DEBAJO del plan'+
+    ' \u2014 sumar '+dashH(Math.abs(bajo.reduce((s,g)=>s+g.horas,0)))+' de holgura</summary>'+
+    '<table class="dsh-tabla"><thead><tr><th>Operaci\u00f3n</th><th>Ejec.</th><th>t.u. plan</th>'+
+    '<th>t.u. real</th><th>Horas</th></tr></thead><tbody>'+
+    bajo.map(g=>'<tr><td>'+escapeHtml(g.etq)+'</td><td class="c num">'+g.n+'</td><td class="c num">'+
+      Math.round(g.tuPlan)+"'</td><td class=\"c num\">"+Math.round(g.tuReal)+"'</td><td class=\"c num ok\">"+
+      (Math.round(g.horas*10)/10)+' h</td></tr>').join('')+
+    '</tbody></table></details>';
+}
+
+// ----- SECCION 6 — Requiere atencion -----------------------------------------------------
+// Reglas anti-ruido, porque si todo aparece en rojo nada es importante:
+//   - un area solo alerta con al menos minTicketsArea tickets y capacidad registrada
+//   - una operacion solo alerta con 2 o mas ejecuciones y al menos horasPerdidasMin perdidas
+//   - un estandar solo alerta con minEjecuciones mediciones Y consistencia de signo
+//   - lo que ya detecta calcularAtencion entra filtrado a severidad 2 o mas
+//   - se agrupa por tipo: una tarjeta por familia, nunca una por caso
+function dashAlertas(r, areas, grupos){
+  const A = [];
+  if(!dashFiltro.trabajador){
+    const {cap} = dashCapacidades(r);
+    const sobre = areas.filter(a=>a.nPlan>=DASH_UMBRALES.minTicketsArea && cap[a.area]>0 &&
+                                  a.carga/cap[a.area]*100 > DASH_UMBRALES.cargaSobre)
+                       .sort((a,b)=>(b.carga/cap[b.area])-(a.carga/cap[a.area]));
+    if(sobre.length) A.push({sev:3, txt:plural(sobre.length,'\u00e1rea','\u00e1reas')+' por encima de su capacidad',
+      det: sobre.map(a=>a.area+' '+Math.round(a.carga/cap[a.area]*100)+'%').join(' \u00b7 '),
+      accion:'dashFiltrarArea(\''+escapeHtml(sobre[0].area)+'\')'});
+  }
+  const desv = grupos.filter(g=>g.n>=2 && g.horas>=DASH_UMBRALES.horasPerdidasMin)
+                     .sort((a,b)=>b.horas-a.horas);
+  if(desv.length) A.push({sev:2, txt:plural(desv.length,'operaci\u00f3n','operaciones')+
+    ' consumen m\u00e1s tiempo del planificado', det:'Encabeza '+desv[0].etq+' con '+dashH(desv[0].horas)+
+    ' de m\u00e1s sobre '+desv[0].n+' ejecuciones. Total '+dashH(desv.reduce((s,g)=>s+g.horas,0))+'.',
+    accion:'dashScroll(\'dsh-pareto\')'});
+  const E = dashEstandares(grupos);
+  if(E.sospechosos.length) A.push({sev:1,
+    txt: plural(E.sospechosos.length,'est\u00e1ndar','est\u00e1ndares')+' posiblemente '+
+         (E.sospechosos.length===1?'desactualizado':'desactualizados'),
+    det: E.sospechosos.slice(0,3).map(g=>g.etq+' '+(g.pct>0?'+':'')+Math.round(g.pct)+'%').join(' \u00b7 '),
+    accion:'dashScroll(\'dsh-estandares\')'});
+  const med = dashMedidos(r), plan = dashPlan(r);
+  const sinMedir = plan.filter(t=>!t.noEjecutado && t.tu_real==null && !t.ejecutadoSinMedir);
+  if(plan.length>=10 && sinMedir.length/plan.length>0.25) A.push({sev:2,
+    txt: sinMedir.length+' tickets del rango siguen sin tiempo medido',
+    det:'Es el '+Math.round(sinMedir.length/plan.length*100)+'% de lo planificado. Sin medici\u00f3n no '+
+        'alimentan el est\u00e1ndar y la eficiencia se calcula sobre menos muestra de la que parece.',
+    accion:'showPage(\'atencion\')'});
+  // Lo que ya sabe la app. Se reutiliza calcularAtencion, no se duplica su logica.
+  let base = [];
+  try { base = calcularAtencion()||[]; } catch(e) { base = []; }
+  window._alertasAtencion = base;
+  base.filter(a=>a.sev>=3).slice(0,3).forEach((a,i)=>{
+    A.push({sev:3, txt:a.titulo, det:a.detalle, accion:'irAlerta('+base.indexOf(a)+')'});
+  });
+  return A.sort((a,b)=>b.sev-a.sev).slice(0,6);
+}
+
+function dashAtencionHTML(r, areas, grupos){
+  const A = dashAlertas(r, areas, grupos);
+  if(!A.length) return '<div class="dsh-limpio"><div class="dsh-limpio-ic">\u2713</div>'+
+    '<div><b>Nada requiere atenci\u00f3n en este rango.</b><div class="dsh-nota">Ninguna \u00e1rea sobre '+
+    'capacidad, ninguna operaci\u00f3n con desviaci\u00f3n sostenida, ning\u00fan est\u00e1ndar con muestra suficiente '+
+    'para sospechar.</div></div></div>';
+  const ico = {3:'\ud83d\udd34', 2:'\ud83d\udfe0', 1:'\ud83d\udfe1'};
+  const cls = {3:'crit', 2:'warn', 1:'info'};
+  return '<div class="dsh-alertas">'+A.map(a=>
+    '<div class="dsh-alerta '+cls[a.sev]+'" onclick="'+a.accion+'" tabindex="0">'+
+      '<div class="dsh-alerta-ic">'+ico[a.sev]+'</div>'+
+      '<div><div class="dsh-alerta-tit">'+escapeHtml(a.txt)+'</div>'+
+      '<div class="dsh-alerta-det">'+escapeHtml(a.det||'')+'</div></div>'+
+    '</div>').join('')+'</div>';
+}
+
+// ----- SECCION 7 — Estado por \u00e1rea ---------------------------------------------------
+// El estado NO se juzga contra un umbral absoluto. Con los datos reales, todas las areas estan
+// por debajo del 75% de cumplimiento, asi que un umbral fijo las pintaba a todas de amarillo —
+// y una pantalla donde todo esta en amarillo no dice nada. Se compara cada area contra la media
+// de la planta: "peor que el resto" es una frase accionable, "por debajo de 75" no lo es.
+//
+// Rojo solo con dos senales a la vez. Un area que va 10 puntos peor en una sola cosa es
+// amarilla; si ademas esta por encima de su capacidad, es roja.
+function dashEstadoArea(a, pctCarga, media){
+  if((a.nPlan||0) < DASH_UMBRALES.minTicketsArea && (a.nMed||0) < DASH_UMBRALES.minTicketsArea)
+    return {cls:'nd', ic:'\u26aa', por:'sin muestra suficiente'};
+  const senales = [];
+  if(a.cumpl!=null && media.cumpl!=null && a.cumpl < media.cumpl - DASH_UMBRALES.brechaPP)
+    senales.push('cumplimiento ' + Math.round(media.cumpl - a.cumpl) + ' puntos bajo la media');
+  if(a.efic!=null && media.efic!=null && a.efic < media.efic - DASH_UMBRALES.brechaPP)
+    senales.push('eficiencia ' + Math.round(media.efic - a.efic) + ' puntos bajo la media');
+  if(pctCarga!=null && pctCarga > DASH_UMBRALES.cargaSobre + 5)
+    senales.push('carga al ' + Math.round(pctCarga) + '%');
+  if(senales.length>=2) return {cls:'crit', ic:'\ud83d\udd34', por:senales.join(' \u00b7 ')};
+  if(senales.length===1) return {cls:'warn', ic:'\ud83d\udfe1', por:senales[0]};
+  return {cls:'ok', ic:'\ud83d\udfe2', por:'en linea con el resto de la planta'};
+}
+
+// La media de la planta, ponderada por volumen: sin ponderar, un area con dos tickets pesaria
+// lo mismo que una con doscientos.
+function dashMediaPlanta(areas){
+  const nPlan = areas.reduce((s,a)=>s+a.nPlan,0), res = areas.reduce((s,a)=>s+a.resueltos,0);
+  const hp = areas.reduce((s,a)=>s+a.planMed,0), hr = areas.reduce((s,a)=>s+a.real,0);
+  return {cumpl: nPlan? res/nPlan*100 : null, efic: hr>0? hp/hr*100 : null};
+}
+
+function dashTablaAreasHTML(r, areas){
+  const cap = dashFiltro.trabajador ? {} : dashCapacidades(r).cap;
+  if(!areas.length) return '<div class="dsh-nd">Sin tickets en el rango.</div>';
+  const media = dashMediaPlanta(areas);
+  return '<div class="dsh-scroll"><table class="dsh-tabla areas"><thead><tr><th>\u00c1rea</th><th class="c">Cumplimiento</th>'+
+    '<th class="c">Eficiencia</th><th class="c">Carga</th><th class="c">Desviaci\u00f3n</th>'+
+    '<th class="c">Estado</th></tr></thead><tbody>'+
+    areas.map(a=>{
+      const c = cap[a.area];
+      const pct = c>0 ? a.carga/c*100 : null;
+      const st = dashEstadoArea(a, pct, media);
+      return '<tr class="'+st.cls+'" onclick="dashFiltrarArea(\''+escapeHtml(a.area)+'\')" tabindex="0">'+
+        '<td><span class="dsh-punto" style="background:'+dashColorArea(a.area)+'"></span>'+
+          escapeHtml(a.area)+'</td>'+
+        '<td class="c num">'+dashPct(a.cumpl)+'</td>'+
+        '<td class="c num">'+dashPct(a.efic)+'</td>'+
+        '<td class="c num">'+(pct==null?'\u2014':Math.round(pct)+'%')+'</td>'+
+        '<td class="c num">'+(a.desv==null?'\u2014':(a.desv>0?'+':'')+(Math.round(a.desv*10)/10)+' h')+'</td>'+
+        '<td class="c" title="'+escapeHtml(st.por)+'">'+st.ic+'</td></tr>';
+    }).join('')+'</tbody></table></div>'+
+    '<div class="dsh-nota">Media de la planta en el rango: cumplimiento <b>'+dashPct(media.cumpl)+
+    '</b>, eficiencia <b>'+dashPct(media.efic)+'</b>. Un \u00e1rea se marca cuando queda '+
+    DASH_UMBRALES.brechaPP+' puntos o m\u00e1s por debajo de esa media, o cuando pasa del '+
+    (DASH_UMBRALES.cargaSobre+5)+'% de carga. Roja solo con dos se\u00f1ales a la vez \u2014 si todo '+
+    'sale rojo, nada es importante. Pasa el cursor por el estado para ver por qu\u00e9. '+
+    'Clic en una fila para filtrar todo el tablero por ese \u00e1rea.</div>';
+}
+
+// ----- SECCION 8 — Estandares ------------------------------------------------------------
+function dashEstandaresHTML(grupos){
+  const E = dashEstandares(grupos);
+  const selector = '<div class="dsh-seg">M\u00ednimo de ejecuciones para opinar: '+
+    [5,10,20].map(n=>'<button class="'+(E.min===n?'on':'')+'" onclick="dashMinEjec('+n+')">'+n+'</button>').join('')+
+    '</div>';
+  const contador = '<div class="dsh-contador"><b class="num">'+E.conMuestra+'</b> de <b class="num">'+
+    E.total+'</b> operaciones del rango llegan a '+E.min+' mediciones. '+
+    'El resto no tiene muestra para juzgar su est\u00e1ndar \u2014 no es que est\u00e9n bien, es que todav\u00eda '+
+    'no se sabe.</div>';
+  if(!E.sospechosos.length){
+    return selector+contador+'<div class="dsh-nd">Con este m\u00ednimo, ninguna operaci\u00f3n presenta una '+
+      'desviaci\u00f3n sostenida (media por encima de '+DASH_UMBRALES.desvEstandarPct+'% y al menos el '+
+      Math.round(DASH_UMBRALES.consistencia*100)+'% de las mediciones en el mismo sentido). '+
+      'Es la respuesta correcta, no un fallo: hace falta m\u00e1s medici\u00f3n.</div>';
+  }
+  return selector+contador+'<div class="dsh-est">'+E.sospechosos.slice(0,10).map(g=>
+    '<div class="dsh-estcard '+(g.pct>0?'crit':'ok')+'">'+
+      '<div class="dsh-estcard-tit">'+escapeHtml(g.etq)+
+        (g.cat?'':' <span class="dsh-chip">agrupado por texto</span>')+'</div>'+
+      '<div class="dsh-estcard-cifras">'+
+        '<div><span>t.u. actual</span><b class="num">'+Math.round(g.tuPlan)+"'</b></div>"+
+        '<div><span>promedio real</span><b class="num">'+Math.round(g.tuReal)+"'</b></div>"+
+        '<div><span>ejecuciones</span><b class="num">'+g.n+'</b></div>'+
+        '<div><span>desviaci\u00f3n</span><b class="num">'+(g.pct>0?'+':'')+Math.round(g.pct)+'%</b></div>'+
+      '</div>'+
+      '<div class="dsh-estcard-pie">\u26a0 Posible revisi\u00f3n de est\u00e1ndar \u2014 '+
+        Math.round(g.consistencia*100)+'% de las mediciones van en el mismo sentido. '+
+        'El est\u00e1ndar NO se cambia solo: esto se marca, se comprueba en planta y se decide.</div>'+
+    '</div>').join('')+'</div>';
+}
+
+// ----- SECCION 9 — Scatter ---------------------------------------------------------------
+// Escala logaritmica en los dos ejes. Los t.u. van de 5' a 500': en lineal todo se apelmaza
+// abajo a la izquierda. En log-log la recta real=plan sigue siendo una diagonal.
+function dashScatterHTML(r){
+  const med = dashMedidos(r).filter(t=>t.tu>0 && t.tu_real>0);
+  if(med.length<3) return '<div class="dsh-nd">Hacen falta al menos 3 mediciones en el rango para que la nube diga algo. Hay '+med.length+'.</div>';
+  const W=760, H=380, m=44;
+  const lg = v=>Math.log10(Math.max(v,1));
+  const todos = [].concat(med.map(t=>t.tu), med.map(t=>t.tu_real));
+  const lo = lg(Math.min.apply(null,todos))-0.08, hi = lg(Math.max.apply(null,todos))+0.08;
+  const x = v => m + (lg(v)-lo)/(hi-lo)*(W-m*1.2);
+  const y = v => H-m - (lg(v)-lo)/(hi-lo)*(H-m*1.4);
+  let s = '<svg class="dsh-svg" viewBox="0 0 '+W+' '+H+'" role="img">';
+  [5,10,15,20,30,45,60,90,120,180,240,360,480,600].filter(v=>lg(v)>=lo&&lg(v)<=hi).forEach(v=>{
+    s += '<line x1="'+x(v).toFixed(1)+'" y1="'+(H-m)+'" x2="'+x(v).toFixed(1)+'" y2="'+(m*0.4)+'" class="dsh-grid"/>'+
+         '<line x1="'+m+'" y1="'+y(v).toFixed(1)+'" x2="'+(W-m*0.2)+'" y2="'+y(v).toFixed(1)+'" class="dsh-grid"/>'+
+         '<text x="'+x(v).toFixed(1)+'" y="'+(H-m+14)+'" class="dsh-axis" text-anchor="middle">'+v+"'</text>"+
+         '<text x="'+(m-6)+'" y="'+(y(v)+3.5).toFixed(1)+'" class="dsh-axis" text-anchor="end">'+v+"'</text>";
+  });
+  const v0 = Math.pow(10,lo), v1 = Math.pow(10,hi);
+  s += '<line x1="'+x(v0).toFixed(1)+'" y1="'+y(v0).toFixed(1)+'" x2="'+x(v1).toFixed(1)+'" y2="'+
+       y(v1).toFixed(1)+'" stroke="var(--text-muted)" stroke-width="1.3" stroke-dasharray="6 4"><title>'+
+       'real = plan</title></line>';
+  med.forEach(t=>{
+    const dif = t.tu_real-t.tu;
+    const col = dif>0 ? 'var(--crit-fuerte)' : dif<0 ? 'var(--ok-fuerte)' : 'var(--text-muted)';
+    const nom = (t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
+    const tip = nom+' \u00b7 '+getAreaEjecucion(t)+'\n'+dashCodProyecto(t)+
+      (t.ofNumero?' \u00b7 OF '+t.ofNumero:'')+'\n'+(t.operacion||t.tarea||'')+'\n'+
+      'plan '+t.tu+"' \u00b7 real "+t.tu_real+"' \u00b7 "+dashMin(dif)+' \u00b7 '+(t.fechaEjecucion||'');
+    s += '<circle cx="'+x(t.tu).toFixed(1)+'" cy="'+y(t.tu_real).toFixed(1)+'" r="4" fill="'+col+
+         '" fill-opacity=".55" stroke="'+col+'" stroke-width="1"><title>'+escapeHtml(tip)+'</title></circle>';
+  });
+  s += '<text x="'+(W/2)+'" y="'+(H-6)+'" class="dsh-axis" text-anchor="middle">t.u. PLAN (escala log)</text>'+
+       '<text x="12" y="'+(H/2)+'" class="dsh-axis" text-anchor="middle" transform="rotate(-90 12 '+(H/2)+')">t.u. REAL</text>'+
+       '</svg>';
+  const arriba = med.filter(t=>t.tu_real>t.tu).length;
+  return s + '<div class="dsh-leyenda"><span class="sw" style="background:var(--crit-fuerte)"></span>'+
+    'por encima de la diagonal: tard\u00f3 m\u00e1s que el plan ('+arriba+') &nbsp; '+
+    '<span class="sw" style="background:var(--ok-fuerte)"></span>por debajo: tard\u00f3 menos ('+
+    (med.length-arriba)+')<div class="dsh-nota">Cada punto es una ejecuci\u00f3n medida. Una nube '+
+    'pegada a la diagonal significa que el est\u00e1ndar predice bien. Un punto muy lejos es un caso a '+
+    'mirar uno por uno; una franja entera desplazada es un problema de est\u00e1ndar, no de la persona.</div></div>';
+}
+
+// ----- Montaje ---------------------------------------------------------------------------
+function dashSeccion(id, titulo, pregunta, cuerpo){
+  return '<section class="card dsh-sec" id="'+id+'">'+
+    '<div class="dsh-sec-cab"><div><div class="card-title">'+titulo+'</div>'+
+    '<div class="dsh-pregunta">'+pregunta+'</div></div></div>'+cuerpo+'</section>';
+}
+
 function renderDashboard(){
-  // El dashboard recorria el historial completo, asi que los tickets quitados del tareo seguian
-  // contando en el % completado, en las horas plan por operario y en la eficiencia. Con el
-  // cierre por motivo el sesgo empeoraba: un ticket cerrado como no ejecutado se contaba como
-  // pendiente. Aqui se mide solo el trabajo vigente, igual que en el resto de las vistas.
-  const activos=historial.filter(t=>t.visibleTareo!==false && !t.noEjecutado);
-  if(!activos.length){
-    document.getElementById('dash-content').innerHTML='<div class="empty"><div class="empty-icon">\ud83d\udcca</div><div>Sin datos a\u00fan. Los registros aparecen aqu\u00ed conforme se generan tareos.</div></div>';
+  const cont = document.getElementById('dash-content');
+  if(!cont) return;
+  poblarFiltrosDash();
+  if(!historial.length){
+    cont.innerHTML = '<div class="empty"><div class="empty-icon">\ud83d\udcca</div><div>Sin datos aun. '+
+      'Los registros aparecen aqui conforme se generan tareos.</div></div>';
     return;
   }
-  const conReal=activos.filter(t=>t.tu_real!=null);
-  const totalTickets=activos.length;
-  const completados=conReal.length;
-  const pctComp=totalTickets>0?((completados/totalTickets)*100).toFixed(0):0;
+  const r = dashRango();
+  const areas = dashPorArea(r);
+  const grupos = dashGrupos(r);
+  const k = dashKPIs(r);
 
-  // Desviación promedio
-  const desviaciones=conReal.map(t=>t.tu_real-t.tu);
-  const promDev=desviaciones.length?( desviaciones.reduce((a,b)=>a+b,0)/desviaciones.length).toFixed(1):0;
-  const devClass=promDev>5?'color:var(--crit)':promDev<-5?'color:var(--ok)':'color:#e8a020';
+  const activo = document.getElementById('dash-activo');
+  if(activo){
+    const trozos = [(r.etq||'Rango')+': '+r.texto];
+    if(dashFiltro.area) trozos.push('\u00e1rea '+dashFiltro.area);
+    if(dashFiltro.trabajador) trozos.push(dashFiltro.trabajador.split(' ').slice(0,2).join(' '));
+    if(dashFiltro.proyecto) trozos.push('proyecto '+dashFiltro.proyecto);
+    activo.innerHTML = trozos.map(t=>'<span class="dsh-tag">'+escapeHtml(t)+'</span>').join('')+
+      ((dashFiltro.area||dashFiltro.trabajador||dashFiltro.proyecto)
+        ? '<button class="dsh-limpiar" onclick="dashLimpiarFiltros()">limpiar filtros</button>' : '')+
+      '<span class="dsh-tag suave">'+k.nPlan+' tickets planificados \u00b7 '+k.nMed+' medidos</span>';
+  }
 
-  // Por operario
-  const porOp={};
-  activos.forEach(t=>{
-    (t.nombres||[]).forEach(nom=>{
-      if(!porOp[nom])porOp[nom]={plan:0,planCompletados:0,real:0,tickets:0,completados:0,desv:[]};
-      porOp[nom].plan+=t.tt;porOp[nom].tickets++;
-      if(t.tu_real!=null){porOp[nom].real+=(t.n*t.tu_real/60);porOp[nom].planCompletados+=t.tt;porOp[nom].completados++;porOp[nom].desv.push(t.tu_real-t.tu);}
-    });
-  });
+  if(!k.nPlan && !k.nMed){
+    cont.innerHTML = '<div class="empty"><div class="empty-icon">\ud83d\uddd3\ufe0f</div>'+
+      '<div>No hay tickets en <b>'+escapeHtml(r.texto)+'</b> con los filtros actuales.</div></div>';
+    return;
+  }
 
-  const opRows=Object.entries(porOp).sort((a,b)=>b[1].tickets-a[1].tickets).map(([nom,d])=>{
-    const short=nom.split(' ').slice(0,3).join(' ');
-    const area=trabajadores.find(w=>w.nombre===nom)?.area||'';
-    const ef=d.completados>0?((d.planCompletados/Math.max(d.real,0.1))*100).toFixed(0):'-';
-    const promDesv=d.desv.length?(d.desv.reduce((a,b)=>a+b,0)/d.desv.length).toFixed(1):'-';
-    const efNum=parseFloat(ef);
-    const efColor=efNum>=100?'var(--ok-fuerte)':efNum>=80?'#e8a020':'var(--crit)';
-    const devColor=parseFloat(promDesv)>5?'var(--crit)':parseFloat(promDesv)<-5?'var(--ok-fuerte)':'var(--text-secondary)';
-    return `<tr>
-      <td style="font-weight:600;font-size:12px">${short}</td>
-      <td style="font-size:11px;color:var(--text-secondary)">${area}</td>
-      <td style="text-align:center">${d.tickets}</td>
-      <td style="text-align:center">${d.completados}</td>
-      <td style="text-align:center;font-weight:600">${d.plan.toFixed(1)}h</td>
-      <td style="text-align:center;font-weight:600">${d.real>0?d.real.toFixed(1)+'h':'-'}</td>
-      <td style="text-align:center;font-weight:700;color:${efColor}">${ef!=='-'?ef+'%':'-'}</td>
-      <td style="text-align:center;font-weight:600;color:${devColor}">${promDesv!=='-'?(parseFloat(promDesv)>0?'+':'')+promDesv+"'":'-'}</td>
-    </tr>`;
-  }).join('');
-
-  // Tareas con mayor desviación
-  const tareasDesv=conReal.map(t=>({tarea:t.tarea,proyecto:t.proyecto,plan:t.tu,real:t.tu_real,desv:t.tu_real-t.tu}))
-    .sort((a,b)=>Math.abs(b.desv)-Math.abs(a.desv)).slice(0,8);
-  const tareaRows=tareasDesv.map(t=>{
-    const dc=t.desv>10?'var(--crit)':t.desv<-5?'var(--ok-fuerte)':'var(--text-secondary)';
-    return `<tr>
-      <td style="font-size:12px;font-weight:500">${escapeHtml(t.tarea)}</td>
-      <td style="font-size:11px;color:var(--text-secondary)">${escapeHtml(t.proyecto)}</td>
-      <td style="text-align:center">${t.plan}'</td>
-      <td style="text-align:center">${t.real}'</td>
-      <td style="text-align:center;font-weight:700;color:${dc}">${t.desv>0?'+':''}${t.desv}'</td>
-    </tr>`;
-  }).join('');
-
-  document.getElementById('dash-content').innerHTML=`
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.875rem;margin-bottom:1.5rem">
-      <div class="metric"><div class="metric-label">Total tickets</div><div class="metric-value">${totalTickets}</div><div class="metric-sub">registrados</div></div>
-      <div class="metric"><div class="metric-label">Completados</div><div class="metric-value" style="color:var(--ok)">${completados}</div><div class="metric-sub">${pctComp}% del total</div></div>
-      <div class="metric"><div class="metric-label">Desviación promedio</div><div class="metric-value" style="${devClass}">${promDev>0?'+':''}${promDev}'</div><div class="metric-sub">t.u. real vs plan</div></div>
-      <div class="metric"><div class="metric-label">Operarios activos</div><div class="metric-value">${Object.keys(porOp).length}</div><div class="metric-sub">con tickets asignados</div></div>
-    </div>
-
-    <div class="card" style="margin-bottom:1rem">
-      <div class="card-title">Productividad por operario</div>
-      <div style="overflow-x:auto">
-        <table><thead><tr>
-          <th>Operario</th><th>Área</th>
-          <th style="text-align:center">Tickets</th><th style="text-align:center">Complet.</th>
-          <th style="text-align:center">Hrs plan</th><th style="text-align:center">Hrs reales</th>
-          <th style="text-align:center">Eficiencia</th><th style="text-align:center">Desv. prom.</th>
-        </tr></thead><tbody>${opRows}</tbody></table>
-      </div>
-      <div style="font-size:11px;color:var(--text-muted);margin-top:8px">Eficiencia = horas planificadas / horas reales. >100% significa que fue más rápido de lo estimado.</div>
-    </div>
-
-    <div class="card">
-      <div class="card-title">Tareas con mayor desviación de tiempo</div>
-      <div style="overflow-x:auto">
-        <table><thead><tr>
-          <th>Tarea</th><th>Proyecto</th>
-          <th style="text-align:center">t.u. plan</th><th style="text-align:center">t.u. real</th>
-          <th style="text-align:center">Diferencia</th>
-        </tr></thead><tbody>${tareaRows||'<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:1rem">Sin datos de tiempo real aún</td></tr>'}</tbody></table>
-      </div>
-    </div>`;
+  cont.innerHTML =
+    '<div class="dsh-nivel">Nivel 1 \u2014 \u00bfestamos bien?</div>' +
+    dashKPIHTML(r) +
+    dashSeccion('dsh-atencion','Requiere atenci\u00f3n','\u00bfQu\u00e9 tengo que mirar hoy?',
+      dashAtencionHTML(r, areas, grupos)) +
+    dashSeccion('dsh-tendencia','Tendencia de productividad','\u00bfEstamos mejorando o empeorando?',
+      dashTendenciaHTML(r)) +
+    '<div class="dsh-nivel">Nivel 2 \u2014 \u00bfd\u00f3nde est\u00e1 el problema?</div>' +
+    dashSeccion('dsh-areas','Plan vs real por \u00e1rea','\u00bfQu\u00e9 \u00e1rea consume m\u00e1s tiempo del previsto?',
+      dashAreasBarrasHTML(areas)) +
+    dashSeccion('dsh-carga','Carga vs capacidad por \u00e1rea','\u00bfQu\u00e9 \u00e1rea est\u00e1 sobrecargada?',
+      dashCargaHTML(r, areas)) +
+    dashSeccion('dsh-estado','Estado de producci\u00f3n por \u00e1rea','Las ocho \u00e1reas de un vistazo',
+      dashTablaAreasHTML(r, areas)) +
+    '<div class="dsh-nivel">Nivel 3 \u2014 \u00bfqu\u00e9 operaci\u00f3n lo provoca?</div>' +
+    dashSeccion('dsh-pareto','Pareto de desviaciones','\u00bfD\u00f3nde se est\u00e1 yendo el tiempo?',
+      dashParetoHTML(grupos)) +
+    '<div class="dsh-nivel">Nivel 4 \u2014 \u00bfpor qu\u00e9 ocurre?</div>' +
+    dashSeccion('dsh-estandares','Est\u00e1ndares de tiempo','\u00bfEs el trabajador, o el est\u00e1ndar est\u00e1 mal puesto?',
+      dashEstandaresHTML(grupos)) +
+    dashSeccion('dsh-scatter','Plan vs real, ejecuci\u00f3n por ejecuci\u00f3n','\u00bfEs un caso suelto o una franja entera?',
+      dashScatterHTML(r)) +
+    '<div class="dsh-nivel">Detalle \u2014 \u00bfqui\u00e9n necesita atenci\u00f3n?</div>' +
+    dashSeccion('dsh-operarios','Productividad por trabajador','Plan y real, comparados sobre la misma base',
+      dashOperariosHTML(r));
 }
+
+// La tabla por trabajador es la que habia, arreglada: antes ponia al lado la columna de horas
+// plan de TODOS sus tickets y la eficiencia calculada solo sobre los medidos. De ahi salia
+// 70.9 / 57.3 = 108%, que no cuadraba con nada. Ahora la base de la comparacion es explicita.
+function dashOperariosHTML(r){
+  const med = dashMedidos(r), plan = dashPlan(r);
+  const O = {};
+  const tocar = n => (O[n] = O[n] || {nom:n, planTot:0, planMed:0, real:0, tickets:0, medidos:0, resueltos:0, difs:[]});
+  plan.forEach(t=>(t.nombres||[]).forEach(n=>{ tocar(n); O[n].planTot+=(t.tt||0); O[n].tickets++;
+                                               if(dashResuelto(t)) O[n].resueltos++; }));
+  med.forEach(t=>(t.nombres||[]).forEach(n=>{ tocar(n); O[n].planMed+=(t.tt||0);
+                                              O[n].real+=dashTTReal(t); O[n].medidos++;
+                                              O[n].difs.push(t.tu_real-t.tu); }));
+  const filas = Object.values(O).sort((a,b)=>b.tickets-a.tickets);
+  if(!filas.length) return '<div class="dsh-nd">Sin trabajadores con tickets en el rango.</div>';
+  return '<div class="dsh-scroll"><table class="dsh-tabla"><thead><tr>'+
+    '<th>Trabajador</th><th>\u00c1rea</th><th class="c">Tickets</th><th class="c">Medidos</th>'+
+    '<th class="c">Hrs plan<br><small>total</small></th>'+
+    '<th class="c">Hrs plan<br><small>de lo medido</small></th>'+
+    '<th class="c">Hrs reales</th><th class="c">Eficiencia</th><th class="c">Desv. media</th>'+
+    '</tr></thead><tbody>'+ filas.map(d=>{
+      const ef = d.real>0 ? d.planMed/d.real*100 : null;
+      const dv = d.difs.length ? d.difs.reduce((a,b)=>a+b,0)/d.difs.length : null;
+      const efc = ef==null?'':ef>=100?'ok':ef>=85?'warn':'crit';
+      const dvc = dv==null?'':dv>5?'crit':dv<-5?'ok':'';
+      const area = (trabajadores.find(w=>w.nombre===d.nom)||{}).area||'';
+      return '<tr onclick="dashFiltrarTrabajador(\''+escapeHtml(d.nom).replace(/'/g,"\\'")+'\')" tabindex="0">'+
+        '<td><b>'+escapeHtml(d.nom.split(' ').slice(0,3).join(' '))+'</b></td>'+
+        '<td class="suave">'+escapeHtml(area)+'</td>'+
+        '<td class="c num">'+d.tickets+'</td><td class="c num">'+d.medidos+'</td>'+
+        '<td class="c num">'+(Math.round(d.planTot*10)/10)+'</td>'+
+        '<td class="c num">'+(Math.round(d.planMed*10)/10)+'</td>'+
+        '<td class="c num">'+(d.real>0?(Math.round(d.real*10)/10):'\u2014')+'</td>'+
+        '<td class="c num '+efc+'"><b>'+dashPct(ef)+'</b></td>'+
+        '<td class="c num '+dvc+'">'+(dv==null?'\u2014':dashMin(dv))+'</td></tr>';
+    }).join('')+'</tbody></table></div>'+
+    '<div class="dsh-nota">La eficiencia compara <b>horas plan de lo medido</b> contra <b>horas '+
+    'reales</b> \u2014 las dos columnas de al lado, no la primera. La columna "total" incluye tickets '+
+    'todav\u00eda sin medir, por eso es mayor y por eso no se puede dividir contra las horas reales.</div>';
+}
+
+// ----- Controles -------------------------------------------------------------------------
+function poblarFiltrosDash(){
+  const sR = document.getElementById('dash-rango');
+  if(sR && !sR.options.length){
+    DASH_RANGOS.forEach(([v,e])=>sR.add(new Option(e,v)));
+    sR.value = dashFiltro.rango;
+  }
+  const sT = document.getElementById('dash-trab');
+  if(sT){
+    const trabs = [...new Set(historial.flatMap(t=>t.nombres||[]))].sort();
+    if(sT.options.length !== trabs.length+1){
+      const cv = sT.value;
+      sT.innerHTML = '<option value="">Todos los trabajadores</option>';
+      trabs.forEach(n=>sT.add(new Option(n.split(' ').slice(0,2).join(' '), n)));
+      sT.value = cv || dashFiltro.trabajador;
+    }
+  }
+  const sA = document.getElementById('dash-area');
+  if(sA && !sA.options.length){
+    sA.add(new Option('Todas las \u00e1reas',''));
+    ORDEN_AREAS_GLOBAL.forEach(a=>sA.add(new Option(a,a)));
+    sA.value = dashFiltro.area;
+  }
+  const sP = document.getElementById('dash-proy');
+  if(sP){
+    const proys = [...new Set(historial.map(dashCodProyecto).filter(Boolean))].sort();
+    if(sP.options.length !== proys.length+1){
+      const cv = sP.value;
+      sP.innerHTML = '<option value="">Todos los proyectos</option>';
+      proys.forEach(p=>sP.add(new Option(p,p)));
+      sP.value = cv || dashFiltro.proyecto;
+    }
+  }
+  const wrap = document.getElementById('dash-custom');
+  if(wrap) wrap.style.display = dashFiltro.rango==='custom' ? 'flex' : 'none';
+}
+
+function dashAplicarFiltros(){
+  const g = id => { const e = document.getElementById(id); return e ? e.value : ''; };
+  dashFiltro.rango = g('dash-rango') || '30d';
+  dashFiltro.desde = g('dash-desde');
+  dashFiltro.hasta = g('dash-hasta');
+  dashFiltro.trabajador = g('dash-trab');
+  dashFiltro.area = g('dash-area');
+  dashFiltro.proyecto = g('dash-proy');
+  renderDashboard();
+}
+function dashLimpiarFiltros(){
+  dashFiltro.trabajador = dashFiltro.area = dashFiltro.proyecto = '';
+  ['dash-trab','dash-area','dash-proy'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
+  renderDashboard();
+}
+function dashFiltrarArea(a){
+  dashFiltro.area = (dashFiltro.area===a) ? '' : a;
+  const e = document.getElementById('dash-area'); if(e) e.value = dashFiltro.area;
+  renderDashboard();
+}
+function dashFiltrarTrabajador(n){
+  dashFiltro.trabajador = (dashFiltro.trabajador===n) ? '' : n;
+  const e = document.getElementById('dash-trab'); if(e) e.value = dashFiltro.trabajador;
+  renderDashboard();
+}
+function dashMinEjec(n){ DASH_UMBRALES.minEjecuciones = n; renderDashboard(); }
+function dashScroll(id){
+  const e = document.getElementById(id);
+  if(e) try{ e.scrollIntoView({behavior:'smooth', block:'start'}); }catch(err){ e.scrollIntoView(); }
+}
+window.dashAplicarFiltros = dashAplicarFiltros;
+window.dashLimpiarFiltros = dashLimpiarFiltros;
+window.dashFiltrarArea = dashFiltrarArea;
+window.dashFiltrarTrabajador = dashFiltrarTrabajador;
+window.dashMinEjec = dashMinEjec;
+window.dashScroll = dashScroll;
+
+// El Excel del Dashboard respeta los filtros del Dashboard. El del Historial sigue intacto:
+// los dos arman la fila con la misma funcion, asi que una columna nueva llega a los dos.
+function exportarExcelDash(){
+  const r = dashRango();
+  const datos = historial.filter(t=>dashEnRango(t,r) && dashPasaFiltro(t));
+  if(!datos.length){ showAlert('dash','No hay datos para exportar con los filtros actuales.','warn'); return; }
+  const rows = [CABECERA_EXCEL.slice()];
+  datos.forEach(t=>rows.push(filaExcel(t)));
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Dashboard');
+  const etq = [r.desde.toISOString().slice(0,10), r.hasta.toISOString().slice(0,10)].join('_');
+  XLSX.writeFile(wb, 'MATRANSA_dashboard_'+etq+'.xlsx');
+}
+window.exportarExcelDash = exportarExcelDash;
 
 
 // ===== REASIGNACIÓN =====
@@ -5025,12 +5930,31 @@ function suscribirAusencias() {
   });
 }
 
+// 'AAAA-MM-DD' leido como fecha LOCAL, no como medianoche UTC.
+//
+// new Date('2026-09-14') devuelve medianoche UTC, que en Lima (UTC-5) es el 13 a las 19:00. Si
+// esa fecha se compara contra una construida con new Date(anio, mes, dia) —que si es local— el
+// dia no cuadra: una ausencia de un solo dia se quedaba fuera de su propio dia y las de varios
+// se corrian una jornada hacia atras. En UTC los dos parseos coinciden y no se nota; en la
+// planta, en Lima, las ausencias registradas no descontaban capacidad.
+//
+// Tolera tambien un ISO con hora ('2026-09-14T00:00:00.000Z'): solo mira los diez primeros
+// caracteres, que es la parte que representa el dia elegido en el calendario.
+function fechaISOLocal(iso){
+  const p = String(iso||'').slice(0,10).split('-');
+  if(p.length !== 3) return new Date(NaN);
+  return new Date(+p[0], +p[1]-1, +p[2]);
+}
+
 function getAusenciasDelDia(fechaStr) {
+  const partes = String(fechaStr||'').split('/');
+  if(partes.length !== 3) return [];
+  const fecha = new Date(partes[2], partes[1]-1, partes[0]);
   return ausencias.filter(a => {
-    const partes = fechaStr.split('/');
-    const fecha = new Date(partes[2], partes[1]-1, partes[0]);
-    const inicio = new Date(a.inicio); const fin = new Date(a.fin||a.inicio);
-    fin.setHours(23,59,59);
+    const inicio = fechaISOLocal(a.inicio);
+    const fin = fechaISOLocal(a.fin || a.inicio);
+    if(isNaN(inicio) || isNaN(fin)) return false;
+    fin.setHours(23,59,59,999);
     return fecha >= inicio && fecha <= fin;
   });
 }
@@ -5495,6 +6419,13 @@ onAuthStateChanged(auth, (user) => {
   --text-muted:     #7d7c77;
   --amber:     #e8a020;
   --amber-soft:#fff8e8;
+  /* ---- Verde MATRANSA. Acento de marca: cabecera, pestana activa, boton primario.
+     NO es el verde semantico: ese es --ok y significa "esto esta bien". Este solo dice
+     "MATRANSA". Si el logo tiene otro hex, se cambia aqui y en ningun otro sitio. ---- */
+  --mt-verde:       #1b7a3e;
+  --mt-verde-hondo: #125a2d;
+  --mt-verde-fondo: #eef6f0;
+  --mt-verde-borde: #c9e2d3;
   /* ---- Estado del ticket. Lo normal es carbón; el color marca la excepción. ---- */
   --tk-pendiente:      #57564F;
   --tk-pendiente-fill: linear-gradient(135deg,#2E2D29,#4A4943);
@@ -5574,13 +6505,17 @@ body{font-family:var(--f-texto);font-size:var(--t-m);background:var(--bg);color:
 .num,td,th,input[type="number"],.metric-value,.ticket-plan,.hist-num{font-variant-numeric:tabular-nums;}
 h1,h2,h3,.card-title,.field label,.metric-label,nav .tab,nav .tab-grupo{font-family:var(--f-rotulo);}
 .num,.mono{font-family:var(--f-num);}
-nav{background:#141413;color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 1.25rem;height:48px;position:sticky;top:0;z-index:100;border-bottom:1px solid rgba(255,255,255,0.06);}
-nav .logo{font-weight:700;font-size:14px;letter-spacing:0.5px;display:flex;align-items:center;gap:8px;}
-nav .logo span{color:#e8a020;}
+/* La cabecera era un bloque negro de 48px encima de una app clara: el unico elemento de la
+   pantalla que no seguia el sistema. Ahora es una superficie mas, separada por un borde. El
+   color de la barra pasa a hacer un trabajo: marcar la pestana activa. */
+nav{background:var(--surface-0);color:var(--text-primary);display:flex;align-items:center;justify-content:space-between;padding:0 1.25rem;height:48px;position:sticky;top:0;z-index:100;border-bottom:1px solid var(--border);box-shadow:0 1px 2px rgba(0,0,0,0.04);}
+nav .logo{font-weight:700;font-size:14px;letter-spacing:0.5px;display:flex;align-items:center;gap:8px;color:var(--text-primary);}
+nav .logo .marca{display:inline-flex;letter-spacing:.06em;}
+nav .logo .marca-ac{color:var(--mt-verde);}
 nav .tabs{display:flex;}
-nav .tab{padding:0 0.75rem;height:48px;display:flex;align-items:center;font-size:12px;font-weight:500;cursor:pointer;color:rgba(255,255,255,0.45);border-bottom:2px solid transparent;transition:all 0.15s;white-space:nowrap;letter-spacing:0.1px;}
-nav .tab:hover{color:rgba(255,255,255,0.85);}
-nav .tab.active{color:#fff;border-bottom-color:#e8a020;}
+nav .tab{padding:0 0.75rem;height:48px;display:flex;align-items:center;font-size:12px;font-weight:500;cursor:pointer;color:var(--text-muted);border-bottom:2px solid transparent;transition:all 0.15s;white-space:nowrap;letter-spacing:0.1px;}
+nav .tab:hover{color:var(--text-primary);background:var(--surface-1);}
+nav .tab.active{color:var(--mt-verde);border-bottom-color:var(--mt-verde);font-weight:600;}
 nav .tab{font-family:var(--f-rotulo);}
 /* --- Grupos desplegables --- */
 /* ================= HOY EN PLANTA =================
@@ -5690,30 +6625,186 @@ nav .tab{font-family:var(--f-rotulo);}
 nav .tab-menu{position:relative;display:flex;align-items:center;}
 nav .tab-menu-btn{height:48px;padding:0 0.75rem;display:flex;align-items:center;gap:5px;
   background:none;border:0;border-bottom:2px solid transparent;font-family:var(--f-rotulo);
-  font-size:12px;font-weight:500;color:rgba(255,255,255,0.45);cursor:pointer;white-space:nowrap;}
-nav .tab-menu-btn:hover{color:rgba(255,255,255,0.85);}
-nav .tab-menu.dentro .tab-menu-btn{color:#fff;border-bottom-color:#e8a020;}
+  font-size:12px;font-weight:500;color:var(--text-muted);cursor:pointer;white-space:nowrap;}
+nav .tab-menu-btn:hover{color:var(--text-primary);}
+nav .tab-menu.dentro .tab-menu-btn{color:var(--mt-verde);border-bottom-color:var(--mt-verde);font-weight:600;}
 nav .tab-menu-flecha{font-size:9px;opacity:.6;transition:transform .15s;}
-nav .tab-menu-btn[aria-expanded="true"]{color:#fff;}
+nav .tab-menu-btn[aria-expanded="true"]{color:var(--text-primary);}
 nav .tab-menu-btn[aria-expanded="true"] .tab-menu-flecha{transform:rotate(180deg);}
 nav .tab-menu-lista{display:none;position:absolute;top:48px;left:0;min-width:190px;z-index:120;
-  background:#1f1f1d;border:1px solid rgba(255,255,255,0.10);border-radius:0 0 10px 10px;
-  box-shadow:0 10px 28px rgba(0,0,0,0.38);padding:5px;}
+  background:var(--surface-0);border:1px solid var(--border);border-radius:0 0 10px 10px;
+  box-shadow:0 10px 28px rgba(0,0,0,0.12);padding:5px;}
 nav .tab-menu-btn[aria-expanded="true"] + .tab-menu-lista{display:block;}
-/* Dentro del panel oscuro los items necesitan mas contraste que en la barra: ahi el gris
-   tenue distingue lo no elegido, aqui solo los vuelve dificiles de leer. */
 nav .tab-menu-lista .tab{height:34px;padding:0 10px;border-radius:6px;border-bottom:0;width:100%;
-  color:rgba(255,255,255,0.82);font-size:12.5px;}
-nav .tab-menu-lista .tab:hover{background:rgba(255,255,255,0.08);}
-nav .tab-menu-lista .tab.active{background:rgba(232,160,32,0.16);color:#f0b45a;}
+  color:var(--text-secondary);font-size:12.5px;}
+nav .tab-menu-lista .tab:hover{background:var(--surface-2);color:var(--text-primary);}
+nav .tab-menu-lista .tab.active{background:var(--mt-verde-fondo);color:var(--mt-verde);}
 @media(max-width:900px){nav .tab-menu,nav .tabs .tab{display:none;}}
 /* Rótulo de grupo: separa visualmente sin ocupar un clic ni parecer pulsable */
 nav .tab-grupo.tab-sep{padding:0;margin-left:0.55rem;}
-nav .tab-grupo{display:flex;align-items:center;height:48px;padding:0 0.4rem 0 0.85rem;margin-left:0.3rem;font-size:9px;font-weight:700;letter-spacing:0.09em;text-transform:uppercase;color:rgba(255,255,255,0.26);white-space:nowrap;pointer-events:none;border-left:1px solid rgba(255,255,255,0.13);}
+nav .tab-grupo{display:flex;align-items:center;height:48px;padding:0 0.4rem 0 0.85rem;margin-left:0.3rem;font-size:9px;font-weight:700;letter-spacing:0.09em;text-transform:uppercase;color:var(--text-muted);white-space:nowrap;pointer-events:none;border-left:1px solid var(--border);}
 nav .right{display:flex;align-items:center;gap:10px;}
-#db-status{display:none;font-size:10px;background:#e8a020;color:#fff;padding:2px 8px;border-radius:20px;}
-.fecha-nav{font-size:11px;color:rgba(255,255,255,0.4);white-space:nowrap;}
+#db-status{display:none;font-size:10px;background:var(--amber);color:var(--text-inverso);padding:2px 8px;border-radius:20px;}
+.fecha-nav{font-size:11px;color:var(--text-muted);white-space:nowrap;}
+nav #perfil-indicator{color:var(--text-muted)!important;border-color:var(--border)!important;}
+nav #perfil-indicator:hover{background:var(--surface-2);}
 .page{display:none;padding:1.25rem 1.5rem;max-width:1240px;margin:0 auto;}.page.active{display:block;}
+
+/* ===================== DASHBOARD — CENTRO DE CONTROL ===================== */
+.dsh-barra{display:flex;align-items:center;justify-content:space-between;gap:var(--e-3);
+  background:var(--surface-0);border:1px solid var(--border);border-radius:var(--radius-lg);
+  padding:var(--e-2) var(--e-3);margin-bottom:var(--e-2);position:sticky;top:48px;z-index:40;}
+.dsh-filtros{display:flex;align-items:center;gap:var(--e-2);flex-wrap:wrap;}
+.dsh-filtros select,.dsh-custom input{height:32px;border:1px solid var(--border);border-radius:var(--radius);
+  padding:0 8px;font-size:var(--t-s);font-family:inherit;background:var(--surface-0);color:var(--text-primary);}
+.dsh-filtros select:focus,.dsh-custom input:focus{outline:none;border-color:var(--mt-verde);
+  box-shadow:0 0 0 3px rgba(27,122,62,0.10);}
+.dsh-custom{display:none;align-items:center;gap:6px;font-size:var(--t-s);color:var(--text-muted);}
+.dsh-activo{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:var(--e-4);}
+.dsh-tag{font-size:var(--t-mini);font-weight:600;background:var(--mt-verde-fondo);color:var(--mt-verde);
+  border:1px solid var(--mt-verde-borde);border-radius:20px;padding:2px 10px;}
+.dsh-tag.suave{background:var(--surface-2);color:var(--text-muted);border-color:var(--border);font-weight:500;}
+.dsh-limpiar{font-size:var(--t-mini);background:none;border:0;color:var(--text-muted);
+  text-decoration:underline;cursor:pointer;font-family:inherit;}
+.dsh-limpiar:hover{color:var(--crit);}
+
+/* Los rotulos de nivel son la jerarquia de diagnostico hecha visible: sin ellos el tablero es
+   una coleccion de graficos y con ellos es un recorrido. */
+.dsh-nivel{font-family:var(--f-rotulo);font-size:var(--t-micro);font-weight:700;
+  letter-spacing:var(--rotulo-track);text-transform:uppercase;color:var(--text-muted);
+  margin:var(--e-5) 0 var(--e-2);padding-top:var(--e-2);border-top:1px solid var(--border);}
+.dsh-nivel:first-child{margin-top:0;border-top:0;padding-top:0;}
+.dsh-sec{padding:var(--e-4) var(--e-5);}
+.dsh-sec-cab{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:var(--e-3);}
+.dsh-sec-cab .card-title{margin-bottom:2px;}
+.dsh-pregunta{font-size:var(--t-s);color:var(--text-secondary);}
+.dsh-nota{font-size:var(--t-mini);color:var(--text-muted);line-height:1.5;margin-top:var(--e-2);}
+.dsh-nd{font-size:var(--t-s);color:var(--text-muted);background:var(--surface-1);
+  border:1px dashed var(--border-strong);border-radius:var(--radius);padding:var(--e-3);line-height:1.5;}
+.dsh-chip{font-size:var(--t-micro);background:var(--surface-2);color:var(--text-muted);
+  border-radius:4px;padding:1px 5px;font-weight:500;letter-spacing:0;}
+.dsh-scroll{overflow-x:auto;}
+.dsh-svg{width:100%;height:auto;display:block;}
+.dsh-grid{stroke:var(--border);stroke-width:1;}
+.dsh-grid.cien{stroke:var(--border-strong);stroke-dasharray:3 3;}
+.dsh-axis{font-family:var(--f-num);font-size:9.5px;fill:var(--text-muted);}
+.dsh-rot{font-size:9px;}
+.dsh-leyenda .sw.real{background:linear-gradient(90deg,var(--ar-ensamble),var(--ar-acabado));}
+
+/* KPI */
+.dsh-kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:var(--e-2);margin-bottom:var(--e-2);}
+.dsh-kpi{background:var(--surface-0);border:1px solid var(--border);border-top:3px solid var(--border-strong);
+  border-radius:var(--radius-lg);padding:var(--e-3) var(--e-4);display:flex;flex-direction:column;gap:2px;}
+.dsh-kpi.ok{border-top-color:var(--ok-fuerte);}
+.dsh-kpi.warn{border-top-color:var(--warn-fuerte);}
+.dsh-kpi.crit{border-top-color:var(--crit-fuerte);}
+.dsh-kpi-lab{font-family:var(--f-rotulo);font-size:var(--t-micro);font-weight:700;
+  text-transform:uppercase;letter-spacing:var(--rotulo-track);color:var(--text-muted);}
+.dsh-kpi-val{font-family:var(--f-num);font-size:28px;font-weight:700;line-height:1.15;
+  color:var(--text-primary);font-variant-numeric:tabular-nums;}
+.dsh-kpi-exp{font-size:var(--t-mini);color:var(--text-muted);line-height:1.4;}
+.dsh-delta{font-size:var(--t-mini);font-weight:600;margin-top:2px;}
+.dsh-delta.up{color:var(--ok);} .dsh-delta.down{color:var(--crit);} .dsh-delta.nd{color:var(--text-muted);font-weight:500;}
+
+/* Barras plan vs real */
+.dsh-barras,.dsh-carga{display:flex;flex-direction:column;gap:var(--e-2);}
+.dsh-barrow,.dsh-cargarow{display:grid;grid-template-columns:132px 1fr 96px;align-items:center;
+  gap:var(--e-3);cursor:pointer;border-radius:var(--radius);padding:3px 4px;}
+.dsh-barrow:hover,.dsh-cargarow:hover{background:var(--surface-1);}
+.dsh-barlab{font-family:var(--f-rotulo);font-size:var(--t-micro);font-weight:700;
+  text-transform:uppercase;letter-spacing:var(--rotulo-track);color:var(--text-secondary);}
+.dsh-barpair{display:flex;flex-direction:column;gap:3px;}
+.dsh-bar{height:11px;border-radius:3px;min-width:2px;}
+.dsh-bar.plan{background:var(--border-strong);}
+.dsh-barfig{text-align:right;display:flex;flex-direction:column;line-height:1.25;}
+.dsh-barfig b{font-family:var(--f-num);font-size:var(--t-m);}
+.dsh-barfig span{font-family:var(--f-num);font-size:var(--t-mini);color:var(--text-muted);}
+.dsh-leyenda{display:flex;align-items:center;flex-wrap:wrap;gap:4px;font-size:var(--t-mini);
+  color:var(--text-muted);margin-top:var(--e-3);}
+.dsh-leyenda .sw{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:2px;
+  vertical-align:-1px;}
+.dsh-leyenda .sw.plan{background:var(--border-strong);} .dsh-leyenda .sw.real{background:var(--mt-verde);}
+
+/* Carga vs capacidad */
+.dsh-cargapista{position:relative;height:16px;background:var(--surface-2);border-radius:4px;overflow:hidden;}
+.dsh-cargabar{height:100%;border-radius:4px;background:var(--text-muted);transition:width .2s;}
+.dsh-carga100{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--border-strong);}
+.dsh-cargarow.ok   .dsh-cargabar{background:var(--ok-fuerte);}
+.dsh-cargarow.info .dsh-cargabar{background:var(--info-fuerte);}
+.dsh-cargarow.warn .dsh-cargabar{background:var(--warn-fuerte);}
+.dsh-cargarow.crit .dsh-cargabar{background:var(--crit-fuerte);}
+
+/* Requiere atencion */
+.dsh-alertas{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:var(--e-2);}
+.dsh-alerta{display:flex;gap:var(--e-2);align-items:flex-start;border-radius:var(--radius);
+  border:1px solid var(--border);border-left-width:3px;padding:var(--e-3);cursor:pointer;background:var(--surface-0);}
+.dsh-alerta:hover{background:var(--surface-1);}
+.dsh-alerta.crit{border-left-color:var(--crit);background:var(--crit-fondo);border-color:var(--crit-borde);}
+.dsh-alerta.warn{border-left-color:var(--warn-fuerte);background:var(--warn-fondo);border-color:var(--warn-borde);}
+.dsh-alerta.info{border-left-color:var(--info-fuerte);background:var(--info-fondo);border-color:var(--info-borde);}
+.dsh-alerta-ic{font-size:12px;line-height:1.4;}
+.dsh-alerta-tit{font-size:var(--t-m);font-weight:600;color:var(--text-primary);}
+.dsh-alerta-det{font-size:var(--t-mini);color:var(--text-secondary);margin-top:2px;line-height:1.45;}
+.dsh-limpio{display:flex;gap:var(--e-3);align-items:center;background:var(--ok-fondo);
+  border:1px solid var(--ok-borde);border-radius:var(--radius);padding:var(--e-3) var(--e-4);}
+.dsh-limpio-ic{font-size:24px;color:var(--ok);line-height:1;}
+
+/* Tablas */
+.dsh-tabla{width:100%;border-collapse:collapse;font-size:var(--t-s);}
+.dsh-tabla th{font-family:var(--f-rotulo);font-size:var(--t-micro);font-weight:700;
+  text-transform:uppercase;letter-spacing:var(--rotulo-track);color:var(--text-muted);
+  text-align:left;padding:0 8px 6px;border-bottom:1px solid var(--border);white-space:nowrap;}
+.dsh-tabla th small{font-weight:500;letter-spacing:0;text-transform:none;opacity:.8;}
+.dsh-tabla td{padding:7px 8px;border-bottom:1px solid var(--border);}
+.dsh-tabla td.c,.dsh-tabla th.c{text-align:center;}
+.dsh-tabla td.num{font-family:var(--f-num);font-variant-numeric:tabular-nums;}
+.dsh-tabla td.suave{color:var(--text-muted);font-size:var(--t-mini);}
+.dsh-tabla td.ok{color:var(--ok);} .dsh-tabla td.warn{color:var(--warn);} .dsh-tabla td.crit{color:var(--crit);}
+.dsh-tabla tbody tr{cursor:pointer;}
+.dsh-tabla tbody tr:hover{background:var(--surface-1);}
+.dsh-tabla.areas tbody tr.crit td:first-child{box-shadow:inset 3px 0 0 var(--crit);}
+.dsh-tabla.areas tbody tr.warn td:first-child{box-shadow:inset 3px 0 0 var(--warn-fuerte);}
+.dsh-punto{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:0;}
+
+/* Estandares */
+.dsh-seg{display:flex;align-items:center;gap:5px;font-size:var(--t-mini);color:var(--text-muted);
+  margin-bottom:var(--e-2);}
+.dsh-seg button{height:24px;padding:0 10px;border:1px solid var(--border);background:var(--surface-0);
+  border-radius:12px;font-family:var(--f-num);font-size:var(--t-s);cursor:pointer;color:var(--text-secondary);}
+.dsh-seg button.on{background:var(--mt-verde);border-color:var(--mt-verde);color:var(--text-inverso);font-weight:700;}
+.dsh-contador{font-size:var(--t-s);color:var(--text-secondary);background:var(--surface-1);
+  border:1px solid var(--border);border-radius:var(--radius);padding:var(--e-2) var(--e-3);
+  margin-bottom:var(--e-3);line-height:1.5;}
+.dsh-est{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:var(--e-2);}
+.dsh-estcard{border:1px solid var(--border);border-left:3px solid var(--warn-fuerte);
+  border-radius:var(--radius);padding:var(--e-3);}
+.dsh-estcard.crit{border-left-color:var(--crit-fuerte);}
+.dsh-estcard.ok{border-left-color:var(--ok-fuerte);}
+.dsh-estcard-tit{font-size:var(--t-m);font-weight:600;margin-bottom:var(--e-2);}
+.dsh-estcard-cifras{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;}
+.dsh-estcard-cifras>div{display:flex;flex-direction:column;}
+.dsh-estcard-cifras span{font-size:var(--t-micro);color:var(--text-muted);text-transform:uppercase;
+  letter-spacing:var(--rotulo-track);}
+.dsh-estcard-cifras b{font-family:var(--f-num);font-size:var(--t-l);}
+.dsh-estcard-pie{font-size:var(--t-mini);color:var(--text-secondary);margin-top:var(--e-2);line-height:1.45;}
+.dsh-det{margin-top:var(--e-3);}
+.dsh-det summary{font-size:var(--t-s);color:var(--text-secondary);cursor:pointer;padding:4px 0;}
+
+@media(max-width:1100px){
+  .dsh-kpis{grid-template-columns:repeat(3,1fr);}
+}
+@media(max-width:760px){
+  .dsh-barra{position:static;flex-direction:column;align-items:stretch;}
+  .dsh-filtros select{flex:1 1 140px;}
+  .dsh-kpis{grid-template-columns:repeat(2,1fr);}
+  .dsh-kpi-val{font-size:23px;}
+  .dsh-barrow,.dsh-cargarow{grid-template-columns:92px 1fr 74px;gap:var(--e-2);}
+  .dsh-sec{padding:var(--e-3);}
+  .dsh-alertas,.dsh-est{grid-template-columns:1fr;}
+}
+@media(max-width:460px){
+  .dsh-kpis{grid-template-columns:1fr;}
+}
 .card{background:var(--surface-0);border-radius:var(--radius-lg);border:1px solid var(--border);padding:1.25rem 1.5rem;margin-bottom:0.875rem;box-shadow:var(--shadow-sm);}
 .card-title{font-size:var(--t-micro);font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:var(--rotulo-track);margin-bottom:var(--e-3);}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0.875rem;}
@@ -5875,8 +6966,8 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 .pt-num-val{font-size:18px;font-weight:900;display:block;line-height:1.1;margin-top:2px;}
 
 
-.hamburger-btn { display: none; align-items: center; justify-content: center; width: 36px; height: 36px; border: none; background: transparent; cursor: pointer; color: rgba(255,255,255,0.7); font-size: 20px; border-radius: 6px; flex-shrink: 0; }
-.hamburger-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+.hamburger-btn { display: none; align-items: center; justify-content: center; width: 36px; height: 36px; border: none; background: transparent; cursor: pointer; color: var(--text-secondary); font-size: 20px; border-radius: 6px; flex-shrink: 0; }
+.hamburger-btn:hover { background: var(--surface-2); color: var(--text-primary); }
 .mobile-menu-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 150; }
 .mobile-menu-panel { position: fixed; top: 0; left: 0; bottom: 0; width: 260px; background: #141413; z-index: 151; transform: translateX(-100%); transition: transform 0.25s ease; padding: 0; }
 .mobile-menu-panel.open { transform: translateX(0); }
@@ -6242,7 +7333,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
       <rect width="100" height="100" rx="10" fill="#1B6B35"/>
       <text x="50" y="70" font-family="system-ui,sans-serif" font-size="58" font-weight="800" fill="white" text-anchor="middle">M</text>
     </svg>
-    MAT<span>RANSA</span>
+    <span class="marca">MAT<span class="marca-ac">RANSA</span></span>
   </div>
   <!-- La barra la dibuja renderTabs() desde GRUPOS_NAV; ver la constante en el módulo -->
   <div class="tabs"></div>
@@ -6594,6 +7685,22 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 
 <!-- DASHBOARD -->
 <div class="page" id="page-dashboard">
+  <div id="alert-dash" class="alert" style="display:none"></div>
+  <div class="dsh-barra">
+    <div class="dsh-filtros">
+      <select id="dash-rango" onchange="dashAplicarFiltros()" title="Rango de fechas"></select>
+      <span id="dash-custom" class="dsh-custom">
+        <input type="date" id="dash-desde" onchange="dashAplicarFiltros()">
+        <span>a</span>
+        <input type="date" id="dash-hasta" onchange="dashAplicarFiltros()">
+      </span>
+      <select id="dash-area" onchange="dashAplicarFiltros()" title="Área"></select>
+      <select id="dash-trab" onchange="dashAplicarFiltros()" title="Trabajador"></select>
+      <select id="dash-proy" onchange="dashAplicarFiltros()" title="Proyecto"></select>
+    </div>
+    <button class="btn" onclick="exportarExcelDash()" title="Exporta exactamente lo que está filtrado en pantalla">⬇ Excel del rango</button>
+  </div>
+  <div id="dash-activo" class="dsh-activo"></div>
   <div id="dash-content"><div class="empty"><div class="empty-icon">📊</div><div>Cargando datos...</div></div></div>
 </div>
 
