@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-18 \u00b7 F2-31';
+const VERSION_APP = 'v2026-09-19 \u00b7 F2-32';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -385,6 +385,7 @@ async function init() {
   // La barra se dibuja siempre, aunque todavía no haya perfil elegido: si no, quedaría
   // vacía mientras el selector de perfil está abierto.
   renderTabs();
+  suscribirRutas();
   // Cuando init() corre, la sesion ya sabe quien entro y con que permisos: el portero de
   // abajo no la llama hasta tener la ficha leida.
   aplicarPerfil();
@@ -1130,13 +1131,13 @@ function imprimirHoy(fechaFiltro){
 const GRUPOS_NAV = [
   { grupo:'',          paginas:['hoy','atencion'] },
   { grupo:'Operar',    paginas:['tareo','andree','kanban'] },
-  { grupo:'Controlar', paginas:['torre','planificacion','personal','m3'] },
+  { grupo:'Controlar', paginas:['rutas','torre','planificacion','personal','m3'] },
   { grupo:'Analizar',  paginas:['dashboard','historial'] },
   { grupo:'',          paginas:['notas','config'] },
 ];
 const ETIQUETAS_NAV = {
   hoy:'Hoy en planta', atencion:'Atención', tareo:'Generar tareo', andree:'Registro Andree', kanban:'Kanban',
-  torre:'Torre de Control', planificacion:'Planificación', personal:'Personal',
+  rutas:'Rutas', torre:'Torre de Control', planificacion:'Planificación', personal:'Personal',
   m3:'M³ Semanal', dashboard:'Dashboard', historial:'Historial',
   notas:'Notas', config:'Configuración'
 };
@@ -5714,6 +5715,439 @@ async function escribir(accion, fn, opts){
   return true;
 }
 
+// ===== RUTAS DE FABRICACIÓN (F2-32) =====
+//
+// La ruta es la lista ordenada de operaciones que lleva UN mueble, con la cantidad de cada una.
+// Es el insumo del generador de tareo: sin ruta no hay nada que generar.
+//
+// Qué se puede deducir del historial y qué no (quedó claro en la reunión del 16/9 con Oficina
+// Técnica y Planta): el historial dice QUÉ operaciones lleva un producto, en QUÉ área y en qué
+// ORDEN aparecieron. No dice cuántas piezas lleva un mueble, porque los tickets registran
+// avances parciales de un lote — "Resoldado, 21 uniones" tres días seguidos no son 63 uniones
+// por mesa. Esa cantidad viene del plano y por eso se llena aquí a mano.
+//
+// Tres operaciones de HABILITADO no admiten cantidad por mueble y no es un dato que falte, es
+// que no existe: de un tronco cepillado salen hasta doce patas y de un trozo salen montantes o
+// lazos según cómo caiga. Se marcan como 'relativa', no suman minutos y el generador tendrá que
+// tratarlas con otra regla. Poner un número inventado ahí sería peor que dejarlo vacío.
+//
+// El t.u. de la ruta NO se copia solo del promedio medido. El promedio se muestra al lado para
+// comparar y hay un botón para adoptarlo, pero cambiar un estándar es decisión de una persona.
+// Misma regla que el Dashboard: se detecta, se marca, decide alguien.
+
+let rutas = [];
+let unsubRutas = null;
+let _rutaSel = '';        // producto elegido
+let _rutaBorrador = null; // copia en edición; null = no hay cambios sin guardar
+
+const ESTADOS_PASO = {
+  ok:        {etq:'Acordado',     color:'var(--ok)'},
+  confirmar: {etq:'Por confirmar',color:'var(--warn)'},
+  falta:     {etq:'Falta el dato',color:'var(--warn)'},
+  relativa:  {etq:'No se cuenta por mueble', color:'var(--text-muted)'}
+};
+
+// El producto del ticket viene como "129745 | MESA MB01 (11 und)". La ruta es del PRODUCTO, no
+// de la OF: se le quitan el número de orden y el tamaño del lote, para que la misma mesa en dos
+// órdenes distintas caiga en una sola ruta.
+//
+// Lo que NO se quita: un código de itemizado como "MB01-01 | MESA COMUNAL". Ahí el prefijo es
+// parte del nombre del mueble y no de la orden — "MB01-02 | SILLA" sin su código es una silla
+// cualquiera, y hay tres. Adivinar cuál es peor que dejarlo separado, así que esos quedan como
+// productos aparte y la pantalla los lista en "sin ruta" para que una persona decida.
+function normProducto(p){
+  return String(p||'')
+    .replace(/^\s*\d+\s*\|\s*/, '')                                         // "129751 | ..."
+    .replace(/^\s*\d{4,8}\s+/, '')                                          // "129756 MESA ..." 
+    // El lote se escribe de varias formas segun quien cargo la OF: "(11 und)", "(01 UNIDAD)",
+    // "(07 JUEGOS)", "(01 glb)". Todas son el tamano del pedido, no parte del nombre del mueble.
+    .replace(/\s*\(\s*\d+\s*(und|unid|unidad|unidades|juego|juegos|jgo|jgos|glb|pza|pzas)\s*\)\s*/ig, ' ')
+    .replace(/\s+/g, ' ').trim().toUpperCase();
+}
+
+// Productos que aparecen en el historial y todavía no tienen ruta. Es donde se ven los nombres
+// duplicados: si "MB01-01 | MESA COMUNAL" sale aquí y ya existe la ruta "MESA COMUNAL", son el
+// mismo mueble escrito de dos formas y alguien tiene que unificarlo en el tareo.
+function productosSinRuta(){
+  const conRuta = new Set(rutas.map(r => r.producto));
+  const cuenta = {};
+  historial.forEach(t=>{
+    if(!t.producto) return;
+    const n = normProducto(t.producto);
+    if(!n || conRuta.has(n)) return;
+    cuenta[n] = (cuenta[n] || 0) + 1;
+  });
+  return Object.entries(cuenta).map(([producto, tickets]) => ({producto, tickets}))
+               .sort((a,b) => b.tickets - a.tickets);
+}
+
+function suscribirRutas(){
+  if(unsubRutas) return;
+  unsubRutas = onSnapshot(collection(db,'rutas'), snap=>{
+    rutas = snap.docs.map(d=>({fbId:d.id, ...d.data()}));
+    // Un redibujado a destiempo borraría lo que se está escribiendo. Si hay borrador, se avisa
+    // y se deja la pantalla quieta: quien edita decide si guarda o descarta.
+    if(paginaActiva()==='rutas' && !_rutaBorrador) renderRutas();
+  });
+}
+
+function rutaDe(producto){ return rutas.find(r => r.producto === producto) || null; }
+
+// Promedio medido para ese producto+área+operación, del historial real.
+function tuMedidoRuta(producto, area, operacion){
+  let s = 0, n = 0;
+  historial.forEach(t=>{
+    if(t.noEjecutado || t.tu_real == null) return;
+    if(normProducto(t.producto) !== producto) return;
+    if(t.operacion !== operacion) return;
+    const a = t.areaEjecucion || areaDeOperacion(t.operacion) || '';
+    if(a && area && a !== area) return;
+    s += t.tu_real; n++;
+  });
+  return n ? {tu: Math.round(s/n), n} : null;
+}
+
+function pasosVisibles(){
+  const r = _rutaBorrador || rutaDe(_rutaSel);
+  return (r && Array.isArray(r.pasos)) ? r.pasos : [];
+}
+
+function minutosPorMuebleRuta(pasos){
+  let min = 0, sinCerrar = 0, relativas = 0;
+  pasos.forEach(p=>{
+    if(p.estado === 'relativa'){ relativas++; return; }
+    if(!p.cant || !p.tu){ sinCerrar++; return; }
+    min += p.cant * p.tu;
+  });
+  return {min, sinCerrar, relativas};
+}
+
+// ---------------------------------------------------------------- dibujo
+function renderRutas(){
+  const cont = document.getElementById('rutas-content');
+  if(!cont) return;
+  const nombres = rutas.map(r=>r.producto).sort();
+  if(_rutaSel && !nombres.includes(_rutaSel) && !_rutaBorrador) _rutaSel = '';
+  if(!_rutaSel && nombres.length) _rutaSel = nombres[0];
+
+  const opciones = nombres.map(n =>
+    '<option value="'+escapeHtml(n)+'"'+(n===_rutaSel?' selected':'')+'>'+escapeHtml(n)+'</option>').join('');
+
+  let html =
+    '<div class="card">' +
+      '<div class="card-title">Producto</div>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">' +
+        '<div class="field" style="min-width:280px;margin:0">' +
+          '<label>Ruta a ver o editar</label>' +
+          '<select id="ruta-sel" onchange="elegirProductoRuta(this.value)">' +
+            (nombres.length ? opciones : '<option value="">Todavía no hay rutas</option>') +
+          '</select>' +
+        '</div>' +
+        '<button class="btn" onclick="nuevoProductoRuta()">+ Producto</button>' +
+        '<button class="btn" onclick="abrirImportarRutas()">Importar (JSON)</button>' +
+      '</div>' +
+      (nombres.length ? '' :
+        '<div style="margin-top:10px;font-size:12px;color:var(--text-muted)">' +
+        'Una ruta son los pasos que lleva un mueble y cuántas unidades de cada paso. ' +
+        'Se puede empezar de cero con “+ Producto” o pegar el borrador con “Importar”.</div>') +
+    '</div>' +
+    '<div id="rutas-import" style="display:none"></div>';
+
+  if(_rutaSel) html += tablaRuta();
+  html += panelSinRuta();
+  cont.innerHTML = html;
+}
+
+function panelSinRuta(){
+  const faltan = productosSinRuta();
+  if(!faltan.length) return '';
+  return '<div class="card">' +
+    '<div class="card-title">Productos sin ruta <span style="font-weight:400;color:var(--text-muted)">· ' +
+      plural(faltan.length,'producto','productos') + ' en el historial</span></div>' +
+    '<div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">' +
+      'Aparecen en tickets pero nadie les definió la ruta. Si alguno es el mismo mueble que una ruta ' +
+      'que ya existe escrito de otra forma, hay que unificar el nombre en el tareo, no crear dos rutas.' +
+    '</div>' +
+    '<div style="display:flex;flex-wrap:wrap;gap:6px">' +
+      faltan.map(f =>
+        '<button class="btn btn-xs" onclick="crearRutaDe(' + JSON.stringify(f.producto).replace(/"/g,'&quot;') + ')" ' +
+        'title="Crear la ruta de este producto">' + escapeHtml(f.producto) +
+        ' <span style="color:var(--text-muted)">' + f.tickets + '</span></button>').join('') +
+    '</div></div>';
+}
+
+function crearRutaDe(nombre){
+  if(_rutaBorrador && !confirm('Hay cambios sin guardar. ¿Descartarlos?')) return;
+  _rutaSel = nombre;
+  _rutaBorrador = {producto:nombre, pasos:[]};
+  renderRutas();
+}
+
+function tablaRuta(){
+  const pasos = pasosVisibles();
+  const res = minutosPorMuebleRuta(pasos);
+  const sucio = !!_rutaBorrador;
+
+  const filas = pasos.map((p,i)=>{
+    const med = tuMedidoRuta(_rutaSel, p.area, p.operacion);
+    const rel = p.estado === 'relativa';
+    const minPaso = (!rel && p.cant && p.tu) ? Math.round(p.cant * p.tu) : null;
+    return '<tr>' +
+      '<td style="text-align:center;color:var(--text-muted)">'+(i+1)+'</td>' +
+      '<td>'+escapeHtml(p.area||'')+'</td>' +
+      '<td>'+escapeHtml(p.operacion||'')+'</td>' +
+      '<td style="color:var(--text-muted);font-size:11px">'+escapeHtml(p.unidad||'')+'</td>' +
+      '<td style="text-align:center">' +
+        (rel ? '<span style="color:var(--text-muted)">—</span>'
+             : '<input type="number" min="0" step="0.01" class="ruta-num" value="'+(p.cant!=null?p.cant:'')+'" ' +
+               'onchange="cambiarPaso('+i+',\'cant\',this.value)">') +
+      '</td>' +
+      '<td style="text-align:center">' +
+        '<input type="number" min="0" class="ruta-num" value="'+(p.tu!=null?p.tu:'')+'" ' +
+        'onchange="cambiarPaso('+i+',\'tu\',this.value)">' +
+      '</td>' +
+      '<td style="text-align:center;font-size:11px">' +
+        (med ? escapeHtml(String(med.tu))+' min <span style="color:var(--text-muted)">('+plural(med.n,'medición','mediciones')+')</span>' +
+               ' <button class="btn btn-xs" onclick="adoptarMedido('+i+','+med.tu+')">usar</button>'
+             : '<span style="color:var(--text-muted)">sin medir</span>') +
+      '</td>' +
+      '<td style="text-align:center">' +
+        '<select class="ruta-est" onchange="cambiarPaso('+i+',\'estado\',this.value)">' +
+          Object.entries(ESTADOS_PASO).map(([k,v]) =>
+            '<option value="'+k+'"'+(k===p.estado?' selected':'')+'>'+escapeHtml(v.etq)+'</option>').join('') +
+        '</select>' +
+      '</td>' +
+      '<td style="text-align:right;font-family:var(--f-num);font-variant-numeric:tabular-nums">'+(minPaso!=null?minPaso:'')+'</td>' +
+      '<td style="white-space:nowrap">' +
+        '<button class="btn btn-xs" onclick="moverPaso('+i+',-1)" title="Subir">↑</button> ' +
+        '<button class="btn btn-xs" onclick="moverPaso('+i+',1)" title="Bajar">↓</button> ' +
+        '<button class="btn btn-xs" onclick="borrarPaso('+i+')" title="Quitar">✕</button>' +
+      '</td>' +
+      '</tr>' +
+      (p.nota ? '<tr><td></td><td colspan="9" style="font-size:11px;color:var(--text-muted);padding-top:0">'+escapeHtml(p.nota)+'</td></tr>' : '');
+  }).join('');
+
+  const areas = [...new Set(CATALOGO_OPERACIONES.map(o=>o.area))];
+
+  return '<div class="card">' +
+    '<div class="card-title">' + escapeHtml(_rutaSel) +
+      (sucio ? ' <span style="font-size:11px;color:var(--warn);font-weight:600">· cambios sin guardar</span>' : '') +
+    '</div>' +
+    '<div style="overflow-x:auto"><table class="dsh-tabla">' +
+      '<thead><tr>' +
+        '<th style="width:34px">#</th><th>Área</th><th>Operación</th><th>Unidad</th>' +
+        '<th style="width:96px">Cant. por<br>mueble</th><th style="width:88px">t.u. de la<br>ruta (min)</th>' +
+        '<th style="width:150px">t.u. medido</th><th style="width:150px">Estado</th>' +
+        '<th style="width:74px">min/<br>mueble</th><th style="width:110px"></th>' +
+      '</tr></thead><tbody>' + (filas || '<tr><td colspan="10" style="color:var(--text-muted)">Sin pasos todavía.</td></tr>') + '</tbody>' +
+    '</table></div>' +
+
+    '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border);display:flex;gap:22px;flex-wrap:wrap;font-size:12px">' +
+      '<div><strong>'+res.min+'</strong> min por mueble · <strong>'+(res.min/60).toFixed(1)+'</strong> h</div>' +
+      (res.sinCerrar ? '<div style="color:var(--warn)">'+plural(res.sinCerrar,'paso sin cerrar','pasos sin cerrar')+' (no suman)</div>' : '') +
+      (res.relativas ? '<div style="color:var(--text-muted)">'+plural(res.relativas,'paso no se cuenta por mueble','pasos no se cuentan por mueble')+'</div>' : '') +
+    '</div>' +
+
+    '<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">' +
+      '<div style="font-size:12px;font-weight:600;margin-bottom:6px">Agregar paso</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">' +
+        '<div class="field" style="min-width:170px;margin:0"><label>Área</label>' +
+          '<select id="ruta-area" onchange="actualizarOpsRuta()">' +
+            '<option value="">Elegir…</option>' + areas.map(a=>'<option>'+escapeHtml(a)+'</option>').join('') +
+          '</select></div>' +
+        '<div class="field" style="min-width:230px;margin:0"><label>Operación</label>' +
+          '<select id="ruta-op"><option value="">Elige el área primero</option></select></div>' +
+        '<button class="btn" onclick="agregarPasoRuta()">+ Agregar</button>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="actions" style="margin-top:14px">' +
+      '<button class="btn" onclick="descartarRuta()"'+(sucio?'':' disabled')+'>Descartar cambios</button>' +
+      '<button class="btn btn-primary" onclick="guardarRuta()"'+(sucio?'':' disabled')+'>Guardar ruta</button>' +
+    '</div>' +
+  '</div>';
+}
+
+// ---------------------------------------------------------------- edición
+function borrador(){
+  if(!_rutaBorrador){
+    const r = rutaDe(_rutaSel);
+    _rutaBorrador = {producto:_rutaSel, pasos: r ? JSON.parse(JSON.stringify(r.pasos||[])) : []};
+  }
+  return _rutaBorrador;
+}
+
+function elegirProductoRuta(nombre){
+  if(_rutaBorrador && !confirm('Hay cambios sin guardar en ' + _rutaBorrador.producto + '. ¿Descartarlos?')){
+    const sel = document.getElementById('ruta-sel'); if(sel) sel.value = _rutaSel;
+    return;
+  }
+  _rutaBorrador = null;
+  _rutaSel = nombre;
+  renderRutas();
+}
+
+function cambiarPaso(i, campo, valor){
+  const b = borrador();
+  if(!b.pasos[i]) return;
+  if(campo === 'cant' || campo === 'tu'){
+    const v = valor === '' ? null : Number(valor);
+    b.pasos[i][campo] = (v == null || isNaN(v)) ? null : v;
+  }else{
+    b.pasos[i][campo] = valor;
+  }
+  // Marcar un paso como relativo borra su cantidad: no existe, no es que falte.
+  if(campo === 'estado' && valor === 'relativa') b.pasos[i].cant = null;
+  renderRutas();
+}
+
+function adoptarMedido(i, tu){
+  const b = borrador();
+  if(!b.pasos[i]) return;
+  b.pasos[i].tu = tu;
+  renderRutas();
+}
+
+function moverPaso(i, d){
+  const b = borrador();
+  const j = i + d;
+  if(j < 0 || j >= b.pasos.length) return;
+  const t = b.pasos[i]; b.pasos[i] = b.pasos[j]; b.pasos[j] = t;
+  renderRutas();
+}
+
+function borrarPaso(i){
+  const b = borrador();
+  if(!b.pasos[i]) return;
+  if(!confirm('¿Quitar “' + (b.pasos[i].operacion||'') + '” de la ruta?')) return;
+  b.pasos.splice(i,1);
+  renderRutas();
+}
+
+function actualizarOpsRuta(){
+  const area = (document.getElementById('ruta-area')||{}).value || '';
+  const sel = document.getElementById('ruta-op');
+  if(!sel) return;
+  if(!area){ sel.innerHTML = '<option value="">Elige el área primero</option>'; return; }
+  sel.innerHTML = '<option value="">Elegir…</option>' +
+    operacionesDeArea(area).map(o=>'<option value="'+escapeHtml(o.nombre)+'">'+escapeHtml(o.nombre)+'</option>').join('');
+}
+
+function agregarPasoRuta(){
+  const area = (document.getElementById('ruta-area')||{}).value || '';
+  const op   = (document.getElementById('ruta-op')||{}).value || '';
+  if(!area || !op){ showAlert('rutas','Elige área y operación para agregar el paso.','warn'); return; }
+  const cat = buscarOperacion(area, op);
+  const b = borrador();
+  b.pasos.push({area, operacion:op, unidad: cat ? cat.unidad : '', cant:null, tu:null, estado:'falta', nota:''});
+  renderRutas();
+}
+
+function nuevoProductoRuta(){
+  if(_rutaBorrador && !confirm('Hay cambios sin guardar. ¿Descartarlos?')) return;
+  const n = normProducto(prompt('Nombre del producto, sin número de OF ni tamaño de lote.\nEj: MESA MB01') || '');
+  if(!n) return;
+  if(rutaDe(n)){ _rutaBorrador = null; _rutaSel = n; renderRutas(); return; }
+  _rutaSel = n;
+  _rutaBorrador = {producto:n, pasos:[]};
+  renderRutas();
+}
+
+function descartarRuta(){
+  if(!_rutaBorrador) return;
+  if(!confirm('¿Descartar los cambios de ' + _rutaBorrador.producto + '?')) return;
+  _rutaBorrador = null;
+  renderRutas();
+}
+
+async function guardarRuta(){
+  const b = _rutaBorrador;
+  if(!b) return;
+  const pasos = b.pasos.map((p,i)=>({
+    orden: i+1, area: p.area||'', operacion: p.operacion||'', unidad: p.unidad||'',
+    cant: p.cant != null ? p.cant : null, tu: p.tu != null ? p.tu : null,
+    estado: p.estado || 'falta', nota: p.nota || ''
+  }));
+  const datos = {producto: b.producto, pasos, actualizado: new Date().toISOString(),
+                 por: (usuarioActivo && usuarioActivo.correo) || ''};
+  const ok = await escribir('guardar la ruta',
+    ()=>setDoc(doc(db,'rutas', b.producto), datos),
+    {pagina:'rutas', exito:'Ruta de ' + b.producto + ' guardada.'});
+  if(ok){ _rutaBorrador = null; renderRutas(); }
+}
+
+// ---------------------------------------------------------------- importar
+// El borrador de rutas se armó fuera de la app y trae nombres de producto y números de OF.
+// No entra al código: se pega aquí una sola vez. El repositorio es público.
+function abrirImportarRutas(){
+  const c = document.getElementById('rutas-import');
+  if(!c) return;
+  c.style.display = '';
+  c.innerHTML =
+    '<div class="card">' +
+      '<div class="card-title">Importar rutas</div>' +
+      '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">' +
+        'Pega una lista de rutas en JSON: <code>[{"producto":"MESA MB01","pasos":[{"area":"FIERRO",' +
+        '"operacion":"Esmerilado","unidad":"pieza","cant":9,"tu":30,"estado":"ok"}]}]</code>. ' +
+        'Cada producto reemplaza por completo la ruta que tuviera. Nada se borra sin estar en la lista.' +
+      '</div>' +
+      '<textarea id="rutas-json" style="width:100%;min-height:140px;font-family:var(--f-num, monospace);font-size:12px"></textarea>' +
+      '<div class="actions">' +
+        '<button class="btn" onclick="document.getElementById(\'rutas-import\').style.display=\'none\'">Cancelar</button>' +
+        '<button class="btn btn-primary" onclick="importarRutas()">Importar</button>' +
+      '</div>' +
+    '</div>';
+}
+
+async function importarRutas(){
+  const ta = document.getElementById('rutas-json');
+  if(!ta) return;
+  let lista;
+  try{
+    lista = JSON.parse(ta.value);
+  }catch(e){
+    showAlert('rutas','El texto no es JSON válido: ' + e.message, 'warn'); return;
+  }
+  if(!Array.isArray(lista) || !lista.length){ showAlert('rutas','Se esperaba una lista con al menos una ruta.','warn'); return; }
+  const malos = lista.filter(r => !r || !r.producto || !Array.isArray(r.pasos));
+  if(malos.length){ showAlert('rutas','Hay '+plural(malos.length,'ruta sin producto o sin pasos','rutas sin producto o sin pasos')+'. No se importó nada.','warn'); return; }
+  if(!confirm('Se van a escribir ' + plural(lista.length,'ruta','rutas') + '. ¿Continuar?')) return;
+
+  const lote = writeBatch(db);
+  lista.forEach(r=>{
+    const producto = normProducto(r.producto);
+    const pasos = r.pasos.map((p,i)=>({
+      orden: i+1, area: p.area||'', operacion: p.operacion||'', unidad: p.unidad||'',
+      cant: (p.cant === 0 || p.cant) ? Number(p.cant) : null,
+      tu:   (p.tu   === 0 || p.tu)   ? Number(p.tu)   : null,
+      estado: p.estado || 'falta', nota: p.nota || ''
+    }));
+    lote.set(doc(db,'rutas',producto), {producto, pasos, actualizado:new Date().toISOString(),
+                                        por:(usuarioActivo && usuarioActivo.correo) || ''});
+  });
+  const ok = await escribir('importar las rutas', ()=>lote.commit(),
+    {pagina:'rutas', exito:'Importadas ' + plural(lista.length,'ruta','rutas') + '.'});
+  if(ok){
+    _rutaBorrador = null;
+    const c = document.getElementById('rutas-import');
+    if(c){ c.style.display='none'; c.innerHTML=''; }
+  }
+}
+
+window.crearRutaDe = crearRutaDe;
+window.elegirProductoRuta = elegirProductoRuta;
+window.cambiarPaso = cambiarPaso;
+window.adoptarMedido = adoptarMedido;
+window.moverPaso = moverPaso;
+window.borrarPaso = borrarPaso;
+window.actualizarOpsRuta = actualizarOpsRuta;
+window.agregarPasoRuta = agregarPasoRuta;
+window.nuevoProductoRuta = nuevoProductoRuta;
+window.descartarRuta = descartarRuta;
+window.guardarRuta = guardarRuta;
+window.abrirImportarRutas = abrirImportarRutas;
+window.importarRutas = importarRutas;
+
 // ===== REDIBUJADO SELECTIVO =====
 // Antes, cada cambio en cualquier ticket redibujaba las siete vistas, estuvieran o no en
 // pantalla. Ahora solo se redibuja la que se está viendo; showPage() refresca la vista a la
@@ -5754,7 +6188,7 @@ function showAlert(pagina,msg,tipo,ms){
 function showPage(nombre){if(_foco&&_foco.pagina!==nombre)limpiarFoco();document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');// Antes se buscaba la pestaña activa por el texto de su onclick, lo que obligaba a que el
 // markup del menú no cambiara nunca. data-page es exactamente para esto.
 document.querySelectorAll(`nav .tab[data-page="${nombre}"], .mobile-menu-item[data-page="${nombre}"]`).forEach(el=>el.classList.add('active'));
-document.querySelectorAll('nav .tab-menu').forEach(m=>m.classList.toggle('dentro', !!m.querySelector(`.tab[data-page="${nombre}"]`)));if(nombre==='hoy'||nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();if(ofs&&ofs.length){renderTorre();if(_foco&&_foco.pagina==='torre')setTimeout(aplicarFoco,0);}}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
+document.querySelectorAll('nav .tab-menu').forEach(m=>m.classList.toggle('dentro', !!m.querySelector(`.tab[data-page="${nombre}"]`)));if(nombre==='hoy'||nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='rutas')renderRutas();if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();if(ofs&&ofs.length){renderTorre();if(_foco&&_foco.pagina==='torre')setTimeout(aplicarFoco,0);}}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
@@ -6641,10 +7075,10 @@ const DOMINIO_EMPRESA = 'matransaperu.com';
 // manda es el arreglo `pestanas` de la ficha, que se edita casilla por casilla.
 // A proposito NO llevan nombres de personas: este archivo es publico.
 const PLANTILLAS_ACCESO = {
-  completo:    {etq:'Acceso completo',      pestanas:['hoy','atencion','tareo','andree','kanban','torre','planificacion','personal','m3','dashboard','historial','notas','config']},
-  operaciones: {etq:'Operaciones',          pestanas:['hoy','atencion','tareo','andree','kanban','torre','planificacion','personal','m3','dashboard','historial','notas']},
+  completo:    {etq:'Acceso completo',      pestanas:['hoy','atencion','tareo','andree','kanban','rutas','torre','planificacion','personal','m3','dashboard','historial','notas','config']},
+  operaciones: {etq:'Operaciones',          pestanas:['hoy','atencion','tareo','andree','kanban','rutas','torre','planificacion','personal','m3','dashboard','historial','notas']},
   registro:    {etq:'Registro de tiempos',  pestanas:['hoy','atencion','tareo','andree','kanban','historial']},
-  supervision: {etq:'Supervisión',      pestanas:['hoy','atencion','personal','torre','kanban','historial','notas']},
+  supervision: {etq:'Supervisión',      pestanas:['hoy','atencion','personal','rutas','torre','kanban','historial','notas']},
   lectura:     {etq:'Solo lectura',         pestanas:['hoy','atencion','torre','dashboard','historial']}
 };
 
@@ -7414,6 +7848,13 @@ nav #perfil-indicator{cursor:pointer;font-size:11px;white-space:nowrap;padding:4
 .dsh-tabla td.suave{color:var(--text-muted);font-size:var(--t-mini);}
 .dsh-tabla td.ok{color:var(--ok);} .dsh-tabla td.warn{color:var(--warn);} .dsh-tabla td.crit{color:var(--crit);}
 .dsh-tabla tbody tr{cursor:pointer;}
+#page-rutas .dsh-tabla tbody tr{cursor:default;}
+#page-rutas .dsh-tabla tbody tr:hover{background:transparent;}
+#page-rutas .dsh-tabla td{vertical-align:middle;}
+.ruta-num{width:68px;height:28px;border:0.5px solid var(--border);border-radius:6px;padding:0 6px;
+  font-family:var(--f-num);font-size:12px;text-align:center;background:var(--surface-0,#fff);}
+.ruta-est{height:28px;max-width:150px;border:0.5px solid var(--border);border-radius:6px;
+  font-size:11px;background:var(--surface-2);padding:0 4px;}
 .dsh-tabla tbody tr:hover{background:var(--surface-1);}
 .dsh-tabla.areas tbody tr.crit td:first-child{box-shadow:inset 3px 0 0 var(--crit);}
 .dsh-tabla.areas tbody tr.warn td:first-child{box-shadow:inset 3px 0 0 var(--warn-fuerte);}
@@ -8140,6 +8581,21 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
   <div class="actions no-print" style="margin-top:1rem">
     <button class="btn btn-primary" id="btn-imprimir" style="display:none" onclick="abrirSelectorImpresion()">🖨 Imprimir tickets</button>
   </div>
+</div>
+
+<!-- RUTAS -->
+<div class="page" id="page-rutas">
+  <div id="alert-rutas" style="display:none" class="alert"></div>
+  <div class="card" style="padding-bottom:12px">
+    <div class="card-title">Rutas de fabricación</div>
+    <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">
+      La ruta son los pasos que lleva <strong>un</strong> mueble y cuántas unidades de cada paso.
+      De ahí sale el tareo: cantidad del paso × muebles de la OF × t.u.
+      Las tres operaciones de habilitado que dependen del tronco —trozado, garlopeado y cepillado—
+      se marcan «no se cuenta por mueble» y no suman: para esas hace falta otra regla, todavía sin definir.
+    </div>
+  </div>
+  <div id="rutas-content"></div>
 </div>
 
 <!-- ANDREE -->

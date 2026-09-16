@@ -9,7 +9,7 @@ GitHub Pages: `https://rvillar-prog.github.io/Matransa`.
 Backend: Firestore `matransa-c562c`, **entrada con Google corporativo** (@matransaperu.com),
 `initializeFirestore` con `persistentLocalCache` + `persistentMultipleTabManager`.
 Colecciones: `historial`, `trabajadores`, `proyectosTC`, `proyectos`, `ofs`, `planM3`,
-`ausencias`, `notas`, `usuarios`.
+`ausencias`, `notas`, `usuarios`, `rutas`.
 
 La versión viva se declara en `VERSION_APP`, en las primeras líneas del archivo a propósito
 (para poder leerla sin recorrerlo entero), y se muestra en la pestaña Configuración.
@@ -39,7 +39,7 @@ node arnes.mjs
 
 Encuentra solo `../Matransa/index.html` y `../Backups/`. Si faltan los backups corre las
 pruebas que solo miran el código y avisa. Se puede forzar con `MATRANSA_HTML` y
-`MATRANSA_BACKUPS`. Hoy son **354 pruebas**; la sección 7 necesita `backup5.json`.
+`MATRANSA_BACKUPS`. Hoy son **408 pruebas**; la sección 7 necesita `backup5.json` y la 23 `backup6.json`.
 
 ---
 
@@ -174,6 +174,51 @@ la reutiliza; no la duplica.
 `exportarExcel()` (Historial, filtros del Historial) y `exportarExcelDash()` (Dashboard, filtros
 del Dashboard). Una columna nueva llega a los dos y no se pueden desincronizar. El arnés cubre
 los índices de columna con 6 pruebas.
+
+---
+
+## Rutas de fabricación (F2-32)
+
+La ruta es la lista ordenada de operaciones que lleva **un** mueble, con la cantidad de cada una
+y el t.u. que se le asigna. Es el insumo del generador de tareo: sin ruta no hay nada que
+generar. Vive en `rutas/{producto}` y se edita en la pestaña **Rutas**.
+
+El id del documento es el nombre **normalizado** del producto: `normProducto()` le quita el
+número de OF y el tamaño del lote, de modo que `129745 | MESA MB01 (11 und)` y
+`130002 | MESA MB01 (3 und)` caen en una sola ruta. Lo que **no** quita es un código de
+itemizado: `MB01-02 | SILLA` sin su código es una silla cualquiera y hay tres. Adivinar sería
+peor, así que esos quedan como productos aparte y la pantalla los lista en **Productos sin ruta**
+para que una persona los unifique. En el backup del 16/9 son tres.
+
+### Lo que el historial puede decir y lo que no
+De 622 tickets se dedujo **qué** operaciones lleva un producto, en **qué** área y en qué
+**orden** aparecieron. Lo que no se puede deducir es cuántas piezas lleva un mueble: los tickets
+registran avances parciales de un lote — `Resoldado, 21 uniones` tres días seguidos no son 63
+uniones por mesa. Esa cantidad viene del plano. Por eso la pantalla existe.
+
+### Las tres decisiones de la reunión del 16/9 (Oficina Técnica + Planta)
+| | qué se decidió | cómo lo respeta el código |
+|---|---|---|
+| Habilitado en bruto | trozado, garlopeado y cepillado **no** admiten cantidad por mueble: de un tronco cepillado salen hasta doce patas | estado `relativa`: no suman minutos, no piden cantidad. **Falta definir su regla** — hoy el generador los ignora y por eso subestima HABILITADO |
+| Estándares | el t.u. de la ruta no se copia solo del promedio medido | se muestra al lado con cuántas mediciones lo sostienen y hay un botón «usar». Decide una persona, como en el Dashboard |
+| Trazabilidad | hay cantidades acordadas y cantidades deducidas por analogía | cada paso lleva estado: `ok` / `confirmar` / `falta` / `relativa` |
+
+`minutosPorMuebleRuta()` **solo suma los pasos con cantidad y t.u.**, y devuelve aparte cuántos
+quedaron sin cerrar. Una ruta a medio llenar tiene que delatarse sola: dar por bueno su total
+sería peor que no tenerlo.
+
+`tuMedidoRuta()` **ignora `visibleTareo`** — es la misma regla del F2-26: esa bandera es de vista,
+no de validez.
+
+### Carga inicial
+El borrador de 67 pasos **no entra al código**: el repo es público y trae nombres de producto y
+números de OF. Se pega como JSON desde la propia pantalla (botón «Importar»). El archivo vive en
+`..\Docs\rutas_semilla.json`.
+
+### Antes de publicar esta versión
+`rutas` es una colección nueva y las reglas publicadas la niegan por el `match /{document=**}`
+final. **Hay que publicar las reglas antes que el código**, o la pantalla no lee ni escribe nada.
+Es exactamente la trampa del F2-28, paso 4.
 
 ---
 
