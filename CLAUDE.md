@@ -9,7 +9,7 @@ GitHub Pages: `https://rvillar-prog.github.io/Matransa`.
 Backend: Firestore `matransa-c562c`, **entrada con Google corporativo** (@matransaperu.com),
 `initializeFirestore` con `persistentLocalCache` + `persistentMultipleTabManager`.
 Colecciones: `historial`, `trabajadores`, `proyectosTC`, `proyectos`, `ofs`, `planM3`,
-`ausencias`, `notas`, `usuarios`, `rutas`.
+`ausencias`, `notas`, `usuarios`, `rutas`, `cola`.
 
 La versión viva se declara en `VERSION_APP`, en las primeras líneas del archivo a propósito
 (para poder leerla sin recorrerlo entero), y se muestra en la pestaña Configuración.
@@ -39,7 +39,8 @@ node arnes.mjs
 
 Encuentra solo `../Matransa/index.html` y `../Backups/`. Si faltan los backups corre las
 pruebas que solo miran el código y avisa. Se puede forzar con `MATRANSA_HTML` y
-`MATRANSA_BACKUPS`. Hoy son **408 pruebas**; la sección 7 necesita `backup5.json` y la 23 `backup6.json`.
+`MATRANSA_BACKUPS`. Hoy son **448 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
+backup reciente y se salta sola si no hay ninguno.
 
 ---
 
@@ -219,6 +220,45 @@ números de OF. Se pega como JSON desde la propia pantalla (botón «Importar»)
 `rutas` es una colección nueva y las reglas publicadas la niegan por el `match /{document=**}`
 final. **Hay que publicar las reglas antes que el código**, o la pantalla no lee ni escribe nada.
 Es exactamente la trampa del F2-28, paso 4.
+
+---
+
+## Cola de trabajo de la OF (F2-33)
+
+Segunda pieza del generador. La ruta dice qué lleva un mueble; la cola lo aplica a una orden:
+proyecto + producto + cuántos muebles → la lista completa de trabajo pendiente, con cantidad y
+horas. Vive en `cola/{id}`, una línea por paso, y se ve en la pestaña **Cola de OF**.
+
+### Las tres reglas del modelo
+| | regla | por qué |
+|---|---|---|
+| Una línea **no** es un ticket | un ticket es "esta persona hizo esto este día"; una línea es "esta OF necesita 315 esmerilados" | una línea alimenta varios tickets en días distintos — 21 uniones el lunes, 21 el martes, 20 el miércoles. Forzar 1:1 repetiría el error que hizo indeducibles las cantidades por mueble |
+| La cola **no** cuenta contra el plan | no lleva fecha ni persona; el plan lo forma el ticket | generar una OF de 35 mesas pintaría de rojo el cumplimiento del día siguiente |
+| El avance **no** se guarda, se cuenta | cada ticket lleva `colaId`; lo hecho es la suma de esos tickets | un contador aparte es una segunda verdad, y se desincroniza el día que alguien corrige un ticket |
+
+Un cierre por motivo **no** descuenta: el trabajo sigue faltando y la línea lo sigue pidiendo.
+
+`lineasDesdeRuta(ruta, muebles)` es el cálculo entero, separado del dibujo para poder probarlo.
+Un paso `relativa` o sin cantidad sale con `nTotal: null` y estado `sin_regla`: **se genera
+igual** —para que se vea que ese trabajo existe— pero no finge una cantidad. Las cantidades se
+redondean a dos decimales, no a entero: media pieza por mueble × 64 sillas son 32, no 64.
+
+`horasDeLineas()` devuelve las horas **y** cuántas líneas quedaron sin t.u. y sin regla. El total
+nunca se presenta solo: no es el costo de la OF mientras falten líneas que sí consumen horas.
+
+### «Al tareo» no crea el ticket
+Rellena el formulario de Generar tareo y lleva allí, con `window._colaId` puesto. El ticket pasa
+por la misma validación, el mismo aviso de sobrecarga y el mismo control de duplicados de
+siempre. Un segundo camino para crear tickets sería un segundo juego de reglas que se
+desincroniza. `limpiarForm()` pone `_colaId` en null: sin eso, el siguiente ticket escrito a mano
+se colgaría de la línea anterior y descontaría trabajo que no es suyo.
+
+### Lo que esta versión no hace, a propósito
+No reparte entre personas ni entre días. Eso necesita prioridades, dependencias entre áreas y
+capacidad, y es la entrega siguiente.
+
+### Antes de publicar
+`cola` es una colección nueva: **las reglas van antes que el código**, como con `rutas`.
 
 ---
 

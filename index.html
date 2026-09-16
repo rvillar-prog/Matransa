@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-19 \u00b7 F2-32';
+const VERSION_APP = 'v2026-09-20 \u00b7 F2-33';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -386,6 +386,7 @@ async function init() {
   // vacía mientras el selector de perfil está abierto.
   renderTabs();
   suscribirRutas();
+  suscribirCola();
   // Cuando init() corre, la sesion ya sabe quien entro y con que permisos: el portero de
   // abajo no la llama hasta tener la ficha leida.
   aplicarPerfil();
@@ -653,6 +654,8 @@ function construirTicket(d){
     esReproceso:   d.esReproceso === true,
     motivoReproceso: d.esReproceso ? (d.motivoReproceso || null) : null,
     detalle:       d.detalle || null,
+    // De que linea de cola salio, si salio de una. Null en los tickets sueltos de siempre.
+    colaId:        d.colaId || null,
     unidad:        d.opDef ? (d.opDef.unidad || null) : null,
     metodoCaptura: d.opDef ? d.opDef.captura : null,
     fechaCreacion: ahora,
@@ -786,7 +789,7 @@ async function agregarTicket(){
     if(horasNom>jornadaEjec+0.5) sobrecargaMsg.push(`${nom.split(' ').slice(0,2).join(' ')} tendrá <strong>${horasNom.toFixed(1)}h</strong>`);
   });
   if(sobrecargaMsg.length>0){
-    window._ticketPendiente={t1,t2,proy,prod,tarea,n,tu,fechaEjec,operacion,fueraCatalogo,esPrototipo,esReproceso,motivoReproceso,detalle,opDef,areaEjec:document.getElementById('t-area-ejec')?document.getElementById('t-area-ejec').value||null:null};
+    window._ticketPendiente={t1,t2,proy,prod,tarea,n,tu,fechaEjec,operacion,fueraCatalogo,esPrototipo,esReproceso,motivoReproceso,detalle,opDef,colaId:window._colaId||null,areaEjec:document.getElementById('t-area-ejec')?document.getElementById('t-area-ejec').value||null:null};
     const al=document.getElementById('alert-sobrecarga');
     al.innerHTML=`<strong>⚠ Sobrecarga detectada</strong><br>${sobrecargaMsg.join(' / ')} asignadas para ${fechaEjec} (la jornada de ese día es de ${jornadaEjec}h).<div style="margin-top:8px;display:flex;gap:8px"><button onclick="confirmarTicketSobrecarga()" class="btn btn-xs btn-amber">Guardar igual</button><button onclick="document.getElementById('alert-sobrecarga').style.display='none'" class="btn btn-xs">Cancelar</button></div>`;
     al.style.display='block';
@@ -795,6 +798,7 @@ async function agregarTicket(){
 
   const ticket=construirTicket({
     t1,t2,proy,prod,tarea,n,tu,fechaEjec,operacion,fueraCatalogo,esPrototipo,esReproceso,motivoReproceso,detalle,opDef,
+    colaId:window._colaId||null,
     areaEjec:document.getElementById('t-area-ejec')?.value||null
   });
   // La confirmación nombra lo que se guardó. Un "listo" genérico no despeja la duda de si
@@ -824,6 +828,7 @@ async function confirmarTicketSobrecarga(){
 
 function limpiarForm(){
   limpiarMarcas();
+  window._colaId = null;
   ['t-t1','t-t2','t-proyecto'].forEach(id=>document.getElementById(id).value='');
   const aviso=document.getElementById('t-t1-repite-aviso');if(aviso)aviso.style.display='none';
   document.getElementById('t-producto').innerHTML='<option value="">Seleccionar proyecto primero</option>';
@@ -1130,13 +1135,13 @@ function imprimirHoy(fechaFiltro){
 // que antes se mantenían por separado y ya se habían desincronizado.
 const GRUPOS_NAV = [
   { grupo:'',          paginas:['hoy','atencion'] },
-  { grupo:'Operar',    paginas:['tareo','andree','kanban'] },
+  { grupo:'Operar',    paginas:['tareo','cola','andree','kanban'] },
   { grupo:'Controlar', paginas:['rutas','torre','planificacion','personal','m3'] },
   { grupo:'Analizar',  paginas:['dashboard','historial'] },
   { grupo:'',          paginas:['notas','config'] },
 ];
 const ETIQUETAS_NAV = {
-  hoy:'Hoy en planta', atencion:'Atención', tareo:'Generar tareo', andree:'Registro Andree', kanban:'Kanban',
+  hoy:'Hoy en planta', atencion:'Atención', tareo:'Generar tareo', cola:'Cola de OF', andree:'Registro Andree', kanban:'Kanban',
   rutas:'Rutas', torre:'Torre de Control', planificacion:'Planificación', personal:'Personal',
   m3:'M³ Semanal', dashboard:'Dashboard', historial:'Historial',
   notas:'Notas', config:'Configuración'
@@ -6148,6 +6153,393 @@ window.guardarRuta = guardarRuta;
 window.abrirImportarRutas = abrirImportarRutas;
 window.importarRutas = importarRutas;
 
+// ===== COLA DE TRABAJO DE LA OF (F2-33) =====
+//
+// Lo que hoy cuesta 2 personas x 2 horas diarias no es escribir los tickets: es acordarse de qué
+// operaciones lleva cada mueble y en qué orden. Eso ya está resuelto — vive en la ruta. Aquí se
+// aplica: se elige una OF y su producto, y sale la lista completa de trabajo pendiente.
+//
+// La cola NO es un tareo y no son tickets. Un ticket es "esta persona hizo esto este día"; una
+// línea de cola es "esta OF necesita 315 esmerilados". Una línea alimenta varios tickets a lo
+// largo de días distintos — que es exactamente como trabaja la planta: 21 uniones el lunes, 21
+// el martes, 20 el miércoles. Forzar un ticket por línea sería repetir el error que hizo que las
+// cantidades por mueble no se pudieran deducir del historial.
+//
+// Por eso la cola no lleva fecha ni persona, y por eso NO cuenta contra el plan: mientras esté
+// en la cola, el trabajo está previsto, no programado. El plan lo forma el ticket, cuando alguien
+// decide quién y cuándo. Meter la cola en el plan pintaría de rojo el Dashboard entero.
+//
+// El avance no se guarda: se cuenta. Cada ticket nacido de una línea lleva `colaId`, y lo hecho
+// es la suma de esos tickets. Guardar un contador aparte sería una segunda verdad que se
+// desincroniza el día que alguien borra o corrige un ticket.
+
+let cola = [];
+let unsubCola = null;
+let _colaOF = '';          // OF elegida en la lista
+let _colaPrevia = null;    // previsualización antes de generar
+
+function suscribirCola(){
+  if(unsubCola) return;
+  unsubCola = onSnapshot(collection(db,'cola'), snap=>{
+    cola = snap.docs.map(d=>({fbId:d.id, ...d.data()}));
+    if(paginaActiva()==='cola') renderCola();
+  });
+}
+
+// Lo hecho de una línea sale de los tickets que nacieron de ella. Los no ejecutados no cuentan:
+// el trabajo sigue pendiente, que es justo lo que la cola tiene que seguir mostrando.
+function avanceLinea(fbId){
+  let n = 0, tickets = 0;
+  historial.forEach(t=>{
+    if(t.colaId !== fbId || t.noEjecutado) return;
+    n += (t.n || 0); tickets++;
+  });
+  return {n, tickets};
+}
+
+function pendienteLinea(l){
+  if(l.nTotal == null) return null;              // sin regla: no hay cantidad que descontar
+  return Math.max(0, l.nTotal - avanceLinea(l.fbId).n);
+}
+
+function horasPendientes(l){
+  const p = pendienteLinea(l);
+  return (p == null || !l.tu) ? null : p * l.tu / 60;
+}
+
+// Agrupa la cola por OF para la lista de arriba.
+function ofsEnCola(){
+  const g = {};
+  cola.forEach(l=>{
+    const k = l.of || '(sin OF)';
+    const o = g[k] = g[k] || {of:k, proyecto:l.proyecto || '', lineas:0, horas:0, pendientes:0, sinRegla:0};
+    o.lineas++;
+    if(l.estado === 'cerrada') return;
+    const h = horasPendientes(l);
+    if(l.nTotal == null) o.sinRegla++;
+    else if(pendienteLinea(l) > 0){ o.pendientes++; if(h) o.horas += h; }
+  });
+  return Object.values(g).sort((a,b)=> String(a.of).localeCompare(String(b.of)));
+}
+
+// Convierte una ruta y un número de muebles en líneas de cola. Es el cálculo entero del
+// generador, aparte del dibujo, para poder probarlo sin pantalla.
+//
+// Un paso marcado 'relativa' —trozado, garlopeado, cepillado— o sin cantidad NO se multiplica:
+// sale con nTotal null y estado 'sin_regla'. Se genera igual, para que quien arma el tareo vea
+// que ese trabajo existe, pero no finge una cantidad. El día que se defina su regla, se cambia
+// aquí y en ningún otro sitio.
+function lineasDesdeRuta(ruta, muebles){
+  const n = Number(muebles);
+  if(!ruta || !Array.isArray(ruta.pasos) || !n || n < 1) return [];
+  return ruta.pasos.map((p,i)=>{
+    const sinRegla = p.estado === 'relativa' || p.cant == null;
+    return {
+      paso: i+1, area: p.area, operacion: p.operacion, unidad: p.unidad || null,
+      cantPorMueble: sinRegla ? null : p.cant,
+      // Dos decimales: una cantidad por mueble puede ser fraccionaria (medio tablero por silla)
+      // y el redondeo a entero de 0.5 x 64 sillas se come dos tableros.
+      nTotal: sinRegla ? null : Math.round(p.cant * n * 100) / 100,
+      tu: p.tu || null,
+      estado: sinRegla ? 'sin_regla' : 'abierta'
+    };
+  });
+}
+
+// Horas que la cola SABE calcular. No es el costo del mueble: las líneas sin t.u. y las de
+// habilitado en bruto no suman y sí consumen horas en planta. La pantalla lo dice al lado.
+function horasDeLineas(lineas){
+  let horas = 0, sinTu = 0, sinRegla = 0;
+  (lineas||[]).forEach(l=>{
+    if(l.nTotal == null){ sinRegla++; return; }
+    if(!l.tu){ sinTu++; return; }
+    horas += l.nTotal * l.tu / 60;
+  });
+  return {horas, sinTu, sinRegla};
+}
+
+// ---------------------------------------------------------------- previsualización
+// Nada se escribe hasta ver qué va a salir. Generar 40 líneas y descubrir después que el
+// producto no era ese es más caro de deshacer que de revisar.
+function previsualizarCola(){
+  const etiqueta = (document.getElementById('cola-producto')||{}).value || '';
+  const muebles  = parseInt((document.getElementById('cola-muebles')||{}).value || '0', 10);
+  const cont = document.getElementById('cola-previa');
+  if(!cont) return;
+  _colaPrevia = null;
+  if(!etiqueta){ cont.innerHTML = ''; return; }
+
+  const producto = normProducto(etiqueta);
+  const r = rutaDe(producto);
+  if(!r){
+    cont.innerHTML = '<div class="alert alert-warn" style="display:block">' +
+      escapeHtml(producto) + ' no tiene ruta todavía. Créala en <strong>Rutas</strong> y vuelve.</div>';
+    return;
+  }
+  if(!muebles || muebles < 1){ cont.innerHTML = ''; return; }
+
+  const lineas = lineasDesdeRuta(r, muebles);
+  _colaPrevia = {etiqueta, producto, muebles, lineas};
+
+  const {horas, sinTu, sinRegla} = horasDeLineas(lineas);
+
+  cont.innerHTML =
+    '<div class="card">' +
+      '<div class="card-title">Va a generar ' + plural(lineas.length,'línea','líneas') + ' — ' +
+        escapeHtml(producto) + ' × ' + muebles + '</div>' +
+      '<div style="overflow-x:auto"><table class="dsh-tabla"><thead><tr>' +
+        '<th style="width:34px">#</th><th>Área</th><th>Operación</th>' +
+        '<th class="c" style="width:96px">Por mueble</th><th class="c" style="width:90px">Total</th>' +
+        '<th class="c" style="width:74px">t.u.</th><th class="c" style="width:78px">Horas</th>' +
+      '</tr></thead><tbody>' +
+      lineas.map(l=>{
+        const h = (l.nTotal != null && l.tu) ? (l.nTotal*l.tu/60) : null;
+        return '<tr>' +
+          '<td class="c suave">'+l.paso+'</td>' +
+          '<td>'+escapeHtml(l.area||'')+'</td>' +
+          '<td>'+escapeHtml(l.operacion||'') +
+            (l.nTotal == null ? '<div style="font-size:10px;color:var(--text-muted)">no se cuenta por mueble — se tarea a mano</div>' : '') +
+            (l.nTotal != null && !l.tu ? '<div style="font-size:10px;color:var(--warn)">sin t.u. en la ruta</div>' : '') +
+          '</td>' +
+          '<td class="c num">'+(l.cantPorMueble != null ? l.cantPorMueble : '—')+'</td>' +
+          '<td class="c num">'+(l.nTotal != null ? l.nTotal : '—')+'</td>' +
+          '<td class="c num">'+(l.tu || '—')+'</td>' +
+          '<td class="c num">'+(h != null ? h.toFixed(1) : '—')+'</td>' +
+        '</tr>';
+      }).join('') +
+      '</tbody></table></div>' +
+      '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border);font-size:12px;display:flex;gap:22px;flex-wrap:wrap">' +
+        '<div><strong>' + horas.toFixed(1) + ' h</strong> de mano de obra calculables</div>' +
+        (sinTu ? '<div style="color:var(--warn)">' + plural(sinTu,'línea sin t.u.','líneas sin t.u.') + ' — se genera igual, sin horas</div>' : '') +
+        (sinRegla ? '<div style="color:var(--text-muted)">' + plural(sinRegla,'línea sin regla','líneas sin regla') + ' — habilitado en bruto</div>' : '') +
+      '</div>' +
+      '<div style="margin-top:8px;font-size:11px;color:var(--text-muted)">' +
+        'Ese total es lo que la ruta sabe hoy, no el costo del mueble: las líneas sin t.u. y las de ' +
+        'habilitado en bruto no suman y sí consumen horas en planta.' +
+      '</div>' +
+      '<div class="actions"><button class="btn btn-primary" onclick="generarCola()">Generar la cola</button></div>' +
+    '</div>';
+}
+
+async function generarCola(){
+  const p = _colaPrevia;
+  if(!p){ showAlert('cola','Elige producto y cantidad antes de generar.','warn'); return; }
+  const proyCod = (document.getElementById('cola-proyecto')||{}).value || '';
+  const of = resolverOF(p.etiqueta);
+  const yaHay = cola.filter(l => l.of === of.ofNumero && l.productoEtiqueta === p.etiqueta);
+  if(yaHay.length && !confirm('Esta OF ya tiene ' + plural(yaHay.length,'línea','líneas') +
+      ' de este producto en la cola. Se van a agregar otras ' + p.lineas.length + '. ¿Continuar?')) return;
+
+  const proyObj = proyectosTC.find(x => x.codigo === proyCod);
+  const ahora = new Date().toISOString();
+  const lote = writeBatch(db);
+  p.lineas.forEach(l=>{
+    lote.set(doc(collection(db,'cola')), {
+      of: of.ofNumero || null, ofId: of.ofId || null,
+      proyecto: proyObj ? (proyCod + ' · ' + proyObj.nombre) : proyCod,
+      proyectoCodigo: proyCod,
+      producto: p.producto, productoEtiqueta: p.etiqueta, muebles: p.muebles,
+      paso: l.paso, area: l.area, operacion: l.operacion, unidad: l.unidad || null,
+      cantPorMueble: l.cantPorMueble, nTotal: l.nTotal, tu: l.tu,
+      estado: l.estado, creado: ahora, por: (usuarioActivo && usuarioActivo.correo) || ''
+    });
+  });
+  const ok = await escribir('generar la cola', ()=>lote.commit(),
+    {pagina:'cola', exito:'Cola generada — ' + plural(p.lineas.length,'línea','líneas') + '.'});
+  if(ok){
+    _colaOF = of.ofNumero || '(sin OF)';
+    _colaPrevia = null;
+    const c = document.getElementById('cola-previa'); if(c) c.innerHTML = '';
+  }
+}
+
+// ---------------------------------------------------------------- dibujo
+function renderCola(){
+  const cont = document.getElementById('cola-content');
+  if(!cont) return;
+  const grupos = ofsEnCola();
+  if(_colaOF && !grupos.some(g=>g.of === _colaOF)) _colaOF = '';
+  if(!_colaOF && grupos.length) _colaOF = grupos[0].of;
+
+  cont.innerHTML = formGenerar() + '<div id="cola-previa"></div>' + listaOFs(grupos) + detalleOF();
+  poblarSelectProyectoCola();
+}
+
+function formGenerar(){
+  return '<div class="card">' +
+    '<div class="card-title">Generar trabajo desde la ruta</div>' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">' +
+      '<div class="field" style="min-width:210px;margin:0"><label>Proyecto</label>' +
+        '<select id="cola-proyecto" onchange="actualizarProductosCola()"><option value="">Seleccionar…</option></select></div>' +
+      '<div class="field" style="min-width:260px;margin:0"><label>Producto</label>' +
+        '<select id="cola-producto" onchange="alElegirProductoCola()"><option value="">Elige el proyecto primero</option></select></div>' +
+      '<div class="field" style="width:130px;margin:0"><label>N° de muebles</label>' +
+        '<input type="number" id="cola-muebles" min="1" oninput="previsualizarCola()"></div>' +
+    '</div>' +
+    '<div style="margin-top:8px;font-size:11px;color:var(--text-muted)">' +
+      'La cantidad viene del lote que trae el nombre del producto; se puede cambiar. ' +
+      'Solo salen productos que ya tienen ruta.' +
+    '</div>' +
+  '</div>';
+}
+
+function listaOFs(grupos){
+  if(!grupos.length){
+    return '<div class="card"><div class="empty"><div class="empty-icon">📋</div>' +
+      '<div>No hay nada en la cola todavía.</div></div></div>';
+  }
+  return '<div class="card">' +
+    '<div class="card-title">Órdenes en cola</div>' +
+    '<div style="display:flex;flex-wrap:wrap;gap:8px">' +
+      grupos.map(g=>{
+        const act = g.of === _colaOF;
+        return '<button class="btn btn-xs" onclick="elegirOFCola(' + JSON.stringify(g.of).replace(/"/g,'&quot;') + ')" ' +
+          'style="' + (act ? 'border-color:var(--mt-verde);font-weight:600' : '') + '">' +
+          escapeHtml(String(g.of)) +
+          ' <span style="color:var(--text-muted)">' + g.pendientes + '/' + g.lineas + '</span>' +
+          (g.horas ? ' <span style="color:var(--text-muted)">· ' + g.horas.toFixed(0) + ' h</span>' : '') +
+        '</button>';
+      }).join('') +
+    '</div></div>';
+}
+
+function detalleOF(){
+  if(!_colaOF) return '';
+  const lineas = cola.filter(l => (l.of || '(sin OF)') === _colaOF)
+                     .sort((a,b)=> String(a.productoEtiqueta).localeCompare(String(b.productoEtiqueta)) || (a.paso||0)-(b.paso||0));
+  if(!lineas.length) return '';
+
+  let hPend = 0, prodAnt = null;
+  const filas = lineas.map(l=>{
+    let cab = '';
+    if(l.productoEtiqueta !== prodAnt){
+      prodAnt = l.productoEtiqueta;
+      cab = '<tr><td colspan="9" style="background:var(--surface-1);font-weight:600;font-size:11px;padding:8px">' +
+            escapeHtml(l.productoEtiqueta || l.producto) + ' · ' + plural(l.muebles||0,'mueble','muebles') + '</td></tr>';
+    }
+    const av = avanceLinea(l.fbId);
+    const pend = pendienteLinea(l);
+    const h = horasPendientes(l);
+    if(h) hPend += h;
+    const cerrada = l.estado === 'cerrada';
+    const lista = !cerrada && pend === 0 && l.nTotal != null;
+    return cab + '<tr style="' + (cerrada ? 'opacity:.45' : '') + '">' +
+      '<td class="c suave">'+(l.paso||'')+'</td>' +
+      '<td>'+escapeHtml(l.area||'')+'</td>' +
+      '<td>'+escapeHtml(l.operacion||'') +
+        (l.nTotal == null ? '<div style="font-size:10px;color:var(--text-muted)">no se cuenta por mueble</div>' : '') + '</td>' +
+      '<td class="c num">'+(l.nTotal != null ? l.nTotal : '—')+'</td>' +
+      '<td class="c num">'+(av.n || 0)+'</td>' +
+      '<td class="c num" style="font-weight:600">'+(pend != null ? pend : '—')+'</td>' +
+      '<td class="c suave">'+escapeHtml(l.unidad||'')+'</td>' +
+      '<td class="c num">'+(h != null ? h.toFixed(1) : '—')+'</td>' +
+      '<td style="white-space:nowrap">' +
+        (cerrada
+          ? '<button class="btn btn-xs" onclick="reabrirLinea(\'' + l.fbId + '\')">Reabrir</button>'
+          : (lista ? '<span style="font-size:11px;color:var(--ok);font-weight:600">completa</span> '
+                   : '<button class="btn btn-xs btn-amber" onclick="pasarAlTareo(\'' + l.fbId + '\')">Al tareo</button> ') +
+            '<button class="btn btn-xs" onclick="cerrarLinea(\'' + l.fbId + '\')" title="Ya no aplica">Cerrar</button>') +
+      '</td>' +
+    '</tr>';
+  }).join('');
+
+  return '<div class="card">' +
+    '<div class="card-title">OF ' + escapeHtml(String(_colaOF)) +
+      ' <span style="font-weight:400;color:var(--text-muted)">· ' + hPend.toFixed(1) + ' h pendientes</span></div>' +
+    '<div style="overflow-x:auto"><table class="dsh-tabla"><thead><tr>' +
+      '<th style="width:30px">#</th><th>Área</th><th>Operación</th>' +
+      '<th class="c" style="width:74px">Total</th><th class="c" style="width:66px">Hecho</th>' +
+      '<th class="c" style="width:74px">Falta</th><th class="c" style="width:90px">Unidad</th>' +
+      '<th class="c" style="width:70px">Horas</th><th style="width:150px"></th>' +
+    '</tr></thead><tbody>' + filas + '</tbody></table></div>' +
+    '<div style="margin-top:10px;font-size:11px;color:var(--text-muted)">' +
+      '«Hecho» se cuenta desde los tickets que salieron de cada línea, no de un contador aparte: ' +
+      'si se corrige un ticket, la cola se corrige sola. Un cierre por motivo no descuenta — el trabajo sigue faltando.' +
+    '</div>' +
+  '</div>';
+}
+
+// ---------------------------------------------------------------- acciones
+function elegirOFCola(of){ _colaOF = of; renderCola(); }
+
+function poblarSelectProyectoCola(){
+  const s = document.getElementById('cola-proyecto');
+  if(!s) return;
+  const actual = s.value;
+  s.innerHTML = '<option value="">Seleccionar…</option>';
+  Object.keys(proyectos).forEach(p => s.add(new Option(p, p)));
+  if(actual) s.value = actual;
+}
+
+// Solo se ofrecen los productos que ya tienen ruta: elegir uno sin ruta y descubrirlo después
+// es hacer perder un paso a quien arma el tareo.
+function actualizarProductosCola(){
+  const proy = (document.getElementById('cola-proyecto')||{}).value || '';
+  const s = document.getElementById('cola-producto');
+  if(!s) return;
+  s.innerHTML = '<option value="">Seleccionar…</option>';
+  const lista = (proyectos[proy] || []).filter(p => !!rutaDe(normProducto(p)));
+  lista.forEach(p => s.add(new Option(p, p)));
+  if(proy && !lista.length) s.innerHTML = '<option value="">Ningún producto de este proyecto tiene ruta</option>';
+  const m = document.getElementById('cola-muebles'); if(m) m.value = '';
+  previsualizarCola();
+}
+
+// El tamaño del lote ya está escrito en el nombre del producto: se propone y se puede cambiar.
+function alElegirProductoCola(){
+  const etiqueta = (document.getElementById('cola-producto')||{}).value || '';
+  const m = document.getElementById('cola-muebles');
+  const lote = String(etiqueta).match(/\((\d+)\s*(und|unid|unidad|unidades|juegos?|glb)\s*\)/i);
+  if(m) m.value = lote ? lote[1] : '';
+  previsualizarCola();
+}
+
+// No crea el ticket: rellena el formulario de tareo y lleva allí. Así el ticket pasa por la
+// misma validación, el mismo aviso de sobrecarga y el mismo control de duplicados que siempre.
+// Un segundo camino para crear tickets sería un segundo juego de reglas que se desincroniza.
+function pasarAlTareo(fbId){
+  const l = cola.find(x => x.fbId === fbId);
+  if(!l) return;
+  const pend = pendienteLinea(l);
+  showPage('tareo');
+  const set = (id, v)=>{ const e = document.getElementById(id); if(e && v != null) e.value = v; };
+  set('t-proyecto', l.proyectoCodigo);
+  actualizarProductos();
+  set('t-producto', l.productoEtiqueta);
+  set('t-area-ejec', l.area);
+  actualizarOperaciones();
+  set('t-operacion', l.operacion);
+  mostrarUnidadOperacion();
+  set('t-n', pend || '');
+  set('t-tu', l.tu || '');
+  calcTT();
+  window._colaId = fbId;
+  const av = document.getElementById('t-tarea');
+  if(av && !av.value) av.value = '';
+  showAlert('tareo', 'Viene de la cola de la OF ' + (l.of || '') + ' — falta ' +
+    (pend != null ? pend : '?') + ' ' + (l.unidad || 'und') + '. Elige quién y qué día.', 'success', 6000);
+}
+
+async function cerrarLinea(fbId){
+  const l = cola.find(x => x.fbId === fbId);
+  if(!l) return;
+  if(!confirm('Cerrar «' + (l.operacion||'') + '» de esta OF. Deja de aparecer como pendiente.\n\n¿Continuar?')) return;
+  await escribir('cerrar la línea', ()=>updateDoc(doc(db,'cola',fbId), {estado:'cerrada'}), {pagina:'cola'});
+}
+
+async function reabrirLinea(fbId){
+  await escribir('reabrir la línea', ()=>updateDoc(doc(db,'cola',fbId), {estado:'abierta'}), {pagina:'cola'});
+}
+
+window.previsualizarCola = previsualizarCola;
+window.generarCola = generarCola;
+window.elegirOFCola = elegirOFCola;
+window.actualizarProductosCola = actualizarProductosCola;
+window.alElegirProductoCola = alElegirProductoCola;
+window.pasarAlTareo = pasarAlTareo;
+window.cerrarLinea = cerrarLinea;
+window.reabrirLinea = reabrirLinea;
+
 // ===== REDIBUJADO SELECTIVO =====
 // Antes, cada cambio en cualquier ticket redibujaba las siete vistas, estuvieran o no en
 // pantalla. Ahora solo se redibuja la que se está viendo; showPage() refresca la vista a la
@@ -6188,7 +6580,7 @@ function showAlert(pagina,msg,tipo,ms){
 function showPage(nombre){if(_foco&&_foco.pagina!==nombre)limpiarFoco();document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');// Antes se buscaba la pestaña activa por el texto de su onclick, lo que obligaba a que el
 // markup del menú no cambiara nunca. data-page es exactamente para esto.
 document.querySelectorAll(`nav .tab[data-page="${nombre}"], .mobile-menu-item[data-page="${nombre}"]`).forEach(el=>el.classList.add('active'));
-document.querySelectorAll('nav .tab-menu').forEach(m=>m.classList.toggle('dentro', !!m.querySelector(`.tab[data-page="${nombre}"]`)));if(nombre==='hoy'||nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='rutas')renderRutas();if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();if(ofs&&ofs.length){renderTorre();if(_foco&&_foco.pagina==='torre')setTimeout(aplicarFoco,0);}}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
+document.querySelectorAll('nav .tab-menu').forEach(m=>m.classList.toggle('dentro', !!m.querySelector(`.tab[data-page="${nombre}"]`)));if(nombre==='hoy'||nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='cola')renderCola();if(nombre==='rutas')renderRutas();if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();if(ofs&&ofs.length){renderTorre();if(_foco&&_foco.pagina==='torre')setTimeout(aplicarFoco,0);}}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
@@ -7075,8 +7467,8 @@ const DOMINIO_EMPRESA = 'matransaperu.com';
 // manda es el arreglo `pestanas` de la ficha, que se edita casilla por casilla.
 // A proposito NO llevan nombres de personas: este archivo es publico.
 const PLANTILLAS_ACCESO = {
-  completo:    {etq:'Acceso completo',      pestanas:['hoy','atencion','tareo','andree','kanban','rutas','torre','planificacion','personal','m3','dashboard','historial','notas','config']},
-  operaciones: {etq:'Operaciones',          pestanas:['hoy','atencion','tareo','andree','kanban','rutas','torre','planificacion','personal','m3','dashboard','historial','notas']},
+  completo:    {etq:'Acceso completo',      pestanas:['hoy','atencion','tareo','cola','andree','kanban','rutas','torre','planificacion','personal','m3','dashboard','historial','notas','config']},
+  operaciones: {etq:'Operaciones',          pestanas:['hoy','atencion','tareo','cola','andree','kanban','rutas','torre','planificacion','personal','m3','dashboard','historial','notas']},
   registro:    {etq:'Registro de tiempos',  pestanas:['hoy','atencion','tareo','andree','kanban','historial']},
   supervision: {etq:'Supervisión',      pestanas:['hoy','atencion','personal','rutas','torre','kanban','historial','notas']},
   lectura:     {etq:'Solo lectura',         pestanas:['hoy','atencion','torre','dashboard','historial']}
@@ -8581,6 +8973,21 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
   <div class="actions no-print" style="margin-top:1rem">
     <button class="btn btn-primary" id="btn-imprimir" style="display:none" onclick="abrirSelectorImpresion()">🖨 Imprimir tickets</button>
   </div>
+</div>
+
+<!-- COLA DE OF -->
+<div class="page" id="page-cola">
+  <div id="alert-cola" style="display:none" class="alert"></div>
+  <div class="card" style="padding-bottom:12px">
+    <div class="card-title">Cola de trabajo de la OF</div>
+    <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">
+      Lo que la OF necesita, sacado de la ruta: operación por operación, con la cantidad y las horas.
+      <strong>No es un tareo</strong> — no tiene fecha ni persona, y no cuenta contra el plan hasta que
+      alguien la pase al tareo y decida quién y qué día. Lo hecho se cuenta desde los tickets que
+      salieron de cada línea.
+    </div>
+  </div>
+  <div id="cola-content"></div>
 </div>
 
 <!-- RUTAS -->
