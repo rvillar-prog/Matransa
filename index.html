@@ -11,7 +11,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, setDoc, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBb0kvH9bRKUxCBkLD3FCUThDOarFn9UsU",
@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-17 \u00b7 F2-27';
+const VERSION_APP = 'v2026-09-17 \u00b7 F2-28';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -245,8 +245,10 @@ function escapeHtml(str){
 // sensibles — evita que alguien dispare estas acciones por accidente o desde un perfil no-admin.
 // Cualquiera con la consola del navegador puede editar localStorage y saltarse esto: la protección
 // real depende de las Reglas de Seguridad de Firestore (Fase 3 del plan de auditoría).
+// La definicion viva esta en el bloque de sesion, al final del modulo. Aqui se deja el puente
+// para que las funciones que la llaman antes de que ese bloque se evalue no rompan.
 function requiereAdmin(){
-  if(perfilActivo!=='ricardo'){ alert('Esta acción es solo para el administrador (Ricardo).'); return false; }
+  if(!esAdmin()){ alert('Esta acción es solo para el administrador.'); return false; }
   return true;
 }
 
@@ -281,13 +283,9 @@ async function init() {
   // La barra se dibuja siempre, aunque todavía no haya perfil elegido: si no, quedaría
   // vacía mientras el selector de perfil está abierto.
   renderTabs();
-  // Cargar perfil guardado — si no hay perfil, mostrar selector obligatorio
-  if(!cargarPerfil()) {
-    // Sin perfil: mostrar selector y esperar selección antes de continuar
-    mostrarSelectorPerfil();
-  } else {
-    aplicarPerfil();
-  }
+  // Cuando init() corre, la sesion ya sabe quien entro y con que permisos: el portero de
+  // abajo no la llama hasta tener la ficha leida.
+  aplicarPerfil();
   setStatus('Conectando...');
   await cargarTrabajadores();
   suscribirTrabajadores();
@@ -1010,61 +1008,10 @@ function imprimirHoy(fechaFiltro){
 
 
 
-// ===== SISTEMA DE PERFILES =====
-const PERFILES = {
-  'ricardo': {
-    nombre: 'Ricardo Villar',
-    rol: 'Admin',
-    icono: '👤',
-    color: '#1a1a18',
-    pestanas: ['hoy','atencion','personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','notas','config'],
-    admin: true
-  },
-  'pablo': {
-    nombre: 'Pablo Arce',
-    rol: 'Operaciones',
-    icono: '📋',
-    color: 'var(--info-fuerte)',
-    pestanas: ['hoy','atencion','personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','notas','config'],
-    admin: false
-  },
-  'andree': {
-    nombre: 'Andree Villafuerte',
-    rol: 'Registro',
-    icono: '⏱',
-    color: 'var(--ok)',
-    pestanas: ['hoy','atencion','personal','torre','tareo','andree','kanban','historial','planificacion','m3','dashboard','notas','config'],
-    admin: false
-  },
-  'neicer': {
-    nombre: 'Neicer Calampa',
-    rol: 'Supervisión',
-    icono: '👁',
-    color: '#7c3aed',
-    pestanas: ['hoy','atencion','personal','torre','kanban','historial','notas'],
-    admin: false
-  }
-};
-
-let perfilActivo = null;
-
-function getPerfil() {
-  return perfilActivo;
-}
-
-function cargarPerfil() {
-  const guardado = localStorage.getItem('matransa_perfil');
-  if(guardado && PERFILES[guardado]) {
-    perfilActivo = guardado;
-    return true;
-  }
-  return false;
-}
-
-function guardarPerfil(key) {
-  localStorage.setItem('matransa_perfil', key);
-  perfilActivo = key;
-}
+// ===== PERFILES =====
+// Vivian aqui, en codigo duro, con los nombres reales de cuatro personas dentro de un
+// repositorio publico y la eleccion guardada en localStorage. Ahora viven en Firestore
+// (usuarios/{correo}) y se editan desde Configuracion. Ver el bloque de sesion al final.
 
 // ===== NAVEGACIÓN AGRUPADA =====
 // Doce pestañas al mismo nivel obligan a recordar dónde vive cada cosa. Se agrupan por el
@@ -1154,7 +1101,7 @@ function cerrarMenusNav(){
 window.cerrarMenusNav=cerrarMenusNav;
 
 function aplicarPerfil() {
-  const perfil = PERFILES[perfilActivo];
+  const perfil = usuarioActivo;
   if(!perfil) return;
   if(!document.querySelector('nav .tabs .tab')) renderTabs();
   // Primero mostrar todos, luego ocultar los que no corresponden
@@ -1165,7 +1112,7 @@ function aplicarPerfil() {
     const page = tab.dataset.page;
     if(!perfil.pestanas.includes(page)) tab.style.display = 'none';
   });
-  // Un rótulo de grupo cuyas pestañas están todas ocultas para este perfil no debe quedar
+  // Un rotulo de grupo cuyas pestanas estan todas ocultas para este perfil no debe quedar
   // colgado sin nada debajo.
   document.querySelectorAll('.tab-grupo[data-grupo]').forEach(rot => {
     const g = GRUPOS_NAV.find(x => x.grupo === rot.dataset.grupo);
@@ -1174,24 +1121,14 @@ function aplicarPerfil() {
   });
   const adminSection = document.getElementById('config-admin-section');
   if(adminSection) adminSection.style.display = perfil.admin ? '' : 'none';
+  const caja = document.getElementById('config-usuarios-caja');
+  if(caja) caja.style.display = perfil.admin ? '' : 'none';
   const indicator = document.getElementById('perfil-indicator');
-  if(indicator) indicator.textContent = perfil.icono + ' ' + perfil.nombre.split(' ')[0];
+  if(indicator) indicator.textContent = perfil.nombre.split(' ')[0] + ' \u00b7 salir';
+  suscribirUsuarios();
 }
 
-function mostrarSelectorPerfil() {
-  document.getElementById('modal-perfil').style.display = 'flex';
-}
 
-function seleccionarPerfil(key) {
-  guardarPerfil(key);
-  document.getElementById('modal-perfil').style.display = 'none';
-  aplicarPerfil();
-  // Ir a primera pestaña disponible
-  const perfil = PERFILES[key];
-  if(perfil.pestanas.length) showPage(perfil.pestanas[0]);
-}
-window.mostrarSelectorPerfil = mostrarSelectorPerfil;
-window.seleccionarPerfil = seleccionarPerfil;
 
 // ===== CONSTANTES GLOBALES CENTRALIZADAS =====
 const CARGOS_PRODUCTIVOS = ['OPERARIO BASE', 'OPERARIO INTERMEDIO', 'OPERARIO SUPERIOR'];
@@ -5850,7 +5787,7 @@ function renderNotas() {
     grid.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:3rem;color:var(--text-muted)"><div style="font-size:48px;margin-bottom:12px">📝</div><div>No hay notas. ¡Agrega la primera!</div></div>';
     return;
   }
-  const esAdmin = perfilActivo==='ricardo';
+  const puedeEditarEstado = esAdmin();
   grid.innerHTML = filtradas.map(n=>{
     const cfg = NOTA_CONFIG[n.categoria]||NOTA_CONFIG['observacion'];
     const est = ESTADO_CONFIG[n.estado||'nueva']||ESTADO_CONFIG['nueva'];
@@ -5864,7 +5801,7 @@ function renderNotas() {
       +'<div style="font-size:10px;color:var(--text-muted);display:flex;justify-content:space-between;align-items:center">'
       +'<span>'+(n.autor||'—')+' · '+fecha+'</span>'
       +'<div style="display:flex;gap:4px">'
-      +(esAdmin?'<select onchange="cambiarEstadoNota(\''+n.fbId+'\',this.value)" style="font-size:10px;padding:2px 4px;border:0.5px solid var(--border);border-radius:4px;background:var(--surface-1)">'
+      +(puedeEditarEstado?'<select onchange="cambiarEstadoNota(\''+n.fbId+'\',this.value)" style="font-size:10px;padding:2px 4px;border:0.5px solid var(--border);border-radius:4px;background:var(--surface-1)">'
         +'<option value="nueva"'+(n.estado==='nueva'?' selected':'')+'>Nueva</option>'
         +'<option value="revision"'+(n.estado==='revision'?' selected':'')+'>En revision</option>'
         +'<option value="resuelta"'+(n.estado==='resuelta'?' selected':'')+'>Resuelta</option>'
@@ -5888,10 +5825,9 @@ async function guardarNota() {
   const texto = document.getElementById('nota-texto').value.trim();
   const categoria = document.getElementById('nota-categoria').value;
   if(!texto){showAlert('config','Escribe algo antes de guardar.','warn');return;}
-  const perfil = PERFILES[perfilActivo];
   await addDoc(collection(db,'notas'),{
     texto, categoria, estado:'nueva',
-    autor: perfil?perfil.nombre.split(' ')[0]:'—',
+    autor: usuarioActivo?usuarioActivo.nombre.split(' ')[0]:'—',
     fecha: new Date().toISOString()
   });
   cerrarNota();
@@ -6070,8 +6006,7 @@ function toggleMobileMenu() {
     // El menú móvil sale de la MISMA constante que la barra de escritorio. Antes tenía su
     // propia lista de etiquetas y ya se había desincronizado: a la pestaña Atención le
     // faltaba su nombre y aparecía como "atencion".
-    const perfil = PERFILES[perfilActivo];
-    const permitidas = perfil?.pestanas || Object.keys(ETIQUETAS_NAV);
+    const permitidas = usuarioActivo?.pestanas || Object.keys(ETIQUETAS_NAV);
     const items = document.getElementById('mobile-menu-items');
     const paginaActiva = document.querySelector('.page.active')?.id?.replace('page-','');
     items.innerHTML = GRUPOS_NAV.map(g=>{
@@ -6390,20 +6325,356 @@ window.renderPlanificacion=renderPlanificacion;window.setPlanVista=setPlanVista;
 window.agregarProyecto=agregarProyecto;window.agregarProducto=agregarProducto;window.eliminarProducto=eliminarProducto;window.eliminarProyecto=eliminarProyecto;
 window.agregarTrabajador=agregarTrabajador;window.eliminarTrabajador=eliminarTrabajador;window.iniciarEdicion=iniciarEdicion;window.cerrarModal=cerrarModal;window.guardarEdicion=guardarEdicion;
 
-// Autenticación anónima de Firebase — necesaria antes de que las Reglas de Seguridad de Firestore
-// puedan exigir "request.auth != null" sin romper la app para los usuarios reales.
-// No agrega login visible: cada dispositivo se autentica solo, en silencio, igual que hoy.
+// ===== SESION Y PERMISOS (F2-28) =====
+//
+// Hasta aqui la app entraba sola con una sesion anonima y el "perfil" se elegia en un modal que
+// guardaba la eleccion en localStorage. Eso significaba dos cosas, las dos malas:
+//
+//   1. Cualquiera con la direccion publica veia los nombres, las horas y las ausencias de 37
+//      personas. La app no preguntaba quien eras porque no tenia forma de saberlo.
+//   2. requiereAdmin() era decorativo. perfilActivo era una variable del navegador: bastaba
+//      abrir la consola y escribir perfilActivo='ricardo' para ser administrador.
+//
+// Ahora la identidad la pone Google con el correo corporativo, y los permisos viven en
+// Firestore, no en este archivo:
+//
+//   usuarios/{correo} = { nombre, rol, admin, pestanas?, activo? }
+//
+// Sin ficha no se ve nada. La ficha es la autorizacion, y la edita el administrador desde la
+// pantalla de Configuracion — las reglas de Firestore la dejan de solo lectura para el resto,
+// asi que nadie puede ascenderse a si mismo.
+//
+// Se escucha la ficha propia con onSnapshot, no se lee una sola vez: si el administrador le
+// quita una pestana a alguien que tiene la app abierta, desaparece en el momento.
+
+const DOMINIO_EMPRESA = 'matransaperu.com';
+
+// Plantillas de permisos. Son un punto de partida al crear una cuenta, no una jaula: lo que
+// manda es el arreglo `pestanas` de la ficha, que se edita casilla por casilla.
+// A proposito NO llevan nombres de personas: este archivo es publico.
+const PLANTILLAS_ACCESO = {
+  completo:    {etq:'Acceso completo',      pestanas:['hoy','atencion','tareo','andree','kanban','torre','planificacion','personal','m3','dashboard','historial','notas','config']},
+  operaciones: {etq:'Operaciones',          pestanas:['hoy','atencion','tareo','andree','kanban','torre','planificacion','personal','m3','dashboard','historial','notas']},
+  registro:    {etq:'Registro de tiempos',  pestanas:['hoy','atencion','tareo','andree','kanban','historial']},
+  supervision: {etq:'Supervisión',      pestanas:['hoy','atencion','personal','torre','kanban','historial','notas']},
+  lectura:     {etq:'Solo lectura',         pestanas:['hoy','atencion','torre','dashboard','historial']}
+};
+
+const TODAS_LAS_PESTANAS = PLANTILLAS_ACCESO.completo.pestanas;
+
+// La sesion viva. Null mientras no haya nadie dentro.
+let usuarioActivo = null;      // {correo, nombre, rol, admin, pestanas}
+let _paraFicha = null;         // para cortar el onSnapshot de la ficha al salir
 let appIniciada = false;
-signInAnonymously(auth).catch(err=>{
-  console.error('Error de autenticación con Firebase:', err);
-  document.body.innerHTML = '<div style="padding:2rem;text-align:center;font-family:sans-serif;color:var(--crit)">No se pudo conectar con el servidor. Verifica tu conexión a internet y recarga la página.</div>';
-});
-onAuthStateChanged(auth, (user) => {
-  if(user && !appIniciada){
-    appIniciada = true;
-    init();
+
+// Una ficha sin `pestanas` vale por todas. Sirve para arrancar: la primera cuenta se crea a
+// mano en la consola con tres campos y no hay que escribir trece nombres de pestana.
+function permisosDeFicha(correo, d){
+  return {
+    correo,
+    nombre: d.nombre || correo.split('@')[0],
+    rol: d.rol || '',
+    admin: d.admin === true,
+    pestanas: Array.isArray(d.pestanas) && d.pestanas.length ? d.pestanas : TODAS_LAS_PESTANAS.slice()
+  };
+}
+
+function esAdmin(){ return !!(usuarioActivo && usuarioActivo.admin); }
+
+function getPerfil(){ return usuarioActivo ? usuarioActivo.correo : null; }
+
+// ----- Pantalla de entrada ---------------------------------------------------------------
+function mostrarLogin(msg, tono){
+  const p = document.getElementById('pantalla-login');
+  if(p) p.style.display = 'flex';
+  const e = document.getElementById('login-aviso');
+  if(e){
+    e.textContent = msg || '';
+    e.className = 'login-aviso' + (msg ? (' ' + (tono || 'error')) : '');
+    e.style.display = msg ? 'block' : 'none';
   }
+  const b = document.getElementById('login-btn');
+  if(b) b.disabled = false;
+}
+
+function ocultarLogin(){
+  const p = document.getElementById('pantalla-login');
+  if(p) p.style.display = 'none';
+}
+
+async function entrarConGoogle(){
+  const b = document.getElementById('login-btn');
+  if(b) b.disabled = true;
+  mostrarLogin('', '');
+  if(b) b.disabled = true;
+  try{
+    const prov = new GoogleAuthProvider();
+    // hd le dice al selector de Google que muestre primero las cuentas del dominio. Es una
+    // comodidad, NO un control: la verificacion de verdad la hacen las reglas de Firestore,
+    // que miran el correo del token en el servidor.
+    prov.setCustomParameters({ hd: DOMINIO_EMPRESA, prompt: 'select_account' });
+    await signInWithPopup(auth, prov);
+  }catch(err){
+    console.error('Error al entrar:', err);
+    const c = err && err.code || '';
+    if(c === 'auth/popup-closed-by-user' || c === 'auth/cancelled-popup-request'){
+      mostrarLogin('', '');
+    }else if(c === 'auth/popup-blocked'){
+      mostrarLogin('El navegador bloqueó la ventana de Google. Permite las ventanas emergentes para este sitio y vuelve a intentar.');
+    }else if(c === 'auth/unauthorized-domain'){
+      mostrarLogin('Este dominio no está autorizado en Firebase. Hay que agregarlo en Authentication → Configuración → Dominios autorizados.');
+    }else{
+      mostrarLogin('No se pudo entrar: ' + (err && err.message || 'error desconocido'));
+    }
+  }
+}
+
+async function salirDeLaApp(){
+  if(_paraFicha){ try{ _paraFicha(); }catch(e){} _paraFicha = null; }
+  usuarioActivo = null;
+  try{ await signOut(auth); }catch(e){ console.error(e); }
+  // Se recarga en vez de intentar desmontar la app a mano: hay una docena de suscripciones a
+  // Firestore vivas y arreglos cargados en memoria con datos de personas. Recargar es la unica
+  // forma honesta de dejar la pantalla limpia para el que entre despues.
+  location.reload();
+}
+
+window.entrarConGoogle = entrarConGoogle;
+window.salirDeLaApp = salirDeLaApp;
+
+// ----- El portero ------------------------------------------------------------------------
+function escucharFichaPropia(correo){
+  if(_paraFicha){ try{ _paraFicha(); }catch(e){} }
+  _paraFicha = onSnapshot(doc(db, 'usuarios', correo),
+    snap => {
+      const d = snap.exists() ? snap.data() : null;
+      if(!d || d.activo === false){
+        // Autenticado no es lo mismo que autorizado. Google dice quien es; la ficha dice si
+        // puede pasar. Sin ficha, la sesion se cierra: no tiene sentido dejar a alguien dentro
+        // mirando una pantalla que Firestore le va a negar dato por dato.
+        usuarioActivo = null;
+        if(_paraFicha){ try{ _paraFicha(); }catch(e){} _paraFicha = null; }
+        signOut(auth).catch(()=>{});
+        mostrarLogin('La cuenta ' + correo + ' no tiene acceso a MATRANSA. Pide al administrador que te dé de alta.');
+        return;
+      }
+      const antes = usuarioActivo;
+      usuarioActivo = permisosDeFicha(correo, d);
+      ocultarLogin();
+      if(!appIniciada){
+        appIniciada = true;
+        init();
+      }else{
+        // Cambio de permisos en caliente. Si le quitaron la pestana en la que estaba parado,
+        // se le mueve a la primera que si tenga en vez de dejarlo en una pagina prohibida.
+        aplicarPerfil();
+        const actual = paginaActiva();
+        if(actual && !usuarioActivo.pestanas.includes(actual)){
+          showPage(usuarioActivo.pestanas[0] || 'hoy');
+        }
+        if(antes && antes.admin !== usuarioActivo.admin) renderConfigUsuarios();
+      }
+    },
+    err => {
+      console.error('No se pudo leer la ficha de usuario:', err);
+      mostrarLogin('No se pudo verificar tu acceso. Revisa tu conexión y vuelve a intentar.');
+      signOut(auth).catch(()=>{});
+    });
+}
+
+onAuthStateChanged(auth, (user) => {
+  if(!user){
+    if(appIniciada) return;   // ya se esta recargando tras salir
+    mostrarLogin();
+    return;
+  }
+  const correo = String(user.email || '').toLowerCase().trim();
+  // Una sesion sin correo es una sesion anonima de la version anterior, guardada en este
+  // navegador. No se avisa nada: se cierra en silencio y se pide entrar.
+  if(!correo){ signOut(auth).catch(()=>{}); mostrarLogin(); return; }
+  if(!correo.endsWith('@' + DOMINIO_EMPRESA)){
+    signOut(auth).catch(()=>{});
+    mostrarLogin('MATRANSA solo admite cuentas @' + DOMINIO_EMPRESA + '. Entraste con ' + correo + '.');
+    return;
+  }
+  escucharFichaPropia(correo);
 });
+
+// ===== USUARIOS Y PERMISOS — pantalla de administracion (F2-28) =====
+//
+// Los permisos cambian con la realidad: hoy alguien apoya en Configuracion y en tres meses no.
+// Mandar al Jefe de Operaciones a la consola de Firebase cada vez lo vuelve dependiente de una
+// herramienta de programador para una decision suya. Aqui se hace desde la app.
+//
+// Quien puede entrar aqui: solo una cuenta con admin=true, y no porque la pantalla se esconda
+// — esconder un boton no es seguridad — sino porque las reglas de Firestore niegan la escritura
+// en `usuarios` a cualquier otro. La pantalla oculta es comodidad; el candado esta en el servidor.
+
+let usuariosLista = [];
+let _paraUsuarios = null;
+
+function suscribirUsuarios(){
+  // Solo el administrador puede listar la coleccion. Para el resto la suscripcion daria un error
+  // de permisos en consola cada pocos segundos, asi que ni se abre.
+  if(!esAdmin()){
+    if(_paraUsuarios){ try{ _paraUsuarios(); }catch(e){} _paraUsuarios = null; }
+    usuariosLista = [];
+    return;
+  }
+  if(_paraUsuarios) return;
+  _paraUsuarios = onSnapshot(collection(db, 'usuarios'),
+    snap => {
+      usuariosLista = snap.docs.map(d => Object.assign({correo: d.id}, d.data()))
+                               .sort((a,b) => String(a.nombre||a.correo).localeCompare(String(b.nombre||b.correo)));
+      renderConfigUsuarios();
+    },
+    err => console.error('No se pudo leer la lista de usuarios:', err));
+}
+
+function renderConfigUsuarios(){
+  const cont = document.getElementById('config-usuarios');
+  if(!cont) return;
+  const selPl = document.getElementById('usr-plantilla');
+  if(selPl && !selPl.options.length){
+    Object.entries(PLANTILLAS_ACCESO).forEach(([k,v]) => selPl.add(new Option(v.etq, k)));
+    selPl.value = 'registro';
+  }
+  const caja = document.getElementById('config-usuarios-caja');
+  if(caja) caja.style.display = esAdmin() ? '' : 'none';
+  if(!esAdmin()){ cont.innerHTML = ''; return; }
+  if(!usuariosLista.length){
+    cont.innerHTML = '<div class="dsh-nd">Todavía no hay cuentas dadas de alta. La tuya debería '+
+      'aparecer aquí: si no está, revisa que el documento en Firestore tenga tu correo exacto como ID.</div>';
+    return;
+  }
+  const admins = usuariosLista.filter(u => u.admin === true).length;
+  cont.innerHTML = usuariosLista.map(u => {
+    const yo = u.correo === (usuarioActivo && usuarioActivo.correo);
+    const pest = Array.isArray(u.pestanas) && u.pestanas.length ? u.pestanas : TODAS_LAS_PESTANAS;
+    const inactivo = u.activo === false;
+    // Al ultimo administrador no se le puede quitar el permiso: dejaria la app sin nadie que
+    // pueda volver a darlo, y la unica salida seria la consola de Firebase.
+    const ultimoAdmin = u.admin === true && admins <= 1;
+    return '<div class="usr-fila'+(inactivo?' apagada':'')+'">'+
+      '<div class="usr-cab">'+
+        '<div>'+
+          '<div class="usr-nombre">'+escapeHtml(u.nombre||u.correo)+
+            (yo?' <span class="usr-chip">tú</span>':'')+
+            (u.admin?' <span class="usr-chip admin">administrador</span>':'')+
+            (inactivo?' <span class="usr-chip off">sin acceso</span>':'')+'</div>'+
+          '<div class="usr-correo mono">'+escapeHtml(u.correo)+
+            (u.rol?' · '+escapeHtml(u.rol):'')+'</div>'+
+        '</div>'+
+        '<div class="usr-acciones">'+
+          '<label class="usr-check'+(ultimoAdmin?' bloq':'')+'" title="'+
+            (ultimoAdmin?'No se puede quitar: es el único administrador que queda':'Permite backup, limpieza de duplicados y migraciones')+'">'+
+            '<input type="checkbox"'+(u.admin?' checked':'')+(ultimoAdmin?' disabled':'')+
+            ' onchange="cambiarAdminUsuario(\''+escapeHtml(u.correo)+'\', this.checked)"> admin</label>'+
+          '<button class="btn btn-xs" onclick="alternarAccesoUsuario(\''+escapeHtml(u.correo)+'\')"'+
+            (yo?' disabled title="No puedes quitarte el acceso a ti mismo"':'')+'>'+
+            (inactivo?'Reactivar':'Quitar acceso')+'</button>'+
+          '<button class="btn btn-xs btn-peligro" onclick="borrarUsuario(\''+escapeHtml(u.correo)+'\')"'+
+            (yo?' disabled title="No puedes borrar tu propia cuenta"':'')+'>Borrar</button>'+
+        '</div>'+
+      '</div>'+
+      '<div class="usr-pestanas">'+
+        TODAS_LAS_PESTANAS.map(p =>
+          '<label class="usr-pest'+(pest.includes(p)?' on':'')+'">'+
+            '<input type="checkbox"'+(pest.includes(p)?' checked':'')+
+            ' onchange="cambiarPestanaUsuario(\''+escapeHtml(u.correo)+'\', \''+p+'\', this.checked)">'+
+            escapeHtml(ETIQUETAS_NAV[p]||p)+'</label>').join('')+
+      '</div>'+
+      '<div class="usr-plantillas">Aplicar plantilla: '+
+        Object.entries(PLANTILLAS_ACCESO).map(([k,v]) =>
+          '<button class="btn btn-xs" onclick="aplicarPlantillaUsuario(\''+escapeHtml(u.correo)+'\', \''+k+'\')">'+
+          escapeHtml(v.etq)+'</button>').join(' ')+
+      '</div>'+
+    '</div>';
+  }).join('');
+}
+
+function fichaDe(correo){ return usuariosLista.find(u => u.correo === correo); }
+
+async function cambiarPestanaUsuario(correo, pagina, marcado){
+  const u = fichaDe(correo); if(!u) return;
+  const base = Array.isArray(u.pestanas) && u.pestanas.length ? u.pestanas.slice() : TODAS_LAS_PESTANAS.slice();
+  let nuevas = marcado ? base.concat([pagina]) : base.filter(p => p !== pagina);
+  nuevas = TODAS_LAS_PESTANAS.filter(p => nuevas.includes(p));   // orden estable, sin repetidos
+  if(!nuevas.length){
+    showAlert('config','Una cuenta sin ninguna pestaña no podría usar la app. Si quieres cerrarle el paso, usa "Quitar acceso".','warn');
+    renderConfigUsuarios();
+    return;
+  }
+  await escribir('cambiar los permisos', ()=>updateDoc(doc(db,'usuarios',correo), {pestanas:nuevas}), {pagina:'config'});
+}
+
+async function aplicarPlantillaUsuario(correo, clave){
+  const pl = PLANTILLAS_ACCESO[clave]; if(!pl) return;
+  await escribir('aplicar la plantilla',
+    ()=>updateDoc(doc(db,'usuarios',correo), {pestanas: pl.pestanas.slice()}),
+    {pagina:'config', exito:'Permisos de '+correo+': '+pl.etq});
+}
+
+async function cambiarAdminUsuario(correo, valor){
+  if(correo === (usuarioActivo && usuarioActivo.correo) && !valor){
+    if(!confirm('Te vas a quitar a ti mismo el permiso de administrador.\n\nSi no queda nadie más con '+
+                'ese permiso, la única forma de recuperarlo será entrando a la consola de Firebase.\n\n'+
+                '¿Seguro?')){ renderConfigUsuarios(); return; }
+  }
+  await escribir('cambiar el permiso de administrador',
+    ()=>updateDoc(doc(db,'usuarios',correo), {admin: valor===true}), {pagina:'config'});
+}
+
+async function alternarAccesoUsuario(correo){
+  const u = fichaDe(correo); if(!u) return;
+  const quitando = u.activo !== false;
+  if(quitando && !confirm('¿Quitar el acceso de '+correo+'?\n\nPodrá iniciar sesión con Google pero no '+
+                          'verá ningún dato. Sus tickets y su historial no se tocan.')) return;
+  await escribir(quitando?'quitar el acceso':'reactivar el acceso',
+    ()=>updateDoc(doc(db,'usuarios',correo), {activo: !quitando}),
+    {pagina:'config', exito: quitando ? 'Acceso retirado a '+correo : 'Acceso devuelto a '+correo});
+}
+
+async function borrarUsuario(correo){
+  if(!confirm('¿Borrar la ficha de '+correo+'?\n\nEs lo mismo que quitarle el acceso, pero sin dejar '+
+              'rastro de que la cuenta existió. Si solo quieres cerrarle el paso por un tiempo, '+
+              'usa "Quitar acceso".\n\nSus tickets y su historial no se tocan.')) return;
+  await escribir('borrar la cuenta', ()=>deleteDoc(doc(db,'usuarios',correo)),
+    {pagina:'config', exito:'Cuenta '+correo+' eliminada'});
+}
+
+async function agregarUsuario(){
+  const correo = String(document.getElementById('usr-correo').value||'').toLowerCase().trim();
+  const nombre = String(document.getElementById('usr-nombre').value||'').trim();
+  const rol    = String(document.getElementById('usr-rol').value||'').trim();
+  const clave  = document.getElementById('usr-plantilla').value;
+  const marcar = document.getElementById('usr-admin').checked;
+  if(!correo.endsWith('@'+DOMINIO_EMPRESA)){
+    showAlert('config','El correo tiene que ser del dominio @'+DOMINIO_EMPRESA+'. Las cuentas de fuera no pueden entrar aunque tengan ficha.','warn');
+    return;
+  }
+  if(!nombre){ showAlert('config','Escribe el nombre con el que quieres que aparezca en pantalla.','warn'); return; }
+  if(fichaDe(correo)){ showAlert('config','Esa cuenta ya está dada de alta.','warn'); return; }
+  const pl = PLANTILLAS_ACCESO[clave] || PLANTILLAS_ACCESO.registro;
+  const ok = await escribir('dar de alta la cuenta',
+    ()=>setDoc(doc(db,'usuarios',correo), {
+      nombre, rol, admin: marcar===true, pestanas: pl.pestanas.slice(), activo: true,
+      creadaPor: (usuarioActivo&&usuarioActivo.correo)||null,
+      creada: new Date().toISOString()
+    }),
+    {pagina:'config', exito:'Cuenta creada. '+nombre+' ya puede entrar con su correo de Google.'});
+  if(!ok) return;
+  ['usr-correo','usr-nombre','usr-rol'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
+  document.getElementById('usr-admin').checked = false;
+}
+
+window.renderConfigUsuarios = renderConfigUsuarios;
+window.cambiarPestanaUsuario = cambiarPestanaUsuario;
+window.aplicarPlantillaUsuario = aplicarPlantillaUsuario;
+window.cambiarAdminUsuario = cambiarAdminUsuario;
+window.alternarAccesoUsuario = alternarAccesoUsuario;
+window.borrarUsuario = borrarUsuario;
+window.agregarUsuario = agregarUsuario;
 </script>
 <style>
 /* ===== DESIGN SYSTEM — Linear-inspired ===== */
@@ -6649,6 +6920,71 @@ nav .right{display:flex;align-items:center;gap:10px;}
 nav #perfil-indicator{color:var(--text-muted)!important;border-color:var(--border)!important;}
 nav #perfil-indicator:hover{background:var(--surface-2);}
 .page{display:none;padding:1.25rem 1.5rem;max-width:1240px;margin:0 auto;}.page.active{display:block;}
+
+/* ===================== ENTRADA ===================== */
+/* Tapa la app entera. Mientras esto se ve, no hay ni un dato en pantalla: la sesion se
+   resuelve antes de que init() dibuje nada. */
+.login-pantalla{display:none;position:fixed;inset:0;z-index:1000;background:var(--bg);
+  align-items:center;justify-content:center;padding:var(--e-4);}
+.login-caja{background:var(--surface-0);border:1px solid var(--border);border-radius:var(--radius-lg);
+  box-shadow:0 8px 32px rgba(0,0,0,0.10);padding:var(--e-6) var(--e-5);width:100%;max-width:380px;
+  text-align:center;}
+.login-marca{font-family:var(--f-rotulo);font-weight:700;font-size:26px;letter-spacing:.06em;
+  color:var(--text-primary);}
+.login-marca .marca-ac{color:var(--mt-verde);}
+.login-sub{font-size:var(--t-s);color:var(--text-muted);margin-top:var(--e-1);margin-bottom:var(--e-5);}
+.login-btn{width:100%;height:42px;border-radius:var(--radius);border:1px solid var(--mt-verde);
+  background:var(--mt-verde);color:var(--text-inverso);font-family:var(--f-texto);font-size:var(--t-m);
+  font-weight:600;cursor:pointer;transition:background .15s;}
+.login-btn:hover:not(:disabled){background:var(--mt-verde-hondo);}
+.login-btn:disabled{opacity:.6;cursor:default;}
+.login-aviso{margin-top:var(--e-3);font-size:var(--t-s);line-height:1.5;border-radius:var(--radius);
+  padding:var(--e-2) var(--e-3);text-align:left;}
+.login-aviso.error{background:var(--crit-fondo);border:1px solid var(--crit-borde);color:var(--crit);}
+.login-pie{margin-top:var(--e-4);font-size:var(--t-mini);color:var(--text-muted);}
+nav #perfil-indicator{cursor:pointer;font-size:11px;white-space:nowrap;padding:4px 10px;
+  border:1px solid var(--border);border-radius:6px;color:var(--text-muted);}
+
+/* ===================== USUARIOS Y PERMISOS ===================== */
+.usr-fila{border:1px solid var(--border);border-radius:var(--radius);padding:var(--e-3);
+  margin-bottom:var(--e-2);}
+.usr-fila.apagada{opacity:.55;background:var(--surface-1);}
+.usr-cab{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--e-3);
+  flex-wrap:wrap;}
+.usr-nombre{font-size:var(--t-m);font-weight:600;}
+.usr-correo{font-size:var(--t-mini);color:var(--text-muted);margin-top:1px;}
+.usr-chip{font-size:var(--t-micro);background:var(--surface-2);color:var(--text-muted);
+  border-radius:4px;padding:1px 6px;font-weight:600;vertical-align:1px;}
+.usr-chip.admin{background:var(--mt-verde-fondo);color:var(--mt-verde);}
+.usr-chip.off{background:var(--crit-fondo);color:var(--crit);}
+.usr-acciones{display:flex;align-items:center;gap:var(--e-2);flex-wrap:wrap;}
+.usr-check{display:inline-flex;align-items:center;gap:4px;font-size:var(--t-s);
+  color:var(--text-secondary);cursor:pointer;white-space:nowrap;}
+.usr-check.bloq{opacity:.5;cursor:default;}
+.usr-pestanas{display:flex;flex-wrap:wrap;gap:4px;margin-top:var(--e-3);padding-top:var(--e-2);
+  border-top:1px solid var(--border);}
+.usr-pest{display:inline-flex;align-items:center;gap:4px;font-size:var(--t-mini);
+  border:1px solid var(--border);border-radius:20px;padding:2px 9px 2px 6px;cursor:pointer;
+  color:var(--text-muted);}
+.usr-pest.on{border-color:var(--mt-verde-borde);background:var(--mt-verde-fondo);color:var(--mt-verde);
+  font-weight:600;}
+.usr-plantillas{margin-top:var(--e-2);font-size:var(--t-mini);color:var(--text-muted);
+  display:flex;align-items:center;gap:4px;flex-wrap:wrap;}
+.usr-alta{border-top:1px solid var(--border);margin-top:var(--e-4);padding-top:var(--e-3);}
+.usr-alta-tit{font-family:var(--f-rotulo);font-size:var(--t-micro);font-weight:700;
+  text-transform:uppercase;letter-spacing:var(--rotulo-track);color:var(--text-muted);
+  margin-bottom:var(--e-2);}
+.usr-alta-campos{display:flex;gap:var(--e-2);flex-wrap:wrap;align-items:center;}
+.usr-alta-campos input[type="text"],.usr-alta-campos select{height:34px;border:1px solid var(--border);
+  border-radius:var(--radius);padding:0 10px;font-size:var(--t-s);font-family:inherit;
+  background:var(--surface-0);color:var(--text-primary);flex:1 1 170px;min-width:140px;}
+.btn-peligro{color:var(--crit);border-color:var(--crit-borde);}
+.btn-peligro:hover:not(:disabled){background:var(--crit-fondo);}
+.btn:disabled{opacity:.45;cursor:default;}
+@media(max-width:760px){
+  .usr-cab{flex-direction:column;}
+  .usr-alta-campos input[type="text"],.usr-alta-campos select{flex:1 1 100%;}
+}
 
 /* ===================== DASHBOARD — CENTRO DE CONTROL ===================== */
 .dsh-barra{display:flex;align-items:center;justify-content:space-between;gap:var(--e-3);
@@ -7338,7 +7674,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
   <!-- La barra la dibuja renderTabs() desde GRUPOS_NAV; ver la constante en el módulo -->
   <div class="tabs"></div>
   <div class="right" style="display:flex;align-items:center;gap:10px">
-    <div id="perfil-indicator" onclick="mostrarSelectorPerfil()" style="cursor:pointer;font-size:11px;color:rgba(255,255,255,0.5);white-space:nowrap;padding:4px 8px;border:0.5px solid rgba(255,255,255,0.15);border-radius:6px" title="Cambiar perfil">👤 Perfil</div>
+    <div id="perfil-indicator" onclick="salirDeLaApp()" title="Cerrar sesión">Entrando…</div>
     <span id="db-status"></span>
     <div class="fecha-nav" id="fecha-nav"></div>
     <button class="hamburger-btn" onclick="toggleMobileMenu()" aria-label="Menú">☰</button>
@@ -7363,19 +7699,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 </div>
 
 <!-- Modal selector de perfil -->
-<div class="modal-overlay" id="modal-perfil" style="display:none">
-  <div class="modal" style="width:480px;text-align:center">
-    <div style="margin-bottom:1.5rem">
-      <svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin:0 auto 12px">
-        <rect width="100" height="100" rx="10" fill="#1B6B35"/>
-        <text x="50" y="70" font-family="system-ui,sans-serif" font-size="58" font-weight="800" fill="white" text-anchor="middle">M</text>
-      </svg>
-      <div style="font-size:20px;font-weight:700;color:var(--text-primary)">MATRANSA</div>
-      <div style="font-size:13px;color:var(--text-secondary);margin-top:4px">Sistema de Tareos de Producción</div>
-    </div>
-    <div style="font-size:13px;font-weight:500;color:var(--text-primary);margin-bottom:12px">¿Quién eres en este dispositivo?</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:1rem">
-      <button onclick="seleccionarPerfil('ricardo')" style="padding:16px;border:1.5px solid var(--border);border-radius:10px;background:var(--surface-1);cursor:pointer;text-align:center;transition:all 0.15s" onmouseover="this.style.borderColor='#1B6B35'" onmouseout="this.style.borderColor='var(--border)'">
+<div class="modal-overlay" id="modal-perfil-retirado" style="display:none" hidden>onmouseout="this.style.borderColor='var(--border)'">
         <div style="font-size:28px;margin-bottom:6px">👤</div>
         <div style="font-size:13px;font-weight:600;color:var(--text-primary)">Ricardo</div>
         <div style="font-size:11px;color:var(--text-secondary)">Admin</div>
@@ -7684,6 +8008,16 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 </div>
 
 <!-- DASHBOARD -->
+<div id="pantalla-login" class="login-pantalla">
+  <div class="login-caja">
+    <div class="login-marca"><span class="marca">MAT<span class="marca-ac">RANSA</span></span></div>
+    <div class="login-sub">Sistema de tareos de producción</div>
+    <button id="login-btn" class="login-btn" onclick="entrarConGoogle()">Entrar con Google</button>
+    <div id="login-aviso" class="login-aviso" style="display:none"></div>
+    <div class="login-pie">Solo cuentas <span class="mono">@matransaperu.com</span></div>
+  </div>
+</div>
+
 <div class="page" id="page-dashboard">
   <div id="alert-dash" class="alert" style="display:none"></div>
   <div class="dsh-barra">
@@ -7764,6 +8098,27 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     </div>
   </div>
   </div><!-- /config-admin-section -->
+  <div class="card" id="config-usuarios-caja" style="display:none">
+    <div class="card-title">Usuarios y permisos</div>
+    <div class="dsh-nota" style="margin-top:0;margin-bottom:12px">
+      Quién puede entrar a MATRANSA y qué ve cada uno. Los cambios se aplican al instante, sin
+      recargar. Entrar con Google no da acceso por sí solo: hace falta estar en esta lista.
+    </div>
+    <div id="config-usuarios"></div>
+    <div class="usr-alta">
+      <div class="usr-alta-tit">Dar de alta una cuenta</div>
+      <div class="usr-alta-campos">
+        <input type="text" id="usr-correo" placeholder="correo@matransaperu.com">
+        <input type="text" id="usr-nombre" placeholder="Nombre para mostrar">
+        <input type="text" id="usr-rol" placeholder="Rol (Operaciones, Registro…)">
+        <select id="usr-plantilla"></select>
+        <label class="usr-check"><input type="checkbox" id="usr-admin"> admin</label>
+        <button class="btn btn-amber btn-sm" onclick="agregarUsuario()">+ Crear</button>
+      </div>
+      <div class="dsh-nota">La persona entra con el botón de Google usando ese mismo correo. No
+        se le crea contraseña: la cuenta es la de su correo corporativo.</div>
+    </div>
+  </div>
   <div class="card">
     <div class="card-title">Proyectos</div>
     <div id="config-proyectos-unificado"></div>
