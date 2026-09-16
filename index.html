@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-17 \u00b7 F2-30';
+const VERSION_APP = 'v2026-09-18 \u00b7 F2-31';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -153,7 +153,109 @@ const CIERRE_SIN_MEDIR = '__sin_medir__';
 // otros tres (error, reprogramado, no se llego) la nota no agrega nada y sigue siendo opcional.
 // En estos tres la nota ES el dato. "Se cancelo" sin explicacion vale lo mismo que el viejo
 // "se creo por error": saca el ticket de la vista y no deja nada que se pueda leer despues.
+// Se conserva para los cierres viejos y para el motivo que no pide causa. Lo que hoy decide si
+// hace falta explicacion es pideCausa(), abajo.
 const MOTIVOS_EXIGEN_NOTA = ['prioridad', 'insumo', 'cancelado'];
+
+// ===== POR QUE NO SE HIZO — causas estructuradas (F2-31) =====
+//
+// El 40% de lo que se planifica no se ejecuta, y hasta hoy no quedaba escrito por que: de 89
+// cierres solo 18 traian nota, porque 'no_llego' y el retirado 'error' no la exigian. La salida
+// obvia era volver la nota obligatoria en todos los motivos. Los datos dicen que eso no sirve:
+//
+//     prioridad   "SE CAMBIO" · "CAMBIOS" · "CAMBIO DE TAREO" · "SE MODIFICO SILLA"
+//     cancelado   "SE CREO POR ERROR" · "SE CAMBIO"
+//
+// Texto libre obligatorio produce mas de eso. "SE CAMBIO" cumple el requisito y no dice nada, y
+// de paso entrena a la gente a teclear cualquier cosa para pasar la pantalla.
+//
+// Lo que si sirve es pedir una CAUSA de una lista corta, con un clic. Es mas rapido que escribir
+// —asi que no se resiente— y sobre todo queda como dato y no como frase: se puede contar, sumar
+// horas y ordenar. Dos de las 18 notas existentes valian oro ("No esta el mueble en el area",
+// "HUBO REPROCESO EN LA PORTACADENA") y estan recogidas abajo como causas propias, para que no
+// dependan de que alguien tenga ganas de escribirlas.
+//
+// El texto libre sigue existiendo, opcional, para el que quiera detallar. Y es obligatorio si se
+// elige "Otro": una causa sin nombre no se guarda sin explicacion.
+//
+// Editar estas listas es editar este bloque. No hay nada mas que tocar.
+
+const CAUSAS_NO_EJECUCION = {
+  prioridad: [
+    {cod:'urgencia',    etq:'Entró un trabajo más urgente de otra OF'},
+    {cod:'no_estaba',   etq:'El mueble o la pieza no estaba en el área'},
+    {cod:'reproceso',   etq:'Hubo un reproceso que se atendió primero'},
+    {cod:'cambio_dis',  etq:'Cambió el diseño o la medida'},
+    {cod:'pedido',      etq:'Lo pidió el cliente o gerencia'}
+  ],
+  insumo: [
+    {cod:'no_llego_mat',etq:'No llegó el material'},
+    {cod:'mat_malo',    etq:'El material llegó incompleto o con falla'},
+    {cod:'maq_ocupada', etq:'La máquina estaba ocupada'},
+    {cod:'maq_malograda',etq:'La máquina estaba malograda'},
+    {cod:'herramienta', etq:'Faltó herramienta'},
+    {cod:'servicio',    etq:'Falta un servicio externo'}
+  ],
+  no_llego: [
+    {cod:'anterior',    etq:'La tarea anterior se alargó'},
+    {cod:'mas_grande',  etq:'El trabajo era más grande de lo estimado'},
+    {cod:'falto_gente', etq:'Faltó personal'},
+    {cod:'tarde',       etq:'Se asignó tarde, ya no entraba en la jornada'}
+  ],
+  reprogramado: [
+    {cod:'area_previa', etq:'El área anterior no terminó'},
+    {cod:'mat_despues', etq:'El material llega otro día'},
+    {cod:'reorden',     etq:'Se reordenó la semana'}
+  ],
+  cancelado: [
+    {cod:'cambio_dis',  etq:'Cambió el diseño'},
+    {cod:'cliente',     etq:'El cliente lo retiró'},
+    {cod:'otra_forma',  etq:'Se hizo de otra manera o en otra área'},
+    {cod:'ya_estaba',   etq:'Ya estaba hecho'}
+  ]
+};
+
+const CAUSA_OTRO = 'otro';
+
+// Solo se pide causa donde el cierre cuenta contra el plan. 'duplicado' no la pide: ese ticket
+// no es trabajo que se dejo de hacer, y ya deja escrito de cual es gemelo.
+function pideCausa(cod){ return !!CAUSAS_NO_EJECUCION[cod]; }
+
+function causasDe(cod){
+  const base = CAUSAS_NO_EJECUCION[cod] || [];
+  return base.concat([{cod:CAUSA_OTRO, etq:'Otro — lo escribo abajo'}]);
+}
+
+function etiquetaCausa(motivo, cod){
+  if(!cod) return '';
+  if(cod === CAUSA_OTRO) return 'Otro';
+  const c = (CAUSAS_NO_EJECUCION[motivo]||[]).find(x=>x.cod===cod);
+  return c ? c.etq : cod;
+}
+
+// ----- Dibujo de las causas dentro del modal de cierre ------------------------------------
+function renderCausasCierre(){
+  const cont = document.getElementById('ne-causas');
+  const caja = document.getElementById('ne-causas-caja');
+  if(!cont || !caja) return;
+  const sel = document.querySelector('input[name="ne-motivo"]:checked');
+  const cod = sel ? sel.value : '';
+  if(!pideCausa(cod)){ caja.style.display = 'none'; cont.innerHTML = ''; return; }
+  caja.style.display = '';
+  // Ninguna viene marcada a proposito. Preseleccionar la primera es la forma mas rapida de
+  // llenar la base de datos con la primera opcion de cada lista.
+  cont.innerHTML = causasDe(cod).map(c =>
+    '<label class="causa-chip">' +
+      '<input type="radio" name="ne-causa" value="' + c.cod + '" onchange="actualizarAvisoCierre()">' +
+      '<span>' + escapeHtml(c.etq) + '</span>' +
+    '</label>').join('');
+}
+
+function causaElegida(){
+  const c = document.querySelector('input[name="ne-causa"]:checked');
+  return c ? c.value : '';
+}
+window.renderCausasCierre = renderCausasCierre;
 
 function etiquetaMotivo(cod){
   const m = MOTIVOS_NO_EJECUCION.find(x => x.cod === cod)
@@ -1898,6 +2000,7 @@ function abrirNoEjecutado(fbId, pagina){
     rotuloGrupo('S\u00ed se ejecut\u00f3') +
     opcion(CIERRE_SIN_MEDIR, 'Se termin\u00f3, pero no se registr\u00f3 el tiempo', false);
   document.getElementById('ne-nota').value='';
+  renderCausasCierre();
   document.getElementById('ne-ticket').textContent = t
     ? ((t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ')+' \u00b7 '+(t.tarea||'')+' \u00b7 '+t.tt+' h')
     : '';
@@ -1912,6 +2015,12 @@ function actualizarAvisoCierre(){
   const av=document.getElementById('ne-aviso');
   const btn=document.getElementById('ne-btn');
   if(!av) return;
+  // Las causas dependen del motivo: si cambio el motivo, la lista de abajo ya no corresponde.
+  const cajaC=document.getElementById('ne-causas-caja');
+  if(cajaC && sel && cajaC.dataset.motivo !== sel.value){
+    cajaC.dataset.motivo = sel.value;
+    renderCausasCierre();
+  }
   const sinMedir = sel && sel.value===CIERRE_SIN_MEDIR;
   const esDuplicado = sel && sel.value==='duplicado';
   av.innerHTML = sinMedir
@@ -1919,10 +2028,10 @@ function actualizarAvisoCierre(){
     : esDuplicado
     ? 'Es el \u00fanico cierre que <strong>no cuenta contra el plan</strong>, porque no es trabajo que se dej\u00f3 de hacer.'
       + (gemeloNoEjec ? ' Queda anotado que es duplicado de: <strong>'+escapeHtml(resumenGemelo(gemeloNoEjec))+'</strong>.' : '')
-    : (sel && sel.value==='cancelado')
-    ? 'Cuenta como trabajo planificado que <strong>no se hizo</strong>. Escribe en la nota por qu\u00e9 se cancel\u00f3: es lo \u00fanico que va a quedar.'
-    : (sel && MOTIVOS_EXIGEN_NOTA.includes(sel.value))
-    ? 'En este motivo <strong>la nota es obligatoria</strong>: es donde queda a favor de qu\u00e9 se dej\u00f3 de hacer, o qu\u00e9 material falt\u00f3.'
+    : (sel && pideCausa(sel.value))
+    ? (causaElegida()===CAUSA_OTRO
+        ? 'Elegiste <strong>Otro</strong>: escribe abajo qu\u00e9 pas\u00f3. Es lo \u00fanico que va a quedar de este ticket.'
+        : 'Cuenta como trabajo planificado que <strong>no se hizo</strong>. Marca la causa: de ah\u00ed sale el informe de por qu\u00e9 se pierde el tiempo en planta.')
     : 'El ticket sale del tareo y de la vista de Andree, y queda en el historial con el motivo. No se elimina.';
   if(btn) btn.textContent = sinMedir ? '\u2713 Cerrar sin medir' : '\u2298 Cerrar ticket';
 }
@@ -1935,7 +2044,23 @@ async function guardarNoEjecutado(){
   if(!sel) return;
   const nota=document.getElementById('ne-nota').value.trim();
   const campoNota=document.getElementById('ne-nota');
-  if(MOTIVOS_EXIGEN_NOTA.includes(sel.value) && !nota){
+  const causa=causaElegida();
+  // La causa es obligatoria donde el cierre cuenta contra el plan. Es un clic, no una redaccion:
+  // pedir texto libre produjo durante semanas "SE CAMBIO" y "CAMBIOS", que cumplen el requisito
+  // y no dicen nada.
+  if(pideCausa(sel.value) && !causa){
+    const cajaC=document.getElementById('ne-causas-caja');
+    if(cajaC){
+      cajaC.classList.add('falta');
+      cajaC.scrollIntoView({block:'nearest'});
+    }
+    const av0=document.getElementById('ne-aviso');
+    if(av0) av0.innerHTML='<span style="color:var(--crit);font-weight:600">Marca la causa:</span> '
+      + 'es lo que convierte estos cierres en un informe de por qu\u00e9 se pierde el tiempo. '
+      + 'Si ninguna encaja, usa <strong>Otro</strong> y escr\u00edbelo.';
+    return;
+  }
+  if(pideCausa(sel.value) && causa===CAUSA_OTRO && !nota){
     if(campoNota){
       campoNota.style.borderColor='var(--crit)';
       campoNota.style.boxShadow='0 0 0 3px rgba(179,46,38,0.10)';
@@ -1949,10 +2074,14 @@ async function guardarNoEjecutado(){
     return;
   }
   if(campoNota){ campoNota.style.borderColor=''; campoNota.style.boxShadow=''; }
+  const cajaC2=document.getElementById('ne-causas-caja');
+  if(cajaC2) cajaC2.classList.remove('falta');
   const sinMedir = sel.value===CIERRE_SIN_MEDIR;
   // Los dos cierres sacan el ticket de las vistas de trabajo y lo dejan en el historial, pero
   // NO son el mismo dato: uno dice que el trabajo no se hizo y el otro que sí.
   const comun={
+    // El codigo, no la etiqueta: la etiqueta se puede reescribir sin invalidar el historico.
+    causaNoEjecucion: pideCausa(sel.value) ? (causa||null) : null,
     notaNoEjecucion:nota||null,
     cerradoPorPerfil:getPerfil()||null,
     visibleTareo:false,
@@ -2786,7 +2915,7 @@ function renderHist(){
 
 // Una sola definicion de las columnas del Excel. La usan el Historial y el Dashboard, asi que
 // una columna nueva llega a los dos y no se pueden desincronizar.
-const CABECERA_EXCEL = ['Fecha ejecución','Fecha creación','Trabajador(es)','Área','Proyecto','Producto','Tarea','Operación','Unidad','N°','t.u. plan','t.u. real','Diferencia','T.T. plan','T.T. real','Cierre','Motivo no ejecución','Nota','Tipo de trabajo','Causa reproceso','Incidencias'];
+const CABECERA_EXCEL = ['Fecha ejecución','Fecha creación','Trabajador(es)','Área','Proyecto','Producto','Tarea','Operación','Unidad','N°','t.u. plan','t.u. real','Diferencia','T.T. plan','T.T. real','Cierre','Motivo no ejecución','Causa','Nota','Tipo de trabajo','Causa reproceso','Incidencias'];
 
 function filaExcel(t){
   const area=getAreaEjecucion(t);
@@ -2794,7 +2923,7 @@ function filaExcel(t){
                : t.ejecutadoSinMedir ? 'Ejecutado sin medir'
                : t.noEjecutado ? 'No ejecutado' : 'Sin resolver';
   return [t.fechaEjecucion||t.fecha,t.fechaCreacion||'',(t.nombres||[]).map(n=>n.split(' ').slice(0,2).join(' ')).join(' / '),area,t.proyecto,t.producto,t.tarea,
-      t.fueraCatalogo?'(fuera de cat\u00e1logo)':(t.operacion||''), t.unidad||'', t.n,t.tu,t.tu_real||'',t.tu_real?(t.tu_real-t.tu):'',t.tt,t.tt_real||'',cierre,t.noEjecutado?etiquetaMotivo(t.motivoNoEjecucion):'',t.notaNoEjecucion||'',t.esPrototipo?'Prototipo':(t.esReproceso?'Reproceso':'Serie'),t.esReproceso?etiquetaReproceso(t.motivoReproceso):'',(t.incidencias||[]).map(i=>`${i.hora}: ${i.descripcion}`).join(' | ')];
+      t.fueraCatalogo?'(fuera de cat\u00e1logo)':(t.operacion||''), t.unidad||'', t.n,t.tu,t.tu_real||'',t.tu_real?(t.tu_real-t.tu):'',t.tt,t.tt_real||'',cierre,t.noEjecutado?etiquetaMotivo(t.motivoNoEjecucion):'',t.noEjecutado?etiquetaCausa(t.motivoNoEjecucion,t.causaNoEjecucion):'',t.notaNoEjecucion||'',t.esPrototipo?'Prototipo':(t.esReproceso?'Reproceso':'Serie'),t.esReproceso?etiquetaReproceso(t.motivoReproceso):'',(t.incidencias||[]).map(i=>`${i.hora}: ${i.descripcion}`).join(' | ')];
 }
 
 function exportarExcel(){
@@ -3416,6 +3545,49 @@ function dashBajoPlanHTML(grupos){
     '</tbody></table></details>';
 }
 
+// ----- POR QUE NO SE HIZO ----------------------------------------------------------------
+// El 40% de lo planificado no se ejecuta. Este bloque es la razon de ser de las causas que se
+// piden al cerrar: sin el, `causaNoEjecucion` seria un campo mas que nadie mira.
+//
+// Se ordena por HORAS perdidas, no por numero de casos: una causa que aparece tres veces pero
+// se lleva doce horas pesa mas que una que aparece diez veces de media hora.
+function dashPorQueHTML(r){
+  const noHechos = dashPlan(r).filter(t => t.noEjecutado);
+  if(!noHechos.length) return '<div class="dsh-nd">Todo lo programado en el rango se resolvi\u00f3. No hay nada que explicar.</div>';
+  const sinCausa = noHechos.filter(t => !t.causaNoEjecucion);
+  const G = {};
+  noHechos.filter(t => t.causaNoEjecucion).forEach(t => {
+    const k = t.motivoNoEjecucion + '\u0001' + t.causaNoEjecucion;
+    const g = G[k] = G[k] || {motivo:t.motivoNoEjecucion, causa:t.causaNoEjecucion, n:0, horas:0, notas:[]};
+    g.n++; g.horas += (t.tt||0);
+    if(t.notaNoEjecucion) g.notas.push(t.notaNoEjecucion);
+  });
+  const filas = Object.values(G).sort((a,b) => b.horas - a.horas);
+  const totalH = noHechos.reduce((s,t)=>s+(t.tt||0),0);
+  const max = filas.length ? filas[0].horas : 0;
+  const cuerpo = filas.length ? '<div class="dsh-barras">' + filas.map(f => {
+    const tip = etiquetaMotivo(f.motivo) + ' \u2014 ' + etiquetaCausa(f.motivo, f.causa) +
+                (f.notas.length ? '\n\n' + f.notas.slice(0,5).join('\n') : '');
+    return '<div class="dsh-barrow" title="' + escapeHtml(tip) + '" style="grid-template-columns:1fr 150px 96px">' +
+      '<div><div class="pq-causa">' + escapeHtml(etiquetaCausa(f.motivo, f.causa)) + '</div>' +
+      '<div class="pq-motivo">' + escapeHtml(etiquetaMotivo(f.motivo)) + '</div></div>' +
+      '<div class="dsh-cargapista"><div class="dsh-cargabar" style="width:' +
+        (max>0 ? Math.round(f.horas/max*100) : 0) + '%;background:var(--crit-fuerte)"></div></div>' +
+      '<div class="dsh-barfig"><b class="num">' + (Math.round(f.horas*10)/10) + ' h</b><span>' +
+        plural(f.n, 'caso', 'casos') + '</span></div>' +
+    '</div>';
+  }).join('') + '</div>' : '';
+  const pieSin = sinCausa.length
+    ? '<div class="dsh-nota"><b>' + plural(sinCausa.length, 'cierre', 'cierres') + ' sin causa marcada</b> ('
+      + (Math.round(sinCausa.reduce((s,t)=>s+(t.tt||0),0)*10)/10) + ' h). Son de antes de que se pidiera, '
+      + 'o de un motivo que no la pide. Los nuevos ya no pueden cerrarse sin ella.</div>'
+    : '';
+  return cuerpo + '<div class="dsh-nota">Ordenado por horas perdidas, no por n\u00famero de casos: una causa '
+    + 'que aparece tres veces pero se lleva doce horas pesa m\u00e1s que una que aparece diez veces de media '
+    + 'hora. En total, <b>' + (Math.round(totalH*10)/10) + ' h programadas que no se hicieron</b>. '
+    + 'Pasa el cursor por una fila para leer las notas que escribieron.</div>' + pieSin;
+}
+
 // ----- SECCION 6 — Requiere atencion -----------------------------------------------------
 // Reglas anti-ruido, porque si todo aparece en rojo nada es importante:
 //   - un area solo alerta con al menos minTicketsArea tickets y capacidad registrada
@@ -3672,6 +3844,8 @@ function renderDashboard(){
     dashSeccion('dsh-pareto','Pareto de desviaciones','\u00bfD\u00f3nde se est\u00e1 yendo el tiempo?',
       dashParetoHTML(grupos)) +
     '<div class="dsh-nivel">Nivel 4 \u2014 \u00bfpor qu\u00e9 ocurre?</div>' +
+    dashSeccion('dsh-porque','Por qu\u00e9 no se hizo','\u00bfQu\u00e9 nos est\u00e1 frenando?',
+      dashPorQueHTML(r)) +
     dashSeccion('dsh-estandares','Est\u00e1ndares de tiempo','\u00bfEs el trabajador, o el est\u00e1ndar est\u00e1 mal puesto?',
       dashEstandaresHTML(grupos)) +
     dashSeccion('dsh-scatter','Plan vs real, ejecuci\u00f3n por ejecuci\u00f3n','\u00bfEs un caso suelto o una franja entera?',
@@ -7050,7 +7224,19 @@ nav #perfil-indicator:hover{background:var(--surface-2);}
 /* Los descartes no son una alarma: son un dato de calidad del tareo. Por eso no llevan color.
    La regla C2 de la app dice que el color marca la excepcion; esto es informacion de fondo. */
 .nota-descartes{font-size:var(--t-mini);color:var(--text-muted);margin:-4px 0 var(--e-4);
-  padding-left:2px;cursor:help;border-left:2px solid var(--border);padding-left:8px;}
+  cursor:help;border-left:2px solid var(--border);padding-left:8px;}
+
+/* Causas del cierre: fichas de un clic. Mas rapido que escribir, y queda como dato. */
+.causas{display:flex;flex-direction:column;gap:5px;margin-top:6px;}
+.causa-chip{display:flex;align-items:center;gap:9px;padding:8px 11px;border:1px solid var(--border);
+  border-radius:8px;cursor:pointer;font-size:var(--t-m);transition:border-color .12s,background .12s;}
+.causa-chip:hover{background:var(--surface-1);}
+.causa-chip:has(input:checked){border-color:var(--mt-verde);background:var(--mt-verde-fondo);font-weight:600;}
+.causa-chip input{margin:0;}
+#ne-causas-caja.falta #ne-causas{border:1px solid var(--crit);border-radius:10px;padding:6px;
+  box-shadow:0 0 0 3px rgba(163,45,45,0.08);}
+.pq-causa{font-size:var(--t-m);font-weight:600;}
+.pq-motivo{font-size:var(--t-mini);color:var(--text-muted);}
 
 /* ===================== ENTRADA ===================== */
 /* Tapa la app entera. Mientras esto se ve, no hay ni un dato en pantalla: la sesion se
@@ -7515,7 +7701,8 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     <div class="modal-title">Cerrar ticket</div>
     <div id="ne-ticket" style="font-size:12px;color:var(--text-secondary);background:#faf9f7;border-radius:8px;padding:9px 11px;margin-bottom:0.875rem"></div>
     <div class="field" style="margin-bottom:0.5rem"><label>¿Qué pasó con este ticket?</label><div id="ne-motivos" style="margin-top:6px"></div></div>
-    <div class="field" style="margin-bottom:0.5rem"><label>Nota (opcional)</label><input type="text" id="ne-nota" placeholder="Ej: se movió al viernes por falta de tablero"/></div>
+    <div class="field" id="ne-causas-caja" style="margin-bottom:0.5rem;display:none"><label>¿Por qué? — marca la causa</label><div id="ne-causas" class="causas"></div></div>
+    <div class="field" style="margin-bottom:0.5rem"><label>Nota (opcional)</label><input type="text" id="ne-nota" placeholder="Ej: se movió al viernes porque el tablero llega el jueves"/></div>
     <div id="ne-aviso" style="font-size:11px;color:var(--text-secondary);margin-bottom:0.875rem;line-height:1.5"></div>
     <div class="modal-actions"><button class="btn" onclick="cerrarNoEjecutado()">Cancelar</button><button class="btn btn-danger" id="ne-btn" onclick="guardarNoEjecutado()">⊘ Cerrar ticket</button></div>
   </div>
