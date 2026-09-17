@@ -9,7 +9,7 @@ GitHub Pages: `https://rvillar-prog.github.io/Matransa`.
 Backend: Firestore `matransa-c562c`, **entrada con Google corporativo** (@matransaperu.com),
 `initializeFirestore` con `persistentLocalCache` + `persistentMultipleTabManager`.
 Colecciones: `historial`, `trabajadores`, `proyectosTC`, `proyectos`, `ofs`, `planM3`,
-`ausencias`, `notas`, `usuarios`, `rutas`, `cola`.
+`ausencias`, `notas`, `usuarios`, `rutas`, `cola`, `inspecciones`.
 
 La versión viva se declara en `VERSION_APP`, en las primeras líneas del archivo a propósito
 (para poder leerla sin recorrerlo entero), y se muestra en la pestaña Configuración.
@@ -39,7 +39,7 @@ node arnes.mjs
 
 Encuentra solo `../Matransa/index.html` y `../Backups/`. Si faltan los backups corre las
 pruebas que solo miran el código y avisa. Se puede forzar con `MATRANSA_HTML` y
-`MATRANSA_BACKUPS`. Hoy son **526 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
+`MATRANSA_BACKUPS`. Hoy son **581 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
 backup reciente y se salta sola si no hay ninguno.
 
 ---
@@ -260,6 +260,56 @@ El gráfico es **escalonado** (el número de estaciones salta, no cambia en diag
 serie —el total— sin leyenda, y con la banda del refrigerio dibujada: sin ella el hueco de 12 a
 13 parece una caída de productividad. El desglose por área son siete clases y eso es una tabla,
 no siete colores.
+
+---
+
+## Métodos — la ruta de inspección de Pablo (F2-40)
+
+Pablo mejora el método de trabajo de cada estación. El problema no es su capacidad, es el orden:
+sin una lista, la estación que se inspecciona es la que quedaba de paso. Esta pantalla decide por
+él **por dónde empezar**, y la decisión se puede discutir porque está escrita.
+
+```
+criticidad = horas acumuladas × variación (CV)
+```
+
+Las dos cosas a la vez, y por eso multiplican. La **variación** es la señal de que no hay método:
+si la misma operación tarda 20 minutos una vez y 60 la siguiente, nadie está siguiendo un
+procedimiento, están improvisando — y eso sí se arregla mirando. Las **horas** son el tamaño del
+premio: arreglar algo que consume dos horas al mes no cambia nada, por mal que esté.
+
+**No es la desviación contra el plan.** Un estándar mal puesto no es un problema de método; se
+corrige en Rutas. Se muestra como dato al costado, pero **no ordena**.
+
+### Las cuatro reglas que dejan cosas fuera — `UMBRALES_METODO`
+
+| | umbral | por qué |
+|---|---|---|
+| `minMediciones` | 3 | con dos mediciones la variación es ruido: siempre da un número y ese número no significa nada. Van a la lista **"falta medir"**, que es de Andree, no de Pablo |
+| `cvMinimo` | 0.25 | por debajo, la operación ya está estandarizada. No hay método que ordenar y meterla sería mandarlo a mirar lo que ya funciona |
+| transversales | — | Mantenimiento, limpieza y afines no son una estación con método |
+| `tope` | 8 | una lista de treinta no se recorre. Lo que sobra queda visible como "resto" |
+
+Cada exclusión se **muestra y se cuenta** en pantalla. Una lista que esconde lo que descartó no
+se puede auditar, y Pablo tiene que poder decir "esa sí me interesa".
+
+### `areaDeMedicion(t)` — por qué no basta `areaDeOperacion()`
+"Lijado" existe en ACABADO y en PINTURA DE FIERRO, y `areaDeOperacion()` devuelve `null` a
+propósito (ver Trampas). Si se agrupara solo por nombre, los dos lijados se sumarían en una fila
+"? / Lijado" que mezcla dos estaciones distintas — **se vio así en pantalla antes de arreglarlo**.
+El orden es: `areaEjecucion` del ticket → el área del catálogo si el nombre es único → la unidad
+guardada como desempate. Ninguna fila de la ruta debe salir con área `?`; el arnés lo exige.
+
+### La inspección se registra con fecha — `inspecciones`
+`efectoInspeccion(historial, clave, fecha)` parte las mediciones en antes y después. **Sin la
+fecha, una mejora y una casualidad se ven igual.** Con menos de 3 mediciones posteriores la
+comparación se marca **no concluyente** en vez de dar un porcentaje que nadie puede sostener.
+Los documentos no se reescriben (`allow update: if false`): valen por ser historia.
+
+Prototipo y reproceso no entran: el prototipo siempre tarda más y el reproceso es otra cosa.
+
+**Antes de publicar esta versión: las reglas de `inspecciones` primero.** Como con `rutas` y
+`cola`, si el código sale antes, la pantalla falla en silencio al leer y al escribir.
 
 ---
 

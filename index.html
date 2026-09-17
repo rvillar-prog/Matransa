@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-23 \u00b7 F2-39';
+const VERSION_APP = 'v2026-09-24 \u00b7 F2-40';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -387,6 +387,7 @@ async function init() {
   renderTabs();
   suscribirRutas();
   suscribirCola();
+  suscribirInspecciones();
   // Cuando init() corre, la sesion ya sabe quien entro y con que permisos: el portero de
   // abajo no la llama hasta tener la ficha leida.
   aplicarPerfil();
@@ -1159,13 +1160,13 @@ function imprimirHoy(fechaFiltro){
 const GRUPOS_NAV = [
   { grupo:'',          paginas:['hoy','atencion'] },
   { grupo:'Operar',    paginas:['tareo','cola','andree','kanban'] },
-  { grupo:'Controlar', paginas:['rutas','torre','planificacion','personal','m3'] },
+  { grupo:'Controlar', paginas:['rutas','metodos','torre','planificacion','personal','m3'] },
   { grupo:'Analizar',  paginas:['dashboard','historial'] },
   { grupo:'',          paginas:['notas','config'] },
 ];
 const ETIQUETAS_NAV = {
   hoy:'Hoy en planta', atencion:'Atención', tareo:'Generar tareo', cola:'Cola de OF', andree:'Registro Andree', kanban:'Kanban',
-  rutas:'Rutas', torre:'Torre de Control', planificacion:'Planificación', personal:'Personal',
+  rutas:'Rutas', metodos:'Métodos', torre:'Torre de Control', planificacion:'Planificación', personal:'Personal',
   m3:'M³ Semanal', dashboard:'Dashboard', historial:'Historial',
   notas:'Notas', config:'Configuración'
 };
@@ -6905,6 +6906,334 @@ function elegirHoraEstaciones(h){ _horaEst = h; renderEstaciones(); }
 
 window.elegirHoraEstaciones = elegirHoraEstaciones;
 
+// ===== METODOS — RUTA DE INSPECCION (F2-40) =====
+//
+// Pablo mejora el metodo de cada estacion. El problema no es su capacidad: es el orden. Esta
+// pantalla existe para que no tenga que decidir cada manana por donde empezar.
+//
+// LA CRITICIDAD ES HORAS x VARIACION, y la variacion es la parte que importa. Si la misma
+// operacion tarda 20 minutos una vez y 60 la siguiente, no hay metodo: hay improvisacion. Eso es
+// exactamente lo que un mejorador de metodos puede arreglar, y no se ve en un promedio. Una
+// operacion que pesa 38 horas y varia un 10% esta estandarizada y no necesita a Pablo; una que
+// pesa 24 y varia 131% lo necesita mañana.
+//
+// Las horas multiplican porque arreglar algo que consume dos horas al mes no cambia nada, por
+// mal que este. Las dos cosas juntas, no cada una por su lado.
+//
+// SE MIDE CONTRA SI MISMA, NO CONTRA EL PLAN. La desviacion contra el plan se muestra, pero no
+// entra en la criticidad: un estandar mal puesto no es un problema de metodo, es un problema de
+// estandar, y se arregla en Rutas. Mezclarlos mandaria a Pablo a arreglar una hoja de calculo.
+//
+// LO QUE NO SE PUEDE CONCLUIR NO SE ORDENA. Con menos de `minMediciones` la variacion es ruido:
+// dos tickets siempre dan un numero, y ese numero no significa nada. Esas operaciones salen en
+// una lista aparte que no es de Pablo — es de Andree, y dice "esto todavia no se puede mejorar
+// porque no se sabe cuanto tarda".
+//
+// Hoy la ruta va por OPERACION. Cuando exista el listado de maquinas, las operaciones que
+// comparten maquina se juntan en una sola estacion: tres operaciones en el mismo tupi son una
+// estacion, no tres. El dato todavia no existe y no se inventa.
+
+const UMBRALES_METODO = {
+  minMediciones: 3,    // por debajo, la variación es ruido y no se ordena
+  cvMinimo:      0.25, // por debajo de esto no hay método que arreglar: no entra a la ruta
+  cvAlto:        0.40, // 40% de variación: el método no está estandarizado
+  cvMuyAlto:     0.80, // el doble o más entre una ejecución y otra
+  desvAlta:      0.15, // 15% por encima del plan, sostenido
+  tope:          8     // cuántas estaciones entran en la ruta. Una lista de 40 no es una ruta
+};
+
+// El area de un ticket para efectos de metodo. `areaDeOperacion` devuelve null a proposito para
+// "Lijado", que vive en ACABADO y en PINTURA DE FIERRO: adivinar seria peor que no derivar. Pero
+// dejarlo en '?' es peor todavia AQUI, porque junta dos operaciones distintas en un solo grupo y
+// la variacion que sale es un artefacto, no un problema de metodo. La unidad guardada en el
+// ticket desempata, porque la puso el catalogo al crearlo: 'pieza' es Pintura de Fierro y
+// 'mueble x mano' es Acabado.
+function areaDeMedicion(t){
+  if(t.areaEjecucion) return t.areaEjecucion;
+  const directa = areaDeOperacion(t.operacion);
+  if(directa) return directa;
+  if(t.unidad){
+    const cands = CATALOGO_OPERACIONES.filter(o => o.nombre === t.operacion && o.unidad === t.unidad);
+    if(cands.length === 1) return cands[0].area;
+  }
+  return '?';
+}
+
+// Las transversales —Mantenimiento, Embalaje, 5S, Transporte interno— existen en todas las areas
+// y no son una estacion. Mejorar "el metodo del mantenimiento" no es lo que hace Pablo, y su
+// variacion es enorme por naturaleza: mezclarlas encabeza la ruta con algo que no se arregla
+// visitando un banco. Es la misma regla que ya las saca del estandar de area.
+function esTransversalMetodo(nombre){
+  return OPERACIONES_TRANSVERSALES.some(o => o.nombre === nombre);
+}
+
+let inspecciones = [];
+let unsubInspecciones = null;
+
+function suscribirInspecciones(){
+  if(unsubInspecciones) return;
+  unsubInspecciones = onSnapshot(collection(db,'inspecciones'), snap=>{
+    inspecciones = snap.docs.map(d=>({fbId:d.id, ...d.data()}));
+    if(paginaActiva()==='metodos') renderMetodos();
+  });
+}
+
+function claveMetodo(area, operacion){ return (area||'?') + ' / ' + operacion; }
+
+// Una medición vale si el ticket se hizo, se midió, y es trabajo de serie. Prototipo y reproceso
+// se excluyen a propósito: el prototipo siempre tarda más y el reproceso es otra cosa. Meterlos
+// inflaría la variación de casi todo y mandaría a Pablo a perseguir fantasmas.
+function medicionesDe(historial_, area, operacion, desde, hasta){
+  const v = [];
+  (historial_ || []).forEach(t => {
+    if(t.noEjecutado || t.tu_real == null) return;
+    if(t.esPrototipo || t.esReproceso) return;
+    if(!t.operacion || t.operacion === 'Otra') return;
+    if(esTransversalMetodo(t.operacion)) return;
+    if(operacion && t.operacion !== operacion) return;
+    const a = areaDeMedicion(t);
+    if(area && a !== area) return;
+    if(desde || hasta){
+      const d = fechaStrToDate(t.fechaEjecucion);
+      if(!d) return;
+      if(desde && d < desde) return;
+      if(hasta && d >= hasta) return;
+    }
+    v.push(t);
+  });
+  return v;
+}
+
+function estadisticaTu(tickets){
+  const v = tickets.map(t => t.tu_real);
+  if(!v.length) return {n:0, media:0, sd:0, cv:0, horas:0, horasPlan:0};
+  const media = v.reduce((a,b)=>a+b,0) / v.length;
+  const sd = Math.sqrt(v.reduce((a,b)=>a+(b-media)**2, 0) / v.length);
+  const horas = tickets.reduce((s,t)=> s + (t.tt_real != null ? t.tt_real : (t.n*t.tu_real/60)), 0);
+  const horasPlan = tickets.reduce((s,t)=> s + (t.tt || 0), 0);
+  return {n: v.length, media, sd, cv: media ? sd/media : 0, horas, horasPlan,
+          min: Math.min(...v), max: Math.max(...v)};
+}
+
+// La ruta: operaciones ordenadas por criticidad. Devuelve tambien las que no se pueden ordenar.
+function rutaDeMetodos(historial_, umbrales){
+  const U = Object.assign({}, UMBRALES_METODO, umbrales || {});
+  const grupos = {};
+  medicionesDe(historial_).forEach(t => {
+    const a = areaDeMedicion(t);
+    const k = claveMetodo(a, t.operacion);
+    (grupos[k] = grupos[k] || {area:a, operacion:t.operacion, tickets:[]}).tickets.push(t);
+  });
+  const todas = Object.keys(grupos).map(k => {
+    const g = grupos[k];
+    const e = estadisticaTu(g.tickets);
+    return {
+      clave: k, area: g.area, operacion: g.operacion,
+      n: e.n, media: e.media, cv: e.cv, min: e.min, max: e.max,
+      horas: e.horas, horasPlan: e.horasPlan,
+      desv: e.horasPlan ? (e.horas - e.horasPlan) / e.horasPlan : null,
+      criticidad: e.horas * e.cv
+    };
+  });
+  const medidas   = todas.filter(f => f.n >= U.minMediciones);
+  // Por debajo del CV minimo no hay metodo que arreglar: el trabajo ya es parejo. Mandar a Pablo
+  // ahi es hacerle perder la mañana mirando algo que funciona.
+  const estables  = medidas.filter(f => f.cv <  U.cvMinimo).sort((a,b) => b.horas - a.horas);
+  const rankeadas = medidas.filter(f => f.cv >= U.cvMinimo).sort((a,b) => b.criticidad - a.criticidad);
+  const sinDatos  = todas.filter(f => f.n <  U.minMediciones).sort((a,b) => b.horas - a.horas);
+  return {ruta: rankeadas.slice(0, U.tope), resto: rankeadas.slice(U.tope), estables, sinDatos, umbrales: U};
+}
+
+// Que mirar cuando llegue a la estacion. Son frases distintas porque son problemas distintos, y
+// mandar a alguien a "mejorar el metodo" sin decirle que buscar es mandarlo a mirar.
+function queMirar(f, umbrales){
+  const U = Object.assign({}, UMBRALES_METODO, umbrales || {});
+  const s = [];
+  if(f.cv >= U.cvMuyAlto)
+    s.push('Entre una ejecución y otra hay más del doble de diferencia (' + Math.round(f.min) +
+           '′ a ' + Math.round(f.max) + '′). Ahí no hay método: hay improvisación. Ver qué hace distinto ' +
+           'el que tarda la mitad.');
+  else if(f.cv >= U.cvAlto)
+    s.push('La misma operación varía un ' + Math.round(f.cv*100) + '% (' + Math.round(f.min) +
+           '′ a ' + Math.round(f.max) + '′). Buscar de qué depende: la pieza, la máquina o la persona.');
+  else
+    s.push('El tiempo es parejo (varía ' + Math.round(f.cv*100) + '%). El método está estandarizado; ' +
+           'si hay que ganar tiempo aquí, es cambiando el método, no ordenándolo.');
+  if(f.desv != null && f.desv >= U.desvAlta)
+    s.push('Además tarda un ' + Math.round(f.desv*100) + '% más que el estándar. Si al mirarla resulta ' +
+           'que el trabajo es ese, el que está mal es el estándar y se corrige en Rutas.');
+  return s;
+}
+
+function inspeccionDe(clave){
+  const v = inspecciones.filter(i => i.clave === clave)
+    .sort((a,b) => String(b.fecha).localeCompare(String(a.fecha)));
+  return v[0] || null;
+}
+
+// Antes y despues de una inspeccion. Es la unica forma de saber si lo que Pablo cambio sirvio, y
+// es la razon de guardar la fecha: sin ella, una mejora y una casualidad se ven igual.
+function efectoInspeccion(historial_, clave, fechaISO){
+  const insp = fechaISO ? new Date(fechaISO) : null;
+  if(!insp || isNaN(insp)) return null;
+  const partes = String(clave).split(' / ');
+  const area = partes[0], operacion = partes.slice(1).join(' / ');
+  const antes   = estadisticaTu(medicionesDe(historial_, area, operacion, null, insp));
+  const despues = estadisticaTu(medicionesDe(historial_, area, operacion, insp, null));
+  if(!antes.n || !despues.n) return {antes, despues, concluyente:false};
+  return {antes, despues, concluyente: despues.n >= UMBRALES_METODO.minMediciones};
+}
+
+// ---------------------------------------------------------------- dibujo
+function renderMetodos(){
+  const cont = document.getElementById('metodos-content');
+  if(!cont) return;
+  const R = rutaDeMetodos(historial);
+  const U = R.umbrales;
+
+  if(!R.ruta.length && !R.sinDatos.length){
+    cont.innerHTML = '<div class="card"><div class="empty"><div class="empty-icon">🔍</div>' +
+      '<div>Todavía no hay mediciones suficientes para ordenar ninguna estación.</div></div></div>';
+    return;
+  }
+
+  const fichas = R.ruta.map((f, i) => {
+    const insp = inspeccionDe(f.clave);
+    const ef = insp ? efectoInspeccion(historial, f.clave, insp.fecha) : null;
+    const tono = f.cv >= U.cvMuyAlto ? 'var(--crit)' : (f.cv >= U.cvAlto ? 'var(--warn)' : 'var(--text-muted)');
+    return '<div style="border:0.5px solid var(--border);border-left:3px solid ' + tono +
+      ';border-radius:8px;padding:12px 14px;margin-bottom:10px">' +
+      '<div style="display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;align-items:baseline">' +
+        '<div><span style="font-family:var(--f-num);color:var(--text-muted);font-size:12px">' + (i+1) + '.</span> ' +
+          '<strong style="font-size:14px">' + escapeHtml(f.operacion) + '</strong>' +
+          '<span style="font-size:12px;color:var(--text-secondary)"> · ' + escapeHtml(f.area) + '</span></div>' +
+        '<div style="font-size:12px;color:var(--text-secondary);font-family:var(--f-num)">' +
+          Math.round(f.media) + '′ media · varía <strong style="color:' + tono + '">' +
+          Math.round(f.cv*100) + '%</strong> · ' + f.horas.toFixed(1) + ' h · ' +
+          plural(f.n, 'medición', 'mediciones') + '</div>' +
+      '</div>' +
+      '<div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-top:6px">' +
+        queMirar(f, U).map(escapeHtml).join('<br>') + '</div>' +
+      (insp
+        ? '<div style="font-size:11px;margin-top:8px;padding-top:7px;border-top:1px solid var(--border)">' +
+            '<strong>Inspeccionada el ' + escapeHtml(fechaCorta(insp.fecha)) + '</strong>' +
+            (insp.queSeCambio ? ' — ' + escapeHtml(insp.queSeCambio) : '') +
+            (ef && ef.concluyente
+              ? '<div style="margin-top:3px;color:' + (ef.despues.cv < ef.antes.cv ? 'var(--ok)' : 'var(--warn)') + '">' +
+                'Antes ' + Math.round(ef.antes.media) + '′ variando ' + Math.round(ef.antes.cv*100) + '% · ' +
+                'después ' + Math.round(ef.despues.media) + '′ variando ' + Math.round(ef.despues.cv*100) + '%' +
+                ' (' + plural(ef.despues.n, 'medición', 'mediciones') + ')</div>'
+              : '<div style="margin-top:3px;color:var(--text-muted)">Todavía no hay mediciones suficientes ' +
+                'después del cambio para decir si sirvió.</div>') +
+          '</div>'
+        : '') +
+      '<div style="margin-top:9px"><button class="btn btn-xs btn-amber" onclick="abrirInspeccion(' +
+        JSON.stringify(f.clave).replace(/"/g,'&quot;') + ')">' +
+        (insp ? 'Registrar otra visita' : 'Registrar inspección') + '</button></div>' +
+    '</div>';
+  }).join('');
+
+  const faltaMedir = R.sinDatos.slice(0, 10).map(f =>
+    '<tr><td>' + escapeHtml(f.operacion) + '</td><td class="suave">' + escapeHtml(f.area) + '</td>' +
+    '<td class="c num">' + f.n + '</td><td class="c num suave">' + f.horas.toFixed(1) + '</td></tr>').join('');
+
+  cont.innerHTML =
+  '<div class="card">' +
+    '<div class="card-title">Ruta de inspección · ' + plural(R.ruta.length, 'estación', 'estaciones') + '</div>' +
+    '<div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:12px">' +
+      'Ordenadas por <strong>horas × variación</strong>. La variación es lo que importa: si la misma ' +
+      'operación tarda 20 minutos una vez y 60 la siguiente, no hay método, hay improvisación — y eso ' +
+      'sí se puede arreglar. Las horas multiplican porque arreglar algo que consume dos horas al mes ' +
+      'no cambia nada, por mal que esté.' +
+    '</div>' + fichas +
+    (R.resto.length ? '<div style="font-size:11px;color:var(--text-muted)">Hay ' +
+      plural(R.resto.length, 'estación más medida', 'estaciones más medidas') +
+      ' por debajo de estas. Una lista de cuarenta no es una ruta.</div>' : '') +
+    (R.estables.length ? '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' +
+      plural(R.estables.length, 'operación medida está estandarizada', 'operaciones medidas están estandarizadas') +
+      ' (varían menos del ' + Math.round(U.cvMinimo*100) + '%) y no entran a la ruta: ahí no hay ' +
+      'método que ordenar.</div>' : '') +
+  '</div>' +
+
+  (R.sinDatos.length ?
+  '<div class="card">' +
+    '<div class="card-title">Falta medir antes de poder mejorar · ' +
+      plural(R.sinDatos.length, 'operación', 'operaciones') + '</div>' +
+    '<div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">' +
+      'Con menos de ' + U.minMediciones + ' mediciones la variación es ruido: dos tickets siempre dan ' +
+      'un número y ese número no significa nada. <strong>Esta lista no es de Pablo, es de Andree.</strong>' +
+    '</div>' +
+    '<div style="overflow-x:auto"><table class="dsh-tabla"><thead><tr>' +
+      '<th>Operación</th><th>Área</th><th class="c" style="width:90px">Mediciones</th>' +
+      '<th class="c" style="width:80px">Horas</th></tr></thead><tbody>' + faltaMedir + '</tbody></table></div>' +
+  '</div>' : '') +
+
+  '<div class="card"><div style="font-size:11px;color:var(--text-muted);line-height:1.6">' +
+    'La ruta va por <strong>operación</strong>. Cuando exista el listado de máquinas, las operaciones que ' +
+    'comparten máquina se juntarán en una sola estación — tres operaciones en el mismo tupí son una ' +
+    'estación, no tres. Prototipo y reproceso no entran: el prototipo siempre tarda más y el reproceso ' +
+    'es otra cosa. Y la desviación contra el plan se muestra pero no ordena: un estándar mal puesto no ' +
+    'es un problema de método, se corrige en Rutas.' +
+  '</div></div>';
+}
+
+function fechaCorta(iso){
+  const d = new Date(iso);
+  return isNaN(d) ? String(iso) : d.toLocaleDateString('es-PE');
+}
+
+function abrirInspeccion(clave){
+  const f = rutaDeMetodos(historial).ruta.find(x => x.clave === clave);
+  const cont = document.getElementById('metodos-content');
+  if(!cont) return;
+  const caja = document.createElement('div');
+  caja.className = 'card';
+  caja.id = 'insp-form';
+  caja.innerHTML =
+    '<div class="card-title">Inspección — ' + escapeHtml(clave) + '</div>' +
+    (f ? '<div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">' +
+         queMirar(f).map(escapeHtml).join('<br>') + '</div>' : '') +
+    '<div class="field"><label>Qué se vio</label>' +
+      '<textarea id="insp-vio" style="width:100%;min-height:60px" placeholder="Qué estaba pasando en la estación"></textarea></div>' +
+    '<div class="field"><label>Qué se cambió</label>' +
+      '<textarea id="insp-cambio" style="width:100%;min-height:60px" placeholder="Qué se corrigió y qué se dejó encaminado"></textarea></div>' +
+    '<div class="actions">' +
+      '<button class="btn" onclick="cerrarInspeccion()">Cancelar</button>' +
+      '<button class="btn btn-primary" onclick="guardarInspeccion(' + JSON.stringify(clave).replace(/"/g,'&quot;') + ')">Guardar inspección</button>' +
+    '</div>';
+  const viejo = document.getElementById('insp-form');
+  if(viejo) viejo.remove();
+  cont.insertBefore(caja, cont.firstChild);
+  const t = document.getElementById('insp-vio'); if(t) t.focus();
+}
+
+function cerrarInspeccion(){
+  const v = document.getElementById('insp-form');
+  if(v) v.remove();
+}
+
+async function guardarInspeccion(clave){
+  const vio = (document.getElementById('insp-vio') || {}).value || '';
+  const cambio = (document.getElementById('insp-cambio') || {}).value || '';
+  if(!vio.trim() && !cambio.trim()){
+    showAlert('metodos','Escribe al menos qué se vio. Una inspección sin nota no sirve para comparar después.','warn');
+    return;
+  }
+  const partes = String(clave).split(' / ');
+  const ok = await escribir('guardar la inspección',
+    ()=>addDoc(collection(db,'inspecciones'), {
+      clave, area: partes[0], operacion: partes.slice(1).join(' / '),
+      fecha: new Date().toISOString(),
+      queSeVio: vio.trim(), queSeCambio: cambio.trim(),
+      por: (usuarioActivo && usuarioActivo.correo) || ''
+    }), {pagina:'metodos', exito:'Inspección registrada.'});
+  if(ok) cerrarInspeccion();
+}
+
+window.abrirInspeccion = abrirInspeccion;
+window.cerrarInspeccion = cerrarInspeccion;
+window.guardarInspeccion = guardarInspeccion;
+
 // ===== REDIBUJADO SELECTIVO =====
 // Antes, cada cambio en cualquier ticket redibujaba las siete vistas, estuvieran o no en
 // pantalla. Ahora solo se redibuja la que se está viendo; showPage() refresca la vista a la
@@ -6945,7 +7274,7 @@ function showAlert(pagina,msg,tipo,ms){
 function showPage(nombre){if(_foco&&_foco.pagina!==nombre)limpiarFoco();document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');// Antes se buscaba la pestaña activa por el texto de su onclick, lo que obligaba a que el
 // markup del menú no cambiara nunca. data-page es exactamente para esto.
 document.querySelectorAll(`nav .tab[data-page="${nombre}"], .mobile-menu-item[data-page="${nombre}"]`).forEach(el=>el.classList.add('active'));
-document.querySelectorAll('nav .tab-menu').forEach(m=>m.classList.toggle('dentro', !!m.querySelector(`.tab[data-page="${nombre}"]`)));if(nombre==='hoy'||nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='cola')renderCola();if(nombre==='rutas')renderRutas();if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();if(ofs&&ofs.length){renderTorre();if(_foco&&_foco.pagina==='torre')setTimeout(aplicarFoco,0);}}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
+document.querySelectorAll('nav .tab-menu').forEach(m=>m.classList.toggle('dentro', !!m.querySelector(`.tab[data-page="${nombre}"]`)));if(nombre==='hoy'||nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='metodos')renderMetodos();if(nombre==='cola')renderCola();if(nombre==='rutas')renderRutas();if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();if(ofs&&ofs.length){renderTorre();if(_foco&&_foco.pagina==='torre')setTimeout(aplicarFoco,0);}}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
@@ -7832,10 +8161,10 @@ const DOMINIO_EMPRESA = 'matransaperu.com';
 // manda es el arreglo `pestanas` de la ficha, que se edita casilla por casilla.
 // A proposito NO llevan nombres de personas: este archivo es publico.
 const PLANTILLAS_ACCESO = {
-  completo:    {etq:'Acceso completo',      pestanas:['hoy','atencion','tareo','cola','andree','kanban','rutas','torre','planificacion','personal','m3','dashboard','historial','notas','config']},
-  operaciones: {etq:'Operaciones',          pestanas:['hoy','atencion','tareo','cola','andree','kanban','rutas','torre','planificacion','personal','m3','dashboard','historial','notas']},
+  completo:    {etq:'Acceso completo',      pestanas:['hoy','atencion','tareo','cola','andree','kanban','rutas','metodos','torre','planificacion','personal','m3','dashboard','historial','notas','config']},
+  operaciones: {etq:'Operaciones',          pestanas:['hoy','atencion','tareo','cola','andree','kanban','rutas','metodos','torre','planificacion','personal','m3','dashboard','historial','notas']},
   registro:    {etq:'Registro de tiempos',  pestanas:['hoy','atencion','tareo','andree','kanban','historial']},
-  supervision: {etq:'Supervisión',      pestanas:['hoy','atencion','personal','rutas','torre','kanban','historial','notas']},
+  supervision: {etq:'Supervisión',      pestanas:['hoy','atencion','personal','rutas','metodos','torre','kanban','historial','notas']},
   lectura:     {etq:'Solo lectura',         pestanas:['hoy','atencion','torre','dashboard','historial']}
 };
 
@@ -9339,6 +9668,20 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
   <div class="actions no-print" style="margin-top:1rem">
     <button class="btn btn-primary" id="btn-imprimir" style="display:none" onclick="abrirSelectorImpresion()">🖨 Imprimir tickets</button>
   </div>
+</div>
+
+<!-- METODOS -->
+<div class="page" id="page-metodos">
+  <div id="alert-metodos" style="display:none" class="alert"></div>
+  <div class="card" style="padding-bottom:12px">
+    <div class="card-title">Métodos — por dónde empezar</div>
+    <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">
+      Las estaciones ordenadas por <strong>horas × variación</strong>, con qué mirar en cada una.
+      Cada inspección se registra con fecha, y la pantalla compara la media y la variación antes y
+      después: es la única forma de saber si el cambio sirvió.
+    </div>
+  </div>
+  <div id="metodos-content"></div>
 </div>
 
 <!-- COLA DE OF -->
