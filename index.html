@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-22 \u00b7 F2-35';
+const VERSION_APP = 'v2026-09-22 \u00b7 F2-37';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -508,12 +508,27 @@ async function cargarProyectos(){
     poblarSelectProyectos();renderConfigProyectos();
   }catch(e){console.error(e);}
 }
+// "P10" no va antes que "P2". localeCompare compara caracter por caracter y '1' < '2', asi que
+// el orden salia P1, P10, P11, P12, P2... Se separa la parte de texto de la numerica: primero
+// manda el prefijo, y dentro del mismo prefijo mandan los numeros como numeros.
+// Un codigo sin numero (SHERATON, TRIBECA) cae al orden alfabetico de siempre.
+function compararCodigoProyecto(a, b){
+  const partes = s => {
+    const m = String(s || '').match(/^(\D*)(\d*)/);
+    return [m[1].toUpperCase(), m[2] ? parseInt(m[2], 10) : null];
+  };
+  const [la, na] = partes(a), [lb, nb] = partes(b);
+  if(la !== lb) return la.localeCompare(lb);
+  if(na == null || nb == null) return String(a || '').localeCompare(String(b || ''));
+  return na - nb;
+}
+
 function poblarSelectProyectos(){
   // Si proyectosTC aún no cargó, no hacer nada — cargarTorre() lo llamará cuando esté listo
   if(proyectosTC.length===0) return;
   const s=document.getElementById('t-proyecto');const v=s.value;
   s.innerHTML='<option value="">Seleccionar...</option>';
-  proyectosTC.sort((a,b)=>(a.codigo||'').localeCompare(b.codigo||'')).forEach(p=>{
+  proyectosTC.sort((a,b)=>compararCodigoProyecto(a.codigo, b.codigo)).forEach(p=>{
     s.add(new Option(`${p.codigo} · ${p.nombre}`,p.codigo));
   });
   if(v)s.value=v;
@@ -591,6 +606,14 @@ const ESQUEMA_VERSION = 2;
 // El formato local depende del idioma del navegador: en inglés ese mismo día se escribe
 // "9/8/2026" y día y mes quedan invertidos. La fecha ISO es estable, se ordena como texto
 // y permite consultar por rango en Firestore. Se guarda ADEMÁS de la original, no en su lugar.
+// El dia del calendario de un Date, en la zona del navegador. NO usar toISOString() para esto:
+// devuelve UTC, y en Lima (UTC-5) despues de las 19:00 ya es el dia siguiente. Un instante si va
+// en UTC; un dia no. Mismo error que el F2-27, por el otro extremo.
+function fechaISODeDate(d){
+  const x = (d instanceof Date && !isNaN(d)) ? d : new Date();
+  return x.getFullYear() + '-' + String(x.getMonth()+1).padStart(2,'0') + '-' + String(x.getDate()).padStart(2,'0');
+}
+
 function fechaAISO(str){
   if(!str) return null;
   if(/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
@@ -1868,7 +1891,7 @@ function renderAndree(){
     const e = document.getElementById(id); if(e) e.textContent = val;
     const s = document.getElementById(id + '-sub'); if(s) s.textContent = sub;
   };
-  ponerA('m-total', UA.programados.length, 'programados para hoy');
+  ponerA('m-total', UA.programados.length, 'programados el ' + hoy);
   ponerA('m-comp',  UA.medidos.length,
          UA.programados.length ? Math.round(UA.medidos.length/UA.programados.length*100) + '% de lo programado' : '\u2014');
   ponerA('m-hplan', UA.programados.reduce((s,t)=>s+(t.tt||0),0).toFixed(1)+'h', 'de los tickets programados');
@@ -1922,6 +1945,18 @@ function renderAndree(){
     }).join('');
   }
   let html='';
+  // A partir de las 17h los medidos se esconden. Si eso deja la lista de hoy vacia hay que
+  // decirlo: si no, quedan unas tarjetas hablando de hoy encima de una lista que solo muestra
+  // manana, y parece que las cifras estan mal.
+  if(!hoyT.length && UA.programados.length){
+    const med = UA.medidos.length;
+    html += '<div style="margin-bottom:16px;font-size:12px;color:var(--text-secondary);' +
+      'background:var(--surface-1);border:0.5px solid var(--border);border-radius:8px;padding:10px 12px">' +
+      'Hoy (' + escapeHtml(hoy) + ') no queda nada por medir. ' +
+      (med ? plural(med,'ticket medido','tickets medidos') + ' y ' : '') +
+      'los cerrados se esconden después de las 17:00. Las cifras de arriba sí son del ' +
+      escapeHtml(hoy) + '.</div>';
+  }
   if(hoyT.length) html+=`<div style="margin-bottom:16px"><div style="font-size:11px;font-weight:700;color:#fff;background:var(--info-fuerte);padding:5px 14px;border-radius:6px;margin-bottom:8px;display:inline-block">📋 HOY — ${hoyT.length} ticket${hoyT.length!==1?'s':''}</div><div class="andree-list">${renderTickets(hoyT)}</div></div>`;
   if(manT.length){
     const fechaManT=manT[0]?.fechaEjecucion||manStr;
@@ -2946,7 +2981,7 @@ function exportarExcel(){
   datos.forEach(t=>rows.push(filaExcel(t)));
   const ws=XLSX.utils.aoa_to_sheet(rows);
   const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Historial');
-  XLSX.writeFile(wb,`MATRANSA_${new Date().toISOString().slice(0,10)}.xlsx`);
+  XLSX.writeFile(wb,`MATRANSA_${fechaISODeDate(new Date())}.xlsx`);
 }
 
 // ===== DASHBOARD — CENTRO DE CONTROL DE OPERACIONES (F2-26) =====
@@ -3985,7 +4020,7 @@ function exportarExcelDash(){
   datos.forEach(t=>rows.push(filaExcel(t)));
   const ws = XLSX.utils.aoa_to_sheet(rows);
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Dashboard');
-  const etq = [r.desde.toISOString().slice(0,10), r.hasta.toISOString().slice(0,10)].join('_');
+  const etq = [fechaISODeDate(r.desde), fechaISODeDate(r.hasta)].join('_');
   XLSX.writeFile(wb, 'MATRANSA_dashboard_'+etq+'.xlsx');
 }
 window.exportarExcelDash = exportarExcelDash;
@@ -6495,8 +6530,8 @@ function detalleOF(){
       '<td class="c num">'+(av.n || 0) +
         (av.previo ? '<div style="font-size:9px;color:var(--text-muted);font-weight:400">' +
                      av.previo + ' de antes</div>' : '') +
-        (av.aparte ? '<div style="font-size:9px;color:var(--text-muted);font-weight:400">' +
-                     av.aparte + ' de prototipo o reproceso, no cuentan</div>' : '') + '</td>' +
+        (av.aparte ? '<div style="font-size:9px;color:var(--text-muted);font-weight:400;line-height:1.3">' +
+                     av.aparte + ' de prototipo/reproceso,<br>no cuentan</div>' : '') + '</td>' +
       '<td class="c num" style="font-weight:600">'+(pend != null ? pend : '—')+'</td>' +
       '<td class="c suave">'+escapeHtml(l.unidad||'')+'</td>' +
       '<td class="c num">'+(h != null ? h.toFixed(1) : '—')+'</td>' +
@@ -6515,7 +6550,7 @@ function detalleOF(){
       ' <span style="font-weight:400;color:var(--text-muted)">· ' + hPend.toFixed(1) + ' h pendientes</span></div>' +
     '<div style="overflow-x:auto"><table class="dsh-tabla"><thead><tr>' +
       '<th style="width:30px">#</th><th>Área</th><th>Operación</th>' +
-      '<th class="c" style="width:74px">Total</th><th class="c" style="width:66px">Hecho</th>' +
+      '<th class="c" style="width:70px">Total</th><th class="c" style="width:104px">Hecho</th>' +
       '<th class="c" style="width:74px">Falta</th><th class="c" style="width:90px">Unidad</th>' +
       '<th class="c" style="width:70px">Horas</th><th style="width:150px"></th>' +
     '</tr></thead><tbody>' + filas + '</tbody></table></div>' +
@@ -6531,12 +6566,17 @@ function detalleOF(){
 // ---------------------------------------------------------------- acciones
 function elegirOFCola(of){ _colaOF = of; renderCola(); }
 
+// El desplegable sale de proyectosTC, igual que el de Generar tareo, y no de las claves de
+// `proyectos`. Esa coleccion guarda las listas de productos y arrastra claves viejas —"AMOR
+// AMAR", "BCP", "123"— de proyectos que ya no existen en la Torre de Control. Ofrecerlos aqui
+// era ofrecer OF que no se pueden tarear, y ademas salian como codigo pelado sin el nombre.
 function poblarSelectProyectoCola(){
   const s = document.getElementById('cola-proyecto');
   if(!s) return;
   const actual = s.value;
   s.innerHTML = '<option value="">Seleccionar…</option>';
-  Object.keys(proyectos).forEach(p => s.add(new Option(p, p)));
+  proyectosTC.slice().sort((a,b) => compararCodigoProyecto(a.codigo, b.codigo))
+    .forEach(p => s.add(new Option(p.codigo + ' · ' + p.nombre, p.codigo)));
   if(actual) s.value = actual;
 }
 

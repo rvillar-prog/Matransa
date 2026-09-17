@@ -39,7 +39,7 @@ node arnes.mjs
 
 Encuentra solo `../Matransa/index.html` y `../Backups/`. Si faltan los backups corre las
 pruebas que solo miran el código y avisa. Se puede forzar con `MATRANSA_HTML` y
-`MATRANSA_BACKUPS`. Hoy son **462 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
+`MATRANSA_BACKUPS`. Hoy son **490 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
 backup reciente y se salta sola si no hay ninguno.
 
 ---
@@ -339,6 +339,12 @@ cierra la sesión. Los dos archivos viven en `..\Docs\firestore_*.rules`.
   entero con cada snapshot y borraría lo que el usuario acaba de elegir.
 - **Plurales en español**: usar `plural(n, sing, plu)`. Concatenar `'operación'+'es'` da
   "operaciónes".
+- **Los códigos de proyecto no se ordenan con `localeCompare`**: da P1, P10, P11, P12, P2…
+  Usar `compararCodigoProyecto()`, que separa el prefijo del número. Lo usan los dos
+  desplegables (Generar tareo y Cola).
+- **`proyectos` no es la lista de proyectos vivos**: es donde viven las listas de productos, y
+  arrastra claves de proyectos que ya no existen ("AMOR AMAR", "BCP", "123"). Para ofrecer
+  proyectos al usuario, siempre `proyectosTC`.
 - **`new Date('AAAA-MM-DD')` es medianoche UTC, no local.** En Lima (UTC−5) eso cae el día
   anterior a las 19:00. Comparado contra una fecha hecha con `new Date(a,m,d)` —que sí es
   local— el día no cuadra. Fue el bug F2-27: las ausencias no descontaban capacidad, y sólo se
@@ -353,6 +359,16 @@ cierra la sesión. Los dos archivos viven en `..\Docs\firestore_*.rules`.
   `node arnes.mjs` en la máquina de Ricardo (Lima) es la prueba que vale. Una prueba de fecha
   bien escrita pasa en cualquier zona; si sólo pasa en una, la prueba está mal o el código lo
   está.
+- **Un día del calendario nunca sale de `toISOString()`** (F2-37). Devuelve UTC, y en Lima
+  después de las 19:00 ya es el día siguiente: el Excel descargado el miércoles 16 a las 21:00
+  salía como `MATRANSA_2026-09-17.xlsx` con las 50 filas del 16 dentro. Para el día usar
+  `fechaISODeDate(date)`; los `toISOString()` que quedan guardan **instantes** (cuándo se cerró
+  un ticket, cuándo se guardó una OF) y ahí UTC es lo correcto. El arnés vigila que nadie vuelva
+  a escribir `toISOString().slice(0,10)`.
+- **Una pantalla tiene que decir de qué día habla.** Después de las 17:00 la lista de Andree
+  esconde los medidos, así que las tarjetas del día quedaban encima de una lista que sólo
+  mostraba mañana y parecía que las cifras estaban mal. Las tarjetas nombran la fecha y el vacío
+  se explica.
 
 ---
 
