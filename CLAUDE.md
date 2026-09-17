@@ -9,7 +9,7 @@ GitHub Pages: `https://rvillar-prog.github.io/Matransa`.
 Backend: Firestore `matransa-c562c`, **entrada con Google corporativo** (@matransaperu.com),
 `initializeFirestore` con `persistentLocalCache` + `persistentMultipleTabManager`.
 Colecciones: `historial`, `trabajadores`, `proyectosTC`, `proyectos`, `ofs`, `planM3`,
-`ausencias`, `notas`, `usuarios`, `rutas`, `cola`, `inspecciones`.
+`ausencias`, `notas`, `usuarios`, `rutas`, `cola`, `inspecciones`, `maquinas`.
 
 La versión viva se declara en `VERSION_APP`, en las primeras líneas del archivo a propósito
 (para poder leerla sin recorrerlo entero), y se muestra en la pestaña Configuración.
@@ -39,7 +39,7 @@ node arnes.mjs
 
 Encuentra solo `../Matransa/index.html` y `../Backups/`. Si faltan los backups corre las
 pruebas que solo miran el código y avisa. Se puede forzar con `MATRANSA_HTML` y
-`MATRANSA_BACKUPS`. Hoy son **609 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
+`MATRANSA_BACKUPS`. Hoy son **636 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
 backup reciente y se salta sola si no hay ninguno.
 
 ---
@@ -228,6 +228,59 @@ números de OF. Se pega como JSON desde la propia pantalla (botón «Importar»)
 `rutas` es una colección nueva y las reglas publicadas la niegan por el `match /{document=**}`
 final. **Hay que publicar las reglas antes que el código**, o la pantalla no lee ni escribe nada.
 Es exactamente la trampa del F2-28, paso 4.
+
+---
+
+## Máquinas — el techo de estaciones (F2-43)
+
+`maquinas/{id}` cierra el agujero que F2-38 dejó anotado: la app sabía cuántas estaciones se
+**usan** y no cuántas **hay**. Cuatro estaciones ocupadas no significa nada solo: de trece es
+holgura, de cuatro es la planta al límite. Misma cifra, decisiones opuestas.
+
+**Una máquina disponible es una estación**, con dos excepciones que salieron del levantamiento
+del 18/9: el **área de secado** de la cabina (la pieza espera, nadie trabaja) y la **afiladora de
+discos** (da servicio, no produce mueble). Eso es `esEstacion:false`.
+
+```
+maquinas/{id} = { area, nombre, cantidad, fueraDeServicio, limitada,
+                  esEstacion, nota, operaciones[] }
+```
+
+### Las tres reglas del modelo
+
+**1. `cantidad` y `fueraDeServicio` son dos campos, y lo que vale es la resta.** Cinco soldadoras
+MIG con dos muertas, tres CNC con dos malogradas: una sola cifra obligaría a mentir en una de las
+dos direcciones.
+
+**2. El estado se DERIVA, nunca se teclea.** `estadoMaquina()` es la única fuente. Si alguien
+pudiera escribir "operativa" en una fila con todas las unidades fuera, la pantalla mentiría y
+nadie se enteraría.
+
+**3. `cantidad: null` es "existe y falta contarlo", y NO es cero.** Los bancos de Ensamble,
+Acabado, Fierro y Pintura de Fierro existen —ahí se hace el armado, el color al agua, el
+rolado— pero nadie los ha contado. Poner un 1 inventado daría un techo más bajo que el real y
+Hoy en planta diría **"8 de 5"**, que parece un error de programa cuando es un hueco de
+inventario. Un área con una sola fila sin contar **no tiene techo** (`techoIncompleto`), y la
+pantalla dice cuál falta. Un área con todo muerto **sí** tiene techo, y vale cero: "no se sabe"
+y "cero" son estados distintos.
+
+### Las operaciones viven en la máquina
+Una máquina hace varias operaciones y **una operación puede ir en varias máquinas**: "Acabado de
+pieza" es esmeril o turbineta según la forma; "Resoldado" es MIG, o TIG si es inoxidable.
+Guardarlo del lado de la operación obligaría a inventar un ganador. `maquinasDeOperacion()`
+devuelve todas las candidatas, y `operacionesSinMaquina()` audita lo que se tarea y ninguna
+máquina reclama — que no siempre es un error, porque el armado se hace a banco.
+
+**Consecuencia abierta:** mientras el ticket no guarde en qué máquina se hizo, la variación de
+esas operaciones no es atribuible. "Acabado de pieza" varía 43% en 42.7 h y es la #2 de la ruta
+de Pablo; sus mediciones van de 8′ a 36′ y el mismo producto aparece en los dos extremos. Puede
+ser método o puede ser esmeril contra turbineta, y hoy no hay forma de saberlo.
+
+### El inventario NO entra al código
+Qué máquinas hay y cuáles están malogradas es información de la planta y **este repositorio es
+público**. Se importa pegando el JSON, igual que las rutas. La semilla del levantamiento vive en
+`..\Docs\maquinas_semilla.json`. La importación **reemplaza el inventario completo** a propósito:
+uno a medias da un techo malo sin avisar.
 
 ---
 

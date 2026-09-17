@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-24 \u00b7 F2-42';
+const VERSION_APP = 'v2026-09-25 \u00b7 F2-43';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -388,6 +388,7 @@ async function init() {
   suscribirRutas();
   suscribirCola();
   suscribirInspecciones();
+  suscribirMaquinas();
   // Cuando init() corre, la sesion ya sabe quien entro y con que permisos: el portero de
   // abajo no la llama hasta tener la ficha leida.
   aplicarPerfil();
@@ -1181,13 +1182,13 @@ function imprimirHoy(fechaFiltro){
 const GRUPOS_NAV = [
   { grupo:'',          paginas:['hoy','atencion'] },
   { grupo:'Operar',    paginas:['tareo','cola','andree','kanban'] },
-  { grupo:'Controlar', paginas:['rutas','metodos','torre','planificacion','personal','m3'] },
+  { grupo:'Controlar', paginas:['rutas','metodos','maquinas','torre','planificacion','personal','m3'] },
   { grupo:'Analizar',  paginas:['dashboard','historial'] },
   { grupo:'',          paginas:['notas','config'] },
 ];
 const ETIQUETAS_NAV = {
   hoy:'Hoy en planta', atencion:'Atención', tareo:'Generar tareo', cola:'Cola de OF', andree:'Registro Andree', kanban:'Kanban',
-  rutas:'Rutas', metodos:'Métodos', torre:'Torre de Control', planificacion:'Planificación', personal:'Personal',
+  rutas:'Rutas', metodos:'Métodos', maquinas:'Máquinas', torre:'Torre de Control', planificacion:'Planificación', personal:'Personal',
   m3:'M³ Semanal', dashboard:'Dashboard', historial:'Historial',
   notas:'Notas', config:'Configuración'
 };
@@ -6856,7 +6857,9 @@ function renderEstaciones(){
     const f = fin[a];
     return '<tr>' +
       '<td>' + escapeHtml(a) + '</td>' +
-      '<td class="c num" style="font-weight:600">' + o.estaciones + '</td>' +
+      '<td class="c num" style="font-weight:600">' + o.estaciones +
+        (hayTechoDeclarado(a) ? '<span class="suave" style="font-weight:400"> de ' +
+          estacionesDeclaradas(a) + '</span>' : '') + '</td>' +
       '<td class="c num suave">' + o.personas + '</td>' +
       '<td class="c num suave">' + mx + '</td>' +
       '<td class="c suave">' + (f && f < H1 - 0.001 ? hhmmEst(f) : '—') + '</td>' +
@@ -6877,6 +6880,8 @@ function renderEstaciones(){
     '<div style="display:flex;gap:26px;flex-wrap:wrap;align-items:baseline;margin-bottom:10px">' +
       '<div><span style="font-family:var(--f-num);font-size:34px;font-weight:600;line-height:1">' +
         sel.estaciones + '</span>' +
+        (hayTechoDeclarado() ? '<span style="font-family:var(--f-num);font-size:18px;color:var(--text-secondary)"> de ' +
+          estacionesDeclaradas() + '</span>' : '') +
         '<span style="font-size:12px;color:var(--text-secondary);margin-left:8px">' +
           (_horaEst == null && dentro ? 'ahora · ' + hhmmEst(sel.hora) : 'a las ' + hhmmEst(sel.hora)) + '</span></div>' +
       '<div style="font-size:12px;color:var(--text-secondary)">' +
@@ -6901,12 +6906,15 @@ function renderEstaciones(){
     '</div>' +
 
     '<div style="overflow-x:auto;margin-top:8px"><table class="dsh-tabla"><thead><tr>' +
-      '<th style="min-width:150px">Área</th><th class="c" style="width:86px">Estaciones</th>' +
+      '<th style="min-width:150px">Área</th><th class="c" style="width:110px">Estaciones<br>' +
+        '<small style="font-weight:400;color:var(--text-muted)">usadas de declaradas</small></th>' +
       '<th class="c" style="width:76px">Personas</th>' +
       '<th class="c" style="width:76px">Pico</th><th class="c" style="width:110px">Sin trabajo<br>desde</th>' +
     '</tr></thead><tbody>' + filas +
       '<tr><td style="font-weight:700">TOTAL PLANTA</td>' +
-      '<td class="c num" style="font-weight:700">' + sel.estaciones + '</td>' +
+      '<td class="c num" style="font-weight:700">' + sel.estaciones +
+        (hayTechoDeclarado() ? '<span class="suave" style="font-weight:400"> de ' +
+          estacionesDeclaradas() + '</span>' : '') + '</td>' +
       '<td class="c num" style="font-weight:700">' + sel.personas + '</td>' +
       '<td class="c num suave">' + pico.estaciones + '</td><td></td></tr>' +
     '</tbody></table></div>' +
@@ -7284,6 +7292,403 @@ window.abrirInspeccion = abrirInspeccion;
 window.cerrarInspeccion = cerrarInspeccion;
 window.guardarInspeccion = guardarInspeccion;
 
+// ===== MAQUINAS Y ESTACIONES DECLARADAS (F2-43) =====
+//
+// El historial dice cuantas estaciones se USAN. Nunca supo cuantas HAY. Esa era la frase
+// anotada como pendiente desde el F2-38: "si Habilitado tiene seis bancos y se ocupan cuatro,
+// aqui dice cuatro". Un numero sin techo no se puede leer: cuatro estaciones puede ser holgura
+// o puede ser la planta al limite, y son decisiones opuestas.
+//
+// UNA MAQUINA DISPONIBLE ES UNA ESTACION. Con dos matices que salieron del levantamiento:
+//   - Hay maquinas que NO son estacion: el area de secado de la cabina (la pieza espera ahi,
+//     nadie trabaja) y la afiladora de discos (da servicio, no produce mueble). `esEstacion`.
+//   - Una fila puede tener varias unidades y algunas fuera: 5 soldadoras MIG con 2 muertas,
+//     3 CNC con 2 malogradas. Por eso `cantidad` y `fueraDeServicio` son dos campos y lo que
+//     cuenta es la resta. Una sola cifra obligaria a mentir en una de las dos direcciones.
+//
+// EL ESTADO SE DERIVA, NO SE ESCRIBE. Si alguien puede teclear "operativa" en una fila con
+// todas las unidades fuera, la pantalla miente y nadie se entera. `estadoMaquina()` es la
+// unica fuente.
+//
+// LAS OPERACIONES VIVEN EN LA MAQUINA, no al reves: una maquina hace varias operaciones y una
+// operacion puede ir en varias maquinas —"Acabado de pieza" es esmeril o turbineta segun la
+// forma de la pieza—. Guardarlo del lado de la operacion obligaria a inventar un ganador.
+//
+// EL INVENTARIO NO ENTRA AL CODIGO. Que maquinas hay y cuales estan malogradas es informacion
+// de la planta y este repositorio es publico. Se importa pegando el JSON, igual que las rutas.
+
+const ESTADOS_MAQUINA = {
+  operativa:   {etiqueta: 'Operativa',    clase: 'ok'},
+  limitada:    {etiqueta: 'Limitada',     clase: 'warn'},
+  inoperativa: {etiqueta: 'Inoperativa',  clase: 'crit'},
+  sinContar:   {etiqueta: 'Sin contar',   clase: 'warn'}
+};
+
+let maquinas = [];
+let unsubMaquinas = null;
+let _maquinaEdit = null;
+
+function suscribirMaquinas(){
+  if(unsubMaquinas) return;
+  unsubMaquinas = onSnapshot(collection(db,'maquinas'), snap=>{
+    maquinas = snap.docs.map(d=>({fbId:d.id, ...d.data()}));
+    if(paginaActiva()==='maquinas') renderMaquinas();
+    if(paginaActiva()==="hoy") renderEstaciones();
+  });
+}
+
+// SIN CONTAR NO ES CERO. Los bancos de Ensamble, Acabado, Fierro y Pintura de Fierro existen
+// —ahi se hace el armado, el color al agua, el rolado— pero nadie los ha contado todavia.
+// Poner un 1 inventado para que la cuenta cuadre seria peor que no tener la cuenta: el techo
+// saldria bajo, la pantalla diria "8 de 5" y nadie sabria si el error es del dato o de la
+// planta. `cantidad: null` dice exactamente lo que se sabe: que esta ahi y que falta contarlo.
+function sinContar(m){
+  return !m || m.cantidad === null || m.cantidad === undefined || m.cantidad === '';
+}
+
+// Cuantas unidades de esta fila se pueden usar hoy.
+function disponiblesDe(m){
+  if(sinContar(m)) return 0;
+  return Math.max(0, (Number(m.cantidad) || 0) - (Number(m.fueraDeServicio) || 0));
+}
+
+function estadoMaquina(m){
+  if(sinContar(m)) return 'sinContar';
+  if(!disponiblesDe(m)) return 'inoperativa';
+  if(Number(m.fueraDeServicio) > 0 || m.limitada) return 'limitada';
+  return 'operativa';
+}
+
+// El techo: cuantas estaciones HAY. Sin area, la planta entera.
+function estacionesDeclaradas(area){
+  return maquinas
+    .filter(m => m.esEstacion !== false && (!area || m.area === area))
+    .reduce((s, m) => s + disponiblesDe(m), 0);
+}
+
+// Un area con una sola fila sin contar NO tiene techo. Mostrar la suma de lo que si esta
+// contado seria dar un techo mas bajo que el real, y de ahi salen los "8 de 5" que parecen un
+// error de programa cuando son un hueco de inventario.
+function techoIncompleto(area){
+  return maquinas.some(m => (!area || m.area === area) && m.esEstacion !== false && sinContar(m));
+}
+
+// Un area sin maquinas declaradas no tiene techo, y eso no es lo mismo que tener techo cero.
+// Quien pregunta "4 de cuantas" tiene que poder distinguir "de 13" de "no se sabe".
+function hayTechoDeclarado(area){
+  return maquinas.some(m => (!area || m.area === area)) && !techoIncompleto(area);
+}
+
+function maquinasDeOperacion(nombre){
+  if(!nombre) return [];
+  return maquinas.filter(m => (m.operaciones || []).some(o => o === nombre));
+}
+
+// Auditoria: operaciones que se estan tareando y ninguna maquina reclama. No siempre es un
+// error —el armado se hace a banco— pero la lista tiene que existir para poder mirarla.
+function operacionesSinMaquina(historial_){
+  const vistas = {};
+  (historial_ || []).forEach(t=>{
+    if(t.noEjecutado || !t.operacion || t.operacion === 'Otra') return;
+    if(esTransversalMetodo && esTransversalMetodo(t.operacion)) return;
+    if(maquinasDeOperacion(t.operacion).length) return;
+    vistas[t.operacion] = (vistas[t.operacion] || 0) + 1;
+  });
+  return Object.keys(vistas).map(o => ({operacion: o, tickets: vistas[o]}))
+    .sort((a,b) => b.tickets - a.tickets);
+}
+
+// --------------------------------------------------------------------------- pantalla
+function renderMaquinas(){
+  const cont = document.getElementById('maquinas-content');
+  if(!cont) return;
+
+  if(!maquinas.length){
+    cont.innerHTML =
+    '<div class="card"><div class="empty"><div class="empty-icon">⚙</div>' +
+      '<div>Todavía no hay máquinas declaradas.</div>' +
+      '<div style="font-size:12px;color:var(--text-muted);margin-top:6px;max-width:520px;margin-left:auto;margin-right:auto">' +
+        'Mientras no las haya, Estaciones puede decir cuántas se usan pero no cuántas hay. ' +
+        'El inventario se importa pegando el JSON del levantamiento — no vive en el código, ' +
+        'porque el repositorio es público.</div>' +
+      '<div class="actions" style="justify-content:center;margin-top:12px">' +
+        '<button class="btn btn-primary" onclick="abrirImportarMaquinas()">Importar inventario</button>' +
+        '<button class="btn" onclick="editarMaquina(null)">Agregar una</button>' +
+      '</div>' +
+    '</div></div>' +
+    '<div id="maquinas-import" style="display:none"></div>';
+    return;
+  }
+
+  const areas = ORDEN_AREAS_GLOBAL.filter(a => maquinas.some(m => m.area === a))
+    .concat(maquinas.map(m => m.area).filter(a => ORDEN_AREAS_GLOBAL.indexOf(a) < 0)
+      .filter((a,i,ar) => ar.indexOf(a) === i));
+
+  const bloques = areas.map(a => {
+    const lista = maquinas.filter(m => m.area === a)
+      .sort((x,y) => (x.nombre||'').localeCompare(y.nombre||''));
+    const filas = lista.map(m => {
+      const est = estadoMaquina(m);
+      const meta = ESTADOS_MAQUINA[est];
+      const disp = disponiblesDe(m);
+      const ops = (m.operaciones || []);
+      return '<tr>' +
+        '<td>' + escapeHtml(m.nombre || '—') +
+          (m.esEstacion === false
+            ? '<div style="font-size:10px;color:var(--text-muted)">no es estación de trabajo</div>' : '') +
+          (m.nota ? '<div style="font-size:11px;color:var(--text-secondary)">' + escapeHtml(m.nota) + '</div>' : '') +
+        '</td>' +
+        '<td class="c num">' + (sinContar(m) ? '<span class="suave">?</span>' : (m.cantidad || 0)) + '</td>' +
+        '<td class="c num' + (disp ? '' : (est === 'sinContar' ? ' suave' : ' crit')) +
+          '" style="font-weight:600">' + (sinContar(m) ? '—' : disp) + '</td>' +
+        '<td class="c ' + meta.clase + '">' + meta.etiqueta + '</td>' +
+        '<td style="font-size:11px;color:var(--text-secondary)">' +
+          (ops.length ? ops.map(escapeHtml).join(' · ')
+                      : '<span style="color:var(--text-muted)">sin operaciones asignadas</span>') + '</td>' +
+        '<td class="c"><button class="btn btn-xs" onclick="editarMaquina(' +
+          JSON.stringify(m.fbId).replace(/"/g,'&quot;') + ')">Editar</button></td>' +
+      '</tr>';
+    }).join('');
+    const techo = estacionesDeclaradas(a);
+    const fuera = lista.reduce((s,m)=> s + (Number(m.fueraDeServicio)||0), 0);
+    return '<div class="card">' +
+      '<div class="card-title">' + escapeHtml(a) + ' · ' +
+        (techoIncompleto(a)
+          ? '<span style="color:var(--warn)">sin techo: falta contar ' +
+            plural(lista.filter(sinContar).length, 'fila', 'filas') + '</span>'
+          : plural(techo, 'estación declarada', 'estaciones declaradas')) +
+        (fuera ? ' <span style="color:var(--crit);font-weight:600">· ' +
+                 plural(fuera, 'unidad fuera de servicio', 'unidades fuera de servicio') + '</span>' : '') +
+      '</div>' +
+      '<div style="overflow-x:auto"><table class="dsh-tabla"><thead><tr>' +
+        '<th style="min-width:200px">Máquina</th>' +
+        '<th class="c" style="width:70px">Hay</th>' +
+        '<th class="c" style="width:90px">Disponibles</th>' +
+        '<th class="c" style="width:100px">Estado</th>' +
+        '<th style="min-width:220px">Operaciones</th>' +
+        '<th class="c" style="width:70px"></th>' +
+      '</tr></thead><tbody>' + filas + '</tbody></table></div>' +
+    '</div>';
+  }).join('');
+
+  const total = estacionesDeclaradas();
+  const fueraTot = maquinas.reduce((s,m)=> s + (Number(m.fueraDeServicio)||0), 0);
+  const faltaContar = maquinas.filter(m => m.esEstacion !== false && sinContar(m));
+  const sinOps = maquinas.filter(m => !(m.operaciones||[]).length && m.esEstacion !== false);
+  const huerfanas = operacionesSinMaquina(historial);
+
+  cont.innerHTML =
+  '<div class="card">' +
+    '<div class="card-title">Estaciones declaradas en la planta</div>' +
+    '<div style="display:flex;gap:26px;flex-wrap:wrap;align-items:baseline">' +
+      '<div><span style="font-family:var(--f-num);font-size:34px;font-weight:600;line-height:1">' + total + '</span>' +
+        '<span style="font-size:12px;color:var(--text-secondary);margin-left:8px">' +
+          (faltaContar.length ? 'máquinas contadas' : 'estaciones disponibles') + '</span></div>' +
+      (faltaContar.length ? '<div style="font-size:12px;color:var(--warn);max-width:380px;line-height:1.5">' +
+        'No es el techo de la planta: falta contar ' +
+        plural(faltaContar.length, 'fila', 'filas') + ' (' +
+        faltaContar.map(m => escapeHtml(m.nombre)).slice(0,4).join(', ') +
+        (faltaContar.length > 4 ? '…' : '') + '). Mientras tanto Hoy en planta no muestra techo.</div>' : '') +
+      (fueraTot ? '<div style="font-size:12px;color:var(--crit)">' +
+        plural(fueraTot, 'unidad fuera de servicio', 'unidades fuera de servicio') + '</div>' : '') +
+    '</div>' +
+    '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin-top:8px">' +
+      'Este es el <strong>techo</strong>, no el uso. Cuántas se ocupan a cada hora se ve en ' +
+      '<strong>Hoy en planta</strong>. El área de secado y la afiladora no cuentan: en una nadie ' +
+      'trabaja y la otra da servicio.' +
+    '</div>' +
+    '<div class="actions" style="margin-top:10px">' +
+      '<button class="btn btn-sm" onclick="editarMaquina(null)">+ Máquina</button>' +
+      '<button class="btn btn-sm" onclick="abrirImportarMaquinas()">Importar inventario</button>' +
+    '</div>' +
+  '</div>' +
+  '<div id="maquinas-import" style="display:none"></div>' +
+  '<div id="maquina-form"></div>' +
+  bloques +
+
+  ((sinOps.length || huerfanas.length) ?
+  '<div class="card">' +
+    '<div class="card-title">Lo que falta amarrar</div>' +
+    (huerfanas.length ?
+      '<div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px">' +
+        plural(huerfanas.length, 'operación del tareo no tiene máquina', 'operaciones del tareo no tienen máquina') +
+        '. No siempre es un error —el armado se hace a banco— pero conviene mirarlo:</div>' +
+      '<div style="font-size:12px;line-height:1.7">' + huerfanas.slice(0,20).map(o =>
+        escapeHtml(o.operacion) + ' <span style="color:var(--text-muted)">(' + o.tickets + ')</span>').join(' · ') +
+      '</div>' : '') +
+    (sinOps.length ?
+      '<div style="font-size:12px;color:var(--text-secondary);margin-top:10px">' +
+        plural(sinOps.length, 'máquina sin ninguna operación asignada', 'máquinas sin ninguna operación asignada') +
+        ': ' + sinOps.map(m => escapeHtml(m.nombre)).join(' · ') + '</div>' : '') +
+  '</div>' : '');
+}
+
+// --------------------------------------------------------------------------- editar
+function editarMaquina(fbId){
+  const m = fbId ? maquinas.find(x => x.fbId === fbId) : null;
+  _maquinaEdit = fbId || null;
+  const cont = document.getElementById('maquina-form');
+  if(!cont) return;
+  const ops = (m && m.operaciones || []).join(', ');
+  const areasOpt = ORDEN_AREAS_GLOBAL.map(a =>
+    '<option value="' + escapeHtml(a) + '"' + (m && m.area === a ? ' selected' : '') + '>' + escapeHtml(a) + '</option>').join('');
+  cont.innerHTML =
+  '<div class="card">' +
+    '<div class="card-title">' + (m ? 'Editar máquina' : 'Nueva máquina') + '</div>' +
+    '<div class="form-grid">' +
+      '<div class="field"><label>Área</label><select id="mq-area">' + areasOpt + '</select></div>' +
+      '<div class="field"><label>Nombre</label><input id="mq-nombre" value="' +
+        escapeHtml((m && m.nombre) || '') + '"></div>' +
+      '<div class="field"><label>Cuántas hay <small style="font-weight:400;color:var(--text-muted)">' +
+        '(en blanco = falta contarlas)</small></label>' +
+        '<input id="mq-cant" type="number" min="0" value="' +
+        (m && !sinContar(m) ? m.cantidad : (m ? '' : 1)) + '"></div>' +
+      '<div class="field"><label>Cuántas fuera de servicio</label><input id="mq-fuera" type="number" min="0" value="' +
+        ((m && m.fueraDeServicio) || 0) + '"></div>' +
+    '</div>' +
+    '<div class="field field-full"><label>Operaciones que se hacen aquí (separadas por coma)</label>' +
+      '<input id="mq-ops" value="' + escapeHtml(ops) + '"></div>' +
+    '<div class="field field-full"><label>Nota</label><input id="mq-nota" value="' +
+      escapeHtml((m && m.nota) || '') + '"></div>' +
+    '<div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px;margin:4px 0 10px">' +
+      '<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="mq-estacion"' +
+        (!m || m.esEstacion !== false ? ' checked' : '') + '> Es una estación de trabajo</label>' +
+      '<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="mq-limitada"' +
+        (m && m.limitada ? ' checked' : '') + '> Funciona con limitaciones</label>' +
+    '</div>' +
+    '<div class="actions">' +
+      '<button class="btn" onclick="cerrarMaquina()">Cancelar</button>' +
+      (m ? '<button class="btn btn-danger" onclick="borrarMaquina()">Eliminar</button>' : '') +
+      '<button class="btn btn-primary" onclick="guardarMaquina()">Guardar</button>' +
+    '</div>' +
+  '</div>';
+  const n = document.getElementById('mq-nombre'); if(n) n.focus();
+}
+
+function cerrarMaquina(){
+  _maquinaEdit = null;
+  const c = document.getElementById('maquina-form');
+  if(c) c.innerHTML = '';
+}
+
+async function guardarMaquina(){
+  const val = id => (document.getElementById(id) || {}).value || '';
+  const chk = id => !!(document.getElementById(id) || {}).checked;
+  const nombre = val('mq-nombre').trim();
+  if(!nombre){ showAlert('maquinas','La máquina necesita un nombre.','warn'); return; }
+  const crudo    = val('mq-cant').trim();
+  const cantidad = crudo === '' ? null : Math.max(0, parseInt(crudo, 10) || 0);
+  const fuera    = Math.max(0, parseInt(val('mq-fuera'), 10) || 0);
+  // Mas unidades fuera que unidades existentes no es un estado, es un error de tecleo. Si se
+  // deja pasar, el techo de la planta queda mal para siempre y nadie sabe por que.
+  if(cantidad !== null && fuera > cantidad){
+    showAlert('maquinas','No puede haber más unidades fuera de servicio (' + fuera +
+              ') que unidades (' + cantidad + ').','warn');
+    return;
+  }
+  const datos = {
+    area: val('mq-area'),
+    nombre,
+    cantidad, fueraDeServicio: fuera,
+    limitada: chk('mq-limitada'),
+    esEstacion: chk('mq-estacion'),
+    nota: val('mq-nota').trim(),
+    operaciones: val('mq-ops').split(',').map(s => s.trim()).filter(Boolean),
+    actualizado: new Date().toISOString(),
+    por: (usuarioActivo && usuarioActivo.correo) || ''
+  };
+  const ok = await escribir('guardar la máquina',
+    ()=> _maquinaEdit ? updateDoc(doc(db,'maquinas',_maquinaEdit), datos)
+                      : addDoc(collection(db,'maquinas'), datos),
+    {pagina:'maquinas', exito:'Máquina guardada.'});
+  if(ok) cerrarMaquina();
+}
+
+async function borrarMaquina(){
+  if(!_maquinaEdit) return;
+  const m = maquinas.find(x => x.fbId === _maquinaEdit);
+  if(!confirm('¿Eliminar "' + ((m && m.nombre) || '') + '"? El techo de estaciones va a bajar.')) return;
+  const ok = await escribir('eliminar la máquina', ()=> deleteDoc(doc(db,'maquinas',_maquinaEdit)),
+    {pagina:'maquinas', exito:'Máquina eliminada.'});
+  if(ok) cerrarMaquina();
+}
+
+// --------------------------------------------------------------------------- importar
+function abrirImportarMaquinas(){
+  const c = document.getElementById('maquinas-import');
+  if(!c) return;
+  c.style.display = '';
+  c.innerHTML =
+  '<div class="card">' +
+    '<div class="card-title">Importar el inventario</div>' +
+    '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;line-height:1.6">' +
+      'Pega la lista en JSON: <code>[{"area":"HABILITADO","nombre":"Escuadradora","cantidad":2,' +
+      '"fueraDeServicio":0,"limitada":true,"nota":"una vibra","esEstacion":true,' +
+      '"operaciones":["Cortes angulares","Seccionar tablero"]}]</code>. ' +
+      '<strong>Reemplaza el inventario completo</strong>: lo que no esté en la lista se borra. ' +
+      'Es a propósito — un inventario a medias es peor que ninguno, porque el techo sale mal ' +
+      'y la pantalla no avisa.' +
+    '</div>' +
+    '<textarea id="maquinas-json" style="width:100%;min-height:140px;font-family:var(--f-num, monospace);font-size:12px"></textarea>' +
+    '<div class="actions">' +
+      '<button class="btn" onclick="document.getElementById(\'maquinas-import\').style.display=\'none\'">Cancelar</button>' +
+      '<button class="btn btn-primary" onclick="importarMaquinas()">Importar</button>' +
+    '</div>' +
+  '</div>';
+}
+
+async function importarMaquinas(){
+  const ta = document.getElementById('maquinas-json');
+  if(!ta) return;
+  let lista;
+  try{ lista = JSON.parse(ta.value); }
+  catch(e){ showAlert('maquinas','El texto no es JSON válido: ' + e.message, 'warn'); return; }
+  if(!Array.isArray(lista) || !lista.length){
+    showAlert('maquinas','Se esperaba una lista con al menos una máquina.','warn'); return; }
+  const malas = lista.filter(m => !m || !m.nombre || !m.area);
+  if(malas.length){
+    showAlert('maquinas','Hay ' + plural(malas.length,'máquina sin nombre o sin área','máquinas sin nombre o sin área') +
+              '. No se importó nada.','warn'); return; }
+  const excedidas = lista.filter(m => !sinContar(m) &&
+                                 (Number(m.fueraDeServicio)||0) > (Number(m.cantidad)||0));
+  if(excedidas.length){
+    showAlert('maquinas','Hay ' + plural(excedidas.length,'máquina con más unidades fuera que unidades',
+              'máquinas con más unidades fuera que unidades') + ': ' +
+              excedidas.map(m=>m.nombre).join(', ') + '. No se importó nada.','warn'); return; }
+  if(!confirm('Se van a escribir ' + plural(lista.length,'máquina','máquinas') +
+              ' y a borrar las ' + maquinas.length + ' que hay. ¿Continuar?')) return;
+
+  const lote = writeBatch(db);
+  maquinas.forEach(m => lote.delete(doc(db,'maquinas',m.fbId)));
+  lista.forEach(m => {
+    lote.set(doc(collection(db,'maquinas')), {
+      area: String(m.area || ''), nombre: String(m.nombre || ''),
+      cantidad: (m.cantidad === null || m.cantidad === undefined || m.cantidad === '')
+                  ? null : (Number(m.cantidad) || 0),
+      fueraDeServicio: Number(m.fueraDeServicio) || 0,
+      limitada: !!m.limitada,
+      esEstacion: m.esEstacion !== false,
+      nota: String(m.nota || ''),
+      operaciones: Array.isArray(m.operaciones) ? m.operaciones.map(String) : [],
+      actualizado: new Date().toISOString(),
+      por: (usuarioActivo && usuarioActivo.correo) || ''
+    });
+  });
+  const ok = await escribir('importar el inventario', ()=>lote.commit(),
+    {pagina:'maquinas', exito:'Importadas ' + plural(lista.length,'máquina','máquinas') + '.'});
+  if(ok){
+    const c = document.getElementById('maquinas-import');
+    if(c){ c.style.display='none'; c.innerHTML=''; }
+  }
+}
+
+window.editarMaquina = editarMaquina;
+window.cerrarMaquina = cerrarMaquina;
+window.guardarMaquina = guardarMaquina;
+window.borrarMaquina = borrarMaquina;
+window.abrirImportarMaquinas = abrirImportarMaquinas;
+window.importarMaquinas = importarMaquinas;
+
 // ===== REDIBUJADO SELECTIVO =====
 // Antes, cada cambio en cualquier ticket redibujaba las siete vistas, estuvieran o no en
 // pantalla. Ahora solo se redibuja la que se está viendo; showPage() refresca la vista a la
@@ -7324,7 +7729,7 @@ function showAlert(pagina,msg,tipo,ms){
 function showPage(nombre){if(_foco&&_foco.pagina!==nombre)limpiarFoco();document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('page-'+nombre).classList.add('active');// Antes se buscaba la pestaña activa por el texto de su onclick, lo que obligaba a que el
 // markup del menú no cambiara nunca. data-page es exactamente para esto.
 document.querySelectorAll(`nav .tab[data-page="${nombre}"], .mobile-menu-item[data-page="${nombre}"]`).forEach(el=>el.classList.add('active'));
-document.querySelectorAll('nav .tab-menu').forEach(m=>m.classList.toggle('dentro', !!m.querySelector(`.tab[data-page="${nombre}"]`)));if(nombre==='hoy'||nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='metodos')renderMetodos();if(nombre==='cola')renderCola();if(nombre==='rutas')renderRutas();if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();if(ofs&&ofs.length){renderTorre();if(_foco&&_foco.pagina==='torre')setTimeout(aplicarFoco,0);}}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
+document.querySelectorAll('nav .tab-menu').forEach(m=>m.classList.toggle('dentro', !!m.querySelector(`.tab[data-page="${nombre}"]`)));if(nombre==='hoy'||nombre==='atencion'||nombre==='tareo'||nombre==='andree'||nombre==='kanban'||nombre==='historial'||nombre==='dashboard')refrescarVista(nombre);if(nombre==='metodos')renderMetodos();if(nombre==='maquinas')renderMaquinas();if(nombre==='cola')renderCola();if(nombre==='rutas')renderRutas();if(nombre==='m3')renderM3();if(nombre==='planificacion')renderPlanificacion();if(nombre==='personal')renderPersonal();if(nombre==='notas')renderNotas();if(nombre==='torre'){cargarTorre();if(ofs&&ofs.length){renderTorre();if(_foco&&_foco.pagina==='torre')setTimeout(aplicarFoco,0);}}if(nombre==='config'){if(document.getElementById('page-config')?.classList.contains('active')) renderConfigProyectosTC();poblarSelectProyectos();}}
 
 window.showPage=showPage;window.actualizarProductos=actualizarProductos;window.calcTT=calcTT;
 window.agregarTicket=agregarTicket;window.limpiarForm=limpiarForm;window.imprimirHoy=imprimirHoy;
@@ -8211,10 +8616,10 @@ const DOMINIO_EMPRESA = 'matransaperu.com';
 // manda es el arreglo `pestanas` de la ficha, que se edita casilla por casilla.
 // A proposito NO llevan nombres de personas: este archivo es publico.
 const PLANTILLAS_ACCESO = {
-  completo:    {etq:'Acceso completo',      pestanas:['hoy','atencion','tareo','cola','andree','kanban','rutas','metodos','torre','planificacion','personal','m3','dashboard','historial','notas','config']},
-  operaciones: {etq:'Operaciones',          pestanas:['hoy','atencion','tareo','cola','andree','kanban','rutas','metodos','torre','planificacion','personal','m3','dashboard','historial','notas']},
+  completo:    {etq:'Acceso completo',      pestanas:['hoy','atencion','tareo','cola','andree','kanban','rutas','metodos','maquinas','torre','planificacion','personal','m3','dashboard','historial','notas','config']},
+  operaciones: {etq:'Operaciones',          pestanas:['hoy','atencion','tareo','cola','andree','kanban','rutas','metodos','maquinas','torre','planificacion','personal','m3','dashboard','historial','notas']},
   registro:    {etq:'Registro de tiempos',  pestanas:['hoy','atencion','tareo','andree','kanban','historial']},
-  supervision: {etq:'Supervisión',      pestanas:['hoy','atencion','personal','rutas','metodos','torre','kanban','historial','notas']},
+  supervision: {etq:'Supervisión',      pestanas:['hoy','atencion','personal','rutas','metodos','maquinas','torre','kanban','historial','notas']},
   lectura:     {etq:'Solo lectura',         pestanas:['hoy','atencion','torre','dashboard','historial']}
 };
 
@@ -9729,6 +10134,21 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
   <div class="actions no-print" style="margin-top:1rem">
     <button class="btn btn-primary" id="btn-imprimir" style="display:none" onclick="abrirSelectorImpresion()">🖨 Imprimir tickets</button>
   </div>
+</div>
+
+<!-- MAQUINAS -->
+<div class="page" id="page-maquinas">
+  <div id="alert-maquinas" style="display:none" class="alert"></div>
+  <div class="card" style="padding-bottom:12px">
+    <div class="card-title">Máquinas — cuántas estaciones hay</div>
+    <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">
+      <strong>Una máquina disponible es una estación de trabajo.</strong> Esta pantalla declara el
+      techo; cuántas se ocupan a cada hora se ve en Hoy en planta. Una fila puede tener varias
+      unidades con algunas fuera de servicio — lo que cuenta es la resta, y el estado se deriva de
+      ella, no se teclea.
+    </div>
+  </div>
+  <div id="maquinas-content"></div>
 </div>
 
 <!-- METODOS -->
