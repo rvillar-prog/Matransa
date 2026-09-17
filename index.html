@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-20 \u00b7 F2-33';
+const VERSION_APP = 'v2026-09-22 \u00b7 F2-35';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -6153,7 +6153,7 @@ window.guardarRuta = guardarRuta;
 window.abrirImportarRutas = abrirImportarRutas;
 window.importarRutas = importarRutas;
 
-// ===== COLA DE TRABAJO DE LA OF (F2-33) =====
+// ===== COLA DE TRABAJO DE LA OF (F2-33 \u00b7 descuento F2-34/35) =====
 //
 // Lo que hoy cuesta 2 personas x 2 horas diarias no es escribir los tickets: es acordarse de qué
 // operaciones lleva cada mueble y en qué orden. Eso ya está resuelto — vive en la ruta. Aquí se
@@ -6186,12 +6186,53 @@ function suscribirCola(){
   });
 }
 
-// Lo hecho de una línea sale de los tickets que nacieron de ella. Los no ejecutados no cuentan:
-// el trabajo sigue pendiente, que es justo lo que la cola tiene que seguir mostrando.
-function avanceLinea(fbId){
+// Un ticket pertenece a una línea aunque no traiga `colaId`: los que se hicieron antes de que la
+// cola existiera no lo tienen, y si no se cuentan la cola pide trabajo que ya está hecho. Se
+// cruzan por lo que identifica el mismo trabajo: misma OF, mismo producto, misma área, misma
+// operación. Sin operación no hay cruce posible y no se adivina — se avisa aparte.
+function coincideConLinea(t, l){
+  if(!t.operacion || t.operacion !== l.operacion) return false;
+  if(normProducto(t.producto) !== l.producto) return false;
+  if(l.of && String(t.ofNumero || '') !== String(l.of)) return false;
+  const a = t.areaEjecucion || areaDeOperacion(t.operacion) || '';
+  if(l.area && a && a !== l.area) return false;
+  return true;
+}
+
+// Lo hecho de una línea. Se separa en dos porque no es lo mismo y hay que poder auditarlo:
+//   deCola  tickets que salieron de esta línea (traen colaId)
+//   previo  trabajo de la misma OF y operación registrado antes, cruzado por campos
+// Un ticket se cuenta UNA vez: si tiene colaId manda el colaId, aunque también cruce por campos.
+// Los no ejecutados no cuentan: el trabajo sigue pendiente, que es lo que la cola debe mostrar.
+// El prototipo y el reproceso NO adelantan el lote y por eso no descuentan:
+//   prototipo  es la muestra, no una de las 64 sillas. Descontarlo daria por hecho trabajo que
+//              sobre el lote no se hizo. En la OF 129739 seis de doce tickets son prototipo, y
+//              sin esta regla Molduras, Cortes angulares, Escoplo y Espigas aparecerian
+//              empezadas cuando estan en cero.
+//   reproceso  rehace algo que ya se conto una vez. Contarlo otra vez es contar doble.
+// Se cuentan aparte para poder decirlo en pantalla, no para esconderlo.
+function avanceLinea(l){
+  let deCola = 0, previo = 0, aparte = 0, tickets = 0;
+  historial.forEach(t=>{
+    if(t.noEjecutado) return;
+    const mio = t.colaId ? (t.colaId === l.fbId) : coincideConLinea(t, l);
+    if(!mio) return;
+    if(t.esPrototipo || t.esReproceso){ aparte += (t.n || 0); return; }
+    if(t.colaId) deCola += (t.n || 0); else previo += (t.n || 0);
+    tickets++;
+  });
+  return {n: deCola + previo, deCola, previo, aparte, tickets};
+}
+
+// Tickets de esa OF y producto que NO se pueden cruzar con ninguna línea porque no tienen
+// operación registrada — son anteriores al catálogo. No se reparten a ojo: se cuentan y se
+// dicen, para que nadie crea que el descuento es exacto cuando no lo es.
+function ticketsSinCruzar(of, producto){
   let n = 0, tickets = 0;
   historial.forEach(t=>{
-    if(t.colaId !== fbId || t.noEjecutado) return;
+    if(t.noEjecutado || t.colaId || t.operacion) return;
+    if(normProducto(t.producto) !== producto) return;
+    if(of && String(t.ofNumero || '') !== String(of)) return;
     n += (t.n || 0); tickets++;
   });
   return {n, tickets};
@@ -6199,7 +6240,7 @@ function avanceLinea(fbId){
 
 function pendienteLinea(l){
   if(l.nTotal == null) return null;              // sin regla: no hay cantidad que descontar
-  return Math.max(0, l.nTotal - avanceLinea(l.fbId).n);
+  return Math.max(0, l.nTotal - avanceLinea(l).n);
 }
 
 function horasPendientes(l){
@@ -6278,7 +6319,15 @@ function previsualizarCola(){
   }
   if(!muebles || muebles < 1){ cont.innerHTML = ''; return; }
 
+  const of = resolverOF(etiqueta);
   const lineas = lineasDesdeRuta(r, muebles);
+  // Lo ya hecho se calcula ANTES de generar, que es cuando importa: si la OF ya lleva 42
+  // resoldados, verlo aquí evita generar una cola que pide trabajo terminado.
+  lineas.forEach(l => {
+    const a = avanceLinea(Object.assign({of: of.ofNumero, producto}, l));
+    l.previo = a.previo; l.aparte = a.aparte;
+  });
+  const huerfanos = ticketsSinCruzar(of.ofNumero, producto);
   _colaPrevia = {etiqueta, producto, muebles, lineas};
 
   const {horas, sinTu, sinRegla} = horasDeLineas(lineas);
@@ -6289,8 +6338,9 @@ function previsualizarCola(){
         escapeHtml(producto) + ' × ' + muebles + '</div>' +
       '<div style="overflow-x:auto"><table class="dsh-tabla"><thead><tr>' +
         '<th style="width:34px">#</th><th>Área</th><th>Operación</th>' +
-        '<th class="c" style="width:96px">Por mueble</th><th class="c" style="width:90px">Total</th>' +
-        '<th class="c" style="width:74px">t.u.</th><th class="c" style="width:78px">Horas</th>' +
+        '<th class="c" style="width:90px">Por mueble</th><th class="c" style="width:84px">Total</th>' +
+        '<th class="c" style="width:84px">Ya hecho</th>' +
+        '<th class="c" style="width:70px">t.u.</th><th class="c" style="width:74px">Horas</th>' +
       '</tr></thead><tbody>' +
       lineas.map(l=>{
         const h = (l.nTotal != null && l.tu) ? (l.nTotal*l.tu/60) : null;
@@ -6303,6 +6353,8 @@ function previsualizarCola(){
           '</td>' +
           '<td class="c num">'+(l.cantPorMueble != null ? l.cantPorMueble : '—')+'</td>' +
           '<td class="c num">'+(l.nTotal != null ? l.nTotal : '—')+'</td>' +
+          '<td class="c num"'+(l.previo ? ' style="color:var(--ok);font-weight:600"' : '')+'>' +
+            (l.previo ? l.previo : '—') + '</td>' +
           '<td class="c num">'+(l.tu || '—')+'</td>' +
           '<td class="c num">'+(h != null ? h.toFixed(1) : '—')+'</td>' +
         '</tr>';
@@ -6316,6 +6368,17 @@ function previsualizarCola(){
       '<div style="margin-top:8px;font-size:11px;color:var(--text-muted)">' +
         'Ese total es lo que la ruta sabe hoy, no el costo del mueble: las líneas sin t.u. y las de ' +
         'habilitado en bruto no suman y sí consumen horas en planta.' +
+        (lineas.some(l=>l.previo) ?
+          '<br><strong style="color:var(--ok)">«Ya hecho»</strong> es trabajo de esta OF que ya está ' +
+          'registrado y que la cola va a descontar sola. No hay que restarlo a mano.' : '') +
+        (lineas.some(l=>l.aparte) ?
+          '<br>Hay trabajo marcado como <strong>prototipo o reproceso</strong> que no se descuenta: ' +
+          'la muestra no es una unidad del lote, y un reproceso rehace algo ya contado.' : '') +
+        (huerfanos.tickets ?
+          '<br><strong style="color:var(--warn)">Ojo:</strong> esta OF tiene ' +
+          plural(huerfanos.tickets,'ticket','tickets') + ' con ' + huerfanos.n + ' unidades sin operación ' +
+          'registrada (anteriores al catálogo). No se pueden cruzar con ninguna línea, así que el ' +
+          'descuento es bueno pero no exacto.' : '') +
       '</div>' +
       '<div class="actions"><button class="btn btn-primary" onclick="generarCola()">Generar la cola</button></div>' +
     '</div>';
@@ -6417,7 +6480,7 @@ function detalleOF(){
       cab = '<tr><td colspan="9" style="background:var(--surface-1);font-weight:600;font-size:11px;padding:8px">' +
             escapeHtml(l.productoEtiqueta || l.producto) + ' · ' + plural(l.muebles||0,'mueble','muebles') + '</td></tr>';
     }
-    const av = avanceLinea(l.fbId);
+    const av = avanceLinea(l);
     const pend = pendienteLinea(l);
     const h = horasPendientes(l);
     if(h) hPend += h;
@@ -6429,7 +6492,11 @@ function detalleOF(){
       '<td>'+escapeHtml(l.operacion||'') +
         (l.nTotal == null ? '<div style="font-size:10px;color:var(--text-muted)">no se cuenta por mueble</div>' : '') + '</td>' +
       '<td class="c num">'+(l.nTotal != null ? l.nTotal : '—')+'</td>' +
-      '<td class="c num">'+(av.n || 0)+'</td>' +
+      '<td class="c num">'+(av.n || 0) +
+        (av.previo ? '<div style="font-size:9px;color:var(--text-muted);font-weight:400">' +
+                     av.previo + ' de antes</div>' : '') +
+        (av.aparte ? '<div style="font-size:9px;color:var(--text-muted);font-weight:400">' +
+                     av.aparte + ' de prototipo o reproceso, no cuentan</div>' : '') + '</td>' +
       '<td class="c num" style="font-weight:600">'+(pend != null ? pend : '—')+'</td>' +
       '<td class="c suave">'+escapeHtml(l.unidad||'')+'</td>' +
       '<td class="c num">'+(h != null ? h.toFixed(1) : '—')+'</td>' +
@@ -6453,8 +6520,10 @@ function detalleOF(){
       '<th class="c" style="width:70px">Horas</th><th style="width:150px"></th>' +
     '</tr></thead><tbody>' + filas + '</tbody></table></div>' +
     '<div style="margin-top:10px;font-size:11px;color:var(--text-muted)">' +
-      '«Hecho» se cuenta desde los tickets que salieron de cada línea, no de un contador aparte: ' +
-      'si se corrige un ticket, la cola se corrige sola. Un cierre por motivo no descuenta — el trabajo sigue faltando.' +
+      '«Hecho» se cuenta desde los tickets, no de un contador aparte: si se corrige un ticket, la cola ' +
+      'se corrige sola. Incluye el trabajo de esta OF registrado ANTES de generar la cola — es el ' +
+      '«de antes» debajo de la cifra, cruzado por OF, producto, área y operación. ' +
+      'Un cierre por motivo no descuenta: el trabajo sigue faltando.' +
     '</div>' +
   '</div>';
 }

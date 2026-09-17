@@ -39,7 +39,7 @@ node arnes.mjs
 
 Encuentra solo `../Matransa/index.html` y `../Backups/`. Si faltan los backups corre las
 pruebas que solo miran el código y avisa. Se puede forzar con `MATRANSA_HTML` y
-`MATRANSA_BACKUPS`. Hoy son **448 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
+`MATRANSA_BACKUPS`. Hoy son **462 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
 backup reciente y se salta sola si no hay ninguno.
 
 ---
@@ -237,6 +237,26 @@ horas. Vive en `cola/{id}`, una línea por paso, y se ve en la pestaña **Cola d
 | El avance **no** se guarda, se cuenta | cada ticket lleva `colaId`; lo hecho es la suma de esos tickets | un contador aparte es una segunda verdad, y se desincroniza el día que alguien corrige un ticket |
 
 Un cierre por motivo **no** descuenta: el trabajo sigue faltando y la línea lo sigue pidiendo.
+
+### El descuento de lo ya hecho (F2-34)
+Las rutas se dedujeron de trabajos ya ejecutados, así que la cola de una OF **en curso** pedía
+trabajo terminado: contaba por `colaId`, y los tickets viejos no lo traen. `coincideConLinea()`
+los cruza por **OF + producto + área + operación**, que es lo que identifica el mismo trabajo. Un
+ticket se cuenta UNA vez: si trae `colaId` manda el `colaId`, aunque también cruce por campos.
+
+Dos reglas para que el descuento no sea un número mágico:
+- **Se muestra separado** — debajo de «Hecho» aparece «N de antes». Un descuento que no se puede
+  auditar es peor que no descontar.
+- **Se dice lo que no se pudo cruzar** — los tickets sin operación (anteriores al catálogo) no se
+  reparten a ojo entre las líneas: `ticketsSinCruzar()` los cuenta y la pantalla avisa que el
+  descuento es bueno pero no exacto. En MESA MB02 son 17 tickets con 854 unidades.
+
+La previsualización trae columna «Ya hecho» porque ese dato importa **antes** de generar.
+
+**El prototipo y el reproceso no descuentan (F2-35).** La muestra no es una unidad del lote, y un
+reproceso rehace algo ya contado. En la OF 129739 seis de doce tickets son prototipo: sin esta
+regla, Molduras, Cortes angulares, Escoplo y Espigas aparecerían empezadas estando en cero. Se
+cuentan aparte (`aparte`) y la pantalla los nombra — no se esconden, no se suman.
 
 `lineasDesdeRuta(ruta, muebles)` es el cálculo entero, separado del dibujo para poder probarlo.
 Un paso `relativa` o sin cantidad sale con `nTotal: null` y estado `sin_regla`: **se genera
