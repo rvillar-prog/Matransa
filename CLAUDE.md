@@ -39,7 +39,7 @@ node arnes.mjs
 
 Encuentra solo `../Matransa/index.html` y `../Backups/`. Si faltan los backups corre las
 pruebas que solo miran el código y avisa. Se puede forzar con `MATRANSA_HTML` y
-`MATRANSA_BACKUPS`. Hoy son **490 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
+`MATRANSA_BACKUPS`. Hoy son **520 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
 backup reciente y se salta sola si no hay ninguno.
 
 ---
@@ -220,6 +220,38 @@ números de OF. Se pega como JSON desde la propia pantalla (botón «Importar»)
 `rutas` es una colección nueva y las reglas publicadas la niegan por el `match /{document=**}`
 final. **Hay que publicar las reglas antes que el código**, o la pantalla no lee ni escribe nada.
 Es exactamente la trampa del F2-28, paso 4.
+
+---
+
+## Estaciones de trabajo por hora (F2-38)
+
+"Si me pregunto cuántas estaciones hay a las 10 am, tendría que ir planta por planta y contarlas
+— que para mí es igual que contar los tickets que se deben estar ejecutando en ese instante."
+Esa frase de Ricardo es la definición y el código la sigue literal:
+
+**UNA ESTACIÓN = UN TICKET EN CURSO.** Dos personas en el mismo ticket son una sola estación,
+porque caminando por la planta se ve un banco ocupado, no dos. Las personas se muestran al lado,
+como contexto, nunca como el número.
+
+`agendaDelDia(fecha)` reparte los tickets de cada persona desde las 8:00, en orden, saltando el
+refrigerio — **la misma agenda que dibuja el Gantt**. El criterio de orden vive en
+`ordenEnElDia()` y el Gantt lo usa desde ahí: si los dos repartieran el día por su cuenta, la
+misma pantalla diría dos cosas del mismo día.
+
+`areaDeTicketDia()` resuelve el área **una vez por ticket**, no por persona: si se resolviera por
+persona, un ticket de dos operarios de áreas base distintas contaría como dos estaciones.
+
+`finDeTrabajo()` contesta la pregunta que sigue —"¿por qué a las 15:00 tengo menos que a las
+10?"— con la hora en que cada área se queda sin trabajo asignado.
+
+**Lo que NO es: la capacidad.** El historial dice cuántas estaciones se **usan**, nunca cuántas
+**hay**. Si Habilitado tiene seis bancos y se ocupan cuatro, aquí dice cuatro. Ese dato hay que
+declararlo y todavía no existe.
+
+El gráfico es **escalonado** (el número de estaciones salta, no cambia en diagonal), de una sola
+serie —el total— sin leyenda, y con la banda del refrigerio dibujada: sin ella el hueco de 12 a
+13 parece una caída de productividad. El desglose por área son siete clases y eso es una tabla,
+no siete colores.
 
 ---
 

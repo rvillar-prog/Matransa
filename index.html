@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-22 \u00b7 F2-37';
+const VERSION_APP = 'v2026-09-23 \u00b7 F2-38';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -2211,6 +2211,7 @@ function renderHoy(){
   const U = universosDelDia(fecha);
   const activos = U.vigentes;
   const plantilla = plantillaDelDia(fecha);
+  renderEstaciones();
 
   document.getElementById('hoy-fecha').textContent =
     getJornadaLabel(fecha) + ' \u00b7 ' + fecha;
@@ -2525,14 +2526,9 @@ function renderGanttDiario(){
 
   // Ordenar tickets de cada trabajador: respeta el campo "orden" explícito (fijado al reordenar
   // con ▲▼ en Kanban/Generar tareo); si no existe, cae de vuelta a fecha de creación como antes.
-  Object.keys(porTrab).forEach(nom=>{
-    porTrab[nom].sort((a,b)=>{
-      const oa=a.orden!=null?a.orden:9999;
-      const ob=b.orden!=null?b.orden:9999;
-      if(oa!==ob) return oa-ob;
-      return parseFechaCreacion(a.fechaCreacion) - parseFechaCreacion(b.fechaCreacion);
-    });
-  });
+  // Mismo criterio que usa la agenda de estaciones (F2-38), en un solo sitio: si los dos
+  // repartieran el dia de forma distinta, el Gantt y el contador dirian cosas diferentes.
+  Object.keys(porTrab).forEach(nom=>{ porTrab[nom].sort(ordenEnElDia); });
 
   // ORDEN_AREAS definido en ORDEN_AREAS_GLOBAL
   const trabajadoresOrdenados=Object.keys(porTrab).sort((a,b)=>{
@@ -6649,6 +6645,263 @@ window.pasarAlTareo = pasarAlTareo;
 window.cerrarLinea = cerrarLinea;
 window.reabrirLinea = reabrirLinea;
 
+// ===== ESTACIONES DE TRABAJO A LO LARGO DEL DIA (F2-38) =====
+//
+// La pregunta de Ricardo: "si me pregunto cuantas estaciones hay a las 10 am, tendria que ir
+// planta por planta y contarlas — que para mi es igual que contar los tickets que se deben estar
+// ejecutando en ese instante". Esa frase es la definicion y el codigo la sigue al pie:
+//
+//   UNA ESTACION = UN TICKET EN CURSO.
+//
+// Dos personas en el mismo ticket son UNA estacion, porque caminando por la planta se ve un solo
+// banco ocupado. Una persona sola tambien es una estacion. Por eso no se cuentan personas.
+//
+// De donde salen las horas: de la misma agenda que dibuja el Gantt — los tickets de cada persona
+// en orden, desde las 8:00, saltando el refrigerio. No es una segunda forma de repartir el dia:
+// es la misma, extraida a una funcion para que las dos pantallas no puedan discrepar. Si el
+// Gantt dice que Juan esta en Molduras a las 10:30, aqui tambien.
+//
+// Lo que esto NO es: la capacidad. El historial dice cuantas estaciones se USAN, nunca cuantas
+// HAY. Si Habilitado tiene seis bancos y hoy se ocupan cuatro, aqui sale 4 y no hay forma de
+// saber que dos estan vacios. Ese dato lo tiene que declarar una persona, y todavia no existe.
+
+// Orden de los tickets de una persona dentro del dia. Manda el `orden` explicito (el que se fija
+// con las flechas en Kanban y Generar tareo) y, si no lo hay, la hora de creacion. Es el mismo
+// criterio del Gantt, ahora en un solo sitio.
+function ordenEnElDia(a, b){
+  const oa = a.orden != null ? a.orden : 9999;
+  const ob = b.orden != null ? b.orden : 9999;
+  if(oa !== ob) return oa - ob;
+  return parseFechaCreacion(a.fechaCreacion) - parseFechaCreacion(b.fechaCreacion);
+}
+
+// El area de un ticket se resuelve UNA vez, no por persona: si se resolviera por persona, un
+// ticket de dos que trabajan en areas base distintas contaria como dos estaciones, y es una.
+function areaDeTicketDia(t){
+  if(t.areaEjecucion) return t.areaEjecucion;
+  const nom = (t.nombres || [])[0];
+  const w = nom && trabajadores.find(x => x.nombre === nom);
+  return (w && w.area) || 'PROD-ADMIN';
+}
+
+// nombre -> [{t, inicio, fin}] en horas decimales. Un ticket que cruza el mediodia deja dos
+// tramos, igual que en el Gantt: entre 12 y 13 nadie esta en una estacion.
+function agendaDelDia(fecha){
+  const tickets = historial.filter(t =>
+    t.visibleTareo !== false && t.fechaEjecucion === fecha && !t.noEjecutado);
+  const porTrab = {};
+  tickets.forEach(t => (t.nombres || []).forEach(nom => {
+    if(nom) (porTrab[nom] = porTrab[nom] || []).push(t);
+  }));
+  const hayRef = hayRefrigerio(fecha);
+  const agenda = {};
+  Object.keys(porTrab).forEach(nom => {
+    porTrab[nom].sort(ordenEnElDia);
+    let cursor = 8;
+    agenda[nom] = [];
+    porTrab[nom].forEach(t => {
+      const r = tramosTarea(cursor, t.tt || 0, hayRef);
+      r.tramos.forEach(x => agenda[nom].push({t, inicio: x.inicio, fin: x.fin}));
+      cursor = r.cursor;
+    });
+  });
+  return agenda;
+}
+
+// Estaciones ocupadas en un instante, por area y en total.
+function estacionesEn(agenda, hora){
+  const bruto = {};
+  Object.keys(agenda || {}).forEach(nom => {
+    const tramo = agenda[nom].find(x => hora >= x.inicio && hora < x.fin);
+    if(!tramo) return;
+    const a = areaDeTicketDia(tramo.t);
+    const o = bruto[a] = bruto[a] || {personas: 0, ids: []};
+    o.personas++;
+    const id = tramo.t.fbId || tramo.t.id || (tramo.t.tarea + '|' + tramo.t.n + '|' + tramo.t.tu);
+    if(o.ids.indexOf(id) < 0) o.ids.push(id);
+  });
+  const porArea = {};
+  let estaciones = 0, personas = 0;
+  Object.keys(bruto).forEach(a => {
+    porArea[a] = {estaciones: bruto[a].ids.length, personas: bruto[a].personas};
+    estaciones += porArea[a].estaciones;
+    personas   += bruto[a].personas;
+  });
+  return {hora, porArea, estaciones, personas};
+}
+
+// La curva del dia. El paso por defecto es de un cuarto de hora: mas fino no cambia lo que se
+// decide y llena el dibujo de escalones que nadie mira.
+function curvaEstaciones(fecha, paso){
+  const agenda = agendaDelDia(fecha);
+  const H1 = horaFinJornada(fecha);
+  const p = paso || 0.25;
+  const puntos = [];
+  for(let h = 8; h < H1 - 0.0001; h += p) puntos.push(estacionesEn(agenda, h));
+  return puntos;
+}
+
+// Hasta que hora hay trabajo asignado en cada area. Es el dato que contesta "por que a las 15:00
+// tengo menos estaciones que a las 10": porque a esa hora al area se le acabo lo programado.
+function finDeTrabajo(curva, paso){
+  const p = paso || 0.25;
+  const fin = {};
+  curva.forEach(pt => Object.keys(pt.porArea).forEach(a => {
+    if(pt.porArea[a].estaciones > 0) fin[a] = pt.hora + p;
+  }));
+  return fin;
+}
+
+// ---------------------------------------------------------------- dibujo
+let _horaEst = null;   // hora elegida a mano; null = ahora (o el pico si el dia no es hoy)
+
+function horaAhora(){
+  const d = new Date();
+  return d.getHours() + d.getMinutes() / 60;
+}
+
+function hhmmEst(h){
+  const hh = Math.floor(h);
+  return hh + ':' + String(Math.round((h - hh) * 60)).padStart(2, '0');
+}
+
+function renderEstaciones(){
+  const cont = document.getElementById('hoy-estaciones');
+  if(!cont) return;
+  const fecha = fechaHoyVista();
+  const H1 = horaFinJornada(fecha);
+  const PASO = 0.25;
+  const curva = curvaEstaciones(fecha, PASO);
+  if(!curva.length || !curva.some(p => p.estaciones)){ cont.innerHTML = ''; return; }
+
+  const esHoy = fecha === hoyStr();
+  const ahora = horaAhora();
+  const dentro = esHoy && ahora >= 8 && ahora < H1;
+  const pico = curva.reduce((a, b) => b.estaciones > a.estaciones ? b : a, curva[0]);
+  // Sin hora elegida: la de ahora si estamos en jornada, y si no la del pico — que es la que
+  // explica el dia. Nunca una hora fija inventada.
+  const hSel = _horaEst != null ? _horaEst : (dentro ? ahora : pico.hora);
+  const sel = curva.reduce((a, b) => Math.abs(b.hora - hSel) < Math.abs(a.hora - hSel) ? b : a, curva[0]);
+
+  const maxY = Math.max(2, pico.estaciones);
+  const W = 760, HH = 120, PL = 30, PR = 10, PT = 10, PB = 20;
+  const x = h => PL + ((h - 8) / (H1 - 8)) * (W - PL - PR);
+  const y = v => PT + (1 - v / maxY) * (HH - PT - PB);
+
+  // Escalonada, no suavizada: el numero de estaciones no cambia en diagonal, salta.
+  let d = '';
+  curva.forEach((p, i) => {
+    const x0 = x(p.hora), x1 = x(Math.min(p.hora + PASO, H1));
+    d += (i === 0 ? 'M' : 'L') + x0.toFixed(1) + ',' + y(p.estaciones).toFixed(1) +
+         'L' + x1.toFixed(1) + ',' + y(p.estaciones).toFixed(1);
+  });
+  const relleno = d ? (d + 'L' + x(H1).toFixed(1) + ',' + y(0).toFixed(1) +
+                       'L' + x(8).toFixed(1) + ',' + y(0).toFixed(1) + 'Z') : '';
+
+  const hayRef = hayRefrigerio(fecha);
+  const bandaRef = hayRef
+    ? '<rect x="' + x(REFRIGERIO_INI) + '" y="' + PT + '" width="' + (x(REFRIGERIO_FIN) - x(REFRIGERIO_INI)) +
+      '" height="' + (HH - PT - PB) + '" fill="url(#estRayas)"></rect>'
+    : '';
+
+  const ticks = [];
+  for(let h = 8; h <= H1; h++) ticks.push(h);
+  const ejeX = ticks.map(h =>
+    '<line x1="' + x(h) + '" y1="' + PT + '" x2="' + x(h) + '" y2="' + (HH - PB) +
+    '" stroke="var(--border)" stroke-width="1" opacity=".55"></line>' +
+    '<text x="' + x(h) + '" y="' + (HH - 6) + '" text-anchor="middle" font-size="9" fill="var(--text-muted)">' + h + '</text>'
+  ).join('');
+  const ejeY = [0, Math.round(maxY / 2), maxY].filter((v, i, a) => a.indexOf(v) === i).map(v =>
+    '<line x1="' + PL + '" y1="' + y(v) + '" x2="' + (W - PR) + '" y2="' + y(v) +
+    '" stroke="var(--border)" stroke-width="1" opacity=".55"></line>' +
+    '<text x="' + (PL - 5) + '" y="' + (y(v) + 3) + '" text-anchor="end" font-size="9" fill="var(--text-muted)">' + v + '</text>'
+  ).join('');
+
+  const marcaSel =
+    '<line x1="' + x(sel.hora) + '" y1="' + PT + '" x2="' + x(sel.hora) + '" y2="' + (HH - PB) +
+    '" stroke="var(--mt-verde)" stroke-width="2"></line>' +
+    '<circle cx="' + x(sel.hora) + '" cy="' + y(sel.estaciones) + '" r="4" fill="var(--mt-verde)" ' +
+    'stroke="var(--surface-0,#fff)" stroke-width="2"></circle>';
+
+  const areas = Object.keys(sel.porArea).sort((a, b) => sel.porArea[b].estaciones - sel.porArea[a].estaciones);
+  const fin = finDeTrabajo(curva, PASO);
+  const filas = areas.map(a => {
+    const o = sel.porArea[a];
+    const mx = curva.reduce((m, p) => Math.max(m, (p.porArea[a] || {}).estaciones || 0), 0);
+    const f = fin[a];
+    return '<tr>' +
+      '<td>' + escapeHtml(a) + '</td>' +
+      '<td class="c num" style="font-weight:600">' + o.estaciones + '</td>' +
+      '<td class="c num suave">' + o.personas + '</td>' +
+      '<td class="c num suave">' + mx + '</td>' +
+      '<td class="c suave">' + (f && f < H1 - 0.001 ? hhmmEst(f) : '—') + '</td>' +
+    '</tr>';
+  }).join('');
+  const sinTrabajo = areas.filter(a => fin[a] && fin[a] < H1 - 0.001);
+
+  const chips = [];
+  for(let h = 8; h <= Math.floor(H1 - 0.01); h++){
+    const act = Math.floor(sel.hora) === h;
+    chips.push('<button class="btn btn-xs" onclick="elegirHoraEstaciones(' + h + ')"' +
+      (act ? ' style="border-color:var(--mt-verde);font-weight:700"' : '') + '>' + h + ':00</button>');
+  }
+
+  cont.innerHTML =
+  '<div class="card">' +
+    '<div class="card-title">Estaciones ocupadas — ' + escapeHtml(fecha) + '</div>' +
+    '<div style="display:flex;gap:26px;flex-wrap:wrap;align-items:baseline;margin-bottom:10px">' +
+      '<div><span style="font-family:var(--f-num);font-size:34px;font-weight:600;line-height:1">' +
+        sel.estaciones + '</span>' +
+        '<span style="font-size:12px;color:var(--text-secondary);margin-left:8px">' +
+          (_horaEst == null && dentro ? 'ahora · ' + hhmmEst(sel.hora) : 'a las ' + hhmmEst(sel.hora)) + '</span></div>' +
+      '<div style="font-size:12px;color:var(--text-secondary)">' +
+        plural(sel.personas, 'persona', 'personas') + ' · pico del día <strong>' + pico.estaciones +
+        '</strong> a las ' + hhmmEst(pico.hora) + '</div>' +
+    '</div>' +
+
+    '<svg viewBox="0 0 ' + W + ' ' + HH + '" style="width:100%;height:auto;display:block" role="img" ' +
+      'aria-label="Estaciones ocupadas a lo largo del día">' +
+      '<defs><pattern id="estRayas" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">' +
+        '<line x1="0" y1="0" x2="0" y2="8" stroke="var(--border)" stroke-width="4" opacity=".5"></line></pattern></defs>' +
+      ejeY + ejeX + bandaRef +
+      (relleno ? '<path d="' + relleno + '" fill="var(--mt-verde)" opacity=".13"></path>' : '') +
+      '<path d="' + d + '" fill="none" stroke="var(--mt-verde)" stroke-width="2" stroke-linejoin="round"></path>' +
+      marcaSel +
+    '</svg>' +
+    (hayRef ? '<div style="font-size:10px;color:var(--text-muted);margin-top:-4px">La franja rayada es el refrigerio: ' +
+      'entre 12 y 13 no hay nadie en una estación.</div>' : '') +
+
+    '<div style="display:flex;gap:5px;flex-wrap:wrap;margin:12px 0 4px">' + chips.join('') +
+      (_horaEst != null ? '<button class="btn btn-xs" onclick="elegirHoraEstaciones(null)">↺ ahora</button>' : '') +
+    '</div>' +
+
+    '<div style="overflow-x:auto;margin-top:8px"><table class="dsh-tabla"><thead><tr>' +
+      '<th style="min-width:150px">Área</th><th class="c" style="width:86px">Estaciones</th>' +
+      '<th class="c" style="width:76px">Personas</th>' +
+      '<th class="c" style="width:76px">Pico</th><th class="c" style="width:110px">Sin trabajo<br>desde</th>' +
+    '</tr></thead><tbody>' + filas +
+      '<tr><td style="font-weight:700">TOTAL PLANTA</td>' +
+      '<td class="c num" style="font-weight:700">' + sel.estaciones + '</td>' +
+      '<td class="c num" style="font-weight:700">' + sel.personas + '</td>' +
+      '<td class="c num suave">' + pico.estaciones + '</td><td></td></tr>' +
+    '</tbody></table></div>' +
+
+    '<div style="margin-top:10px;font-size:11px;color:var(--text-muted);line-height:1.5">' +
+      'Una estación es un <strong>ticket en curso</strong>: dos personas en el mismo ticket son una sola ' +
+      'estación. Las horas salen del mismo reparto que dibuja el Gantt — los tickets de cada persona en ' +
+      'orden desde las 8:00. Es lo que se <strong>usa</strong>, no lo que <strong>hay</strong>: si un área ' +
+      'tiene seis bancos y se ocupan cuatro, aquí dice cuatro.' +
+      (sinTrabajo.length ? '<br><strong style="color:var(--warn)">' +
+        sinTrabajo.map(a => escapeHtml(a) + ' se queda sin trabajo asignado ' + hhmmEst(fin[a])).join(' · ') +
+        '</strong>' : '') +
+    '</div>' +
+  '</div>';
+}
+
+function elegirHoraEstaciones(h){ _horaEst = h; renderEstaciones(); }
+
+window.elegirHoraEstaciones = elegirHoraEstaciones;
+
 // ===== REDIBUJADO SELECTIVO =====
 // Antes, cada cambio en cualquier ticket redibujaba las siete vistas, estuvieran o no en
 // pantalla. Ahora solo se redibuja la que se está viendo; showPage() refresca la vista a la
@@ -9013,6 +9266,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     </div>
   </div>
   <div class="hoy-kpis" id="hoy-kpis"></div>
+  <div id="hoy-estaciones"></div>
   <div id="hoy-descartes"></div>
   <div id="hoy-board"></div>
   <div class="hoy-leyenda" id="hoy-leyenda"></div>
