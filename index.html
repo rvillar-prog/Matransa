@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-24 \u00b7 F2-40';
+const VERSION_APP = 'v2026-09-24 \u00b7 F2-42';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -1086,13 +1086,16 @@ function imprimirHoy(fechaFiltro){
   const fechaImprimir = fechaFiltro || hoyStr();
   const tickets=historial.filter(t=>t.visibleTareo!==false && t.fechaEjecucion===fechaImprimir);
   if(!tickets.length){showAlert('tareo','No hay tickets para esa fecha.','warn');return;}
-  // Ordenar por área según orden de planta
+  // Area (orden de planta), luego persona, luego el numero de orden del dia ASCENDENTE.
+  // `indexOf` directo mandaba un area desconocida al frente de la hoja con -1; `getAreaIndex`
+  // la manda al final, que es donde va lo que no se sabe clasificar. Y el numero de orden
+  // importa: el operario recibe su pila y el primero que tiene que hacer es el 1, no el ultimo.
   tickets.sort((a,b)=>{
-    const areaA=getAreaEjecucion(a);
-    const areaB=getAreaEjecucion(b);
-    const iA=ORDEN_AREAS_GLOBAL.indexOf(areaA); const iB=ORDEN_AREAS_GLOBAL.indexOf(areaB);
+    const iA=getAreaIndex(getAreaEjecucion(a)), iB=getAreaIndex(getAreaEjecucion(b));
     if(iA!==iB) return iA-iB;
-    return (a.nombres||[])[0]?.localeCompare((b.nombres||[])[0])||0;
+    const nA=(a.nombres||[])[0]||'', nB=(b.nombres||[])[0]||'';
+    if(nA!==nB) return nA.localeCompare(nB);
+    return (numeroOrdenTicket(a)||99) - (numeroOrdenTicket(b)||99);
   });
   const fecha=new Date();
   // Parsear fechaImprimir para el header
@@ -1100,15 +1103,25 @@ function imprimirHoy(fechaFiltro){
   const fechaObj=new Date(partes[2],partes[1]-1,partes[0]);
   document.getElementById('print-fecha').textContent=fechaObj.toLocaleDateString('es-PE',{weekday:'long',year:'numeric',month:'long',day:'numeric'}).toUpperCase();
   document.getElementById('print-total').textContent=`${tickets.length} ticket${tickets.length>1?'s':''} — ${fecha.toLocaleTimeString('es-PE',{hour:'2-digit',minute:'2-digit'})}`;
+  // Una banda por area: la hoja se corta por ahi para repartirla. Antes eran catorce tarjetas
+  // seguidas y habia que leer el renglon chico de cada cabecera para saber a donde iba.
+  let areaBanda=null;
   document.getElementById('print-grid').innerHTML=tickets.map(t=>{
     const area=getAreaEjecucion(t);
+    let banda='';
+    if(area!==areaBanda){
+      areaBanda=area;
+      const cuantos=tickets.filter(x=>getAreaEjecucion(x)===area).length;
+      banda=`<div class="pt-area-banda">${escapeHtml(area||'SIN AREA')}` +
+            `<span>${cuantos} ${cuantos===1?'ticket':'tickets'}</span></div>`;
+    }
     const aClass=AREA_CLASS[area]||'area-prod';
     const nClass=NUM_CLASS[area]||'num-prod';
     const names=t.nombres.map(n=>n.split(' ').slice(0,2).join(' ')).join(' / ');
     const horaGen=fecha.toLocaleTimeString('es-PE',{hour:'2-digit',minute:'2-digit'});
     const fechaCorta=fechaObj.toLocaleDateString('es-PE',{weekday:'short',day:'2-digit',month:'short'}).toUpperCase();
     const proyNombre=t.proyectoCodigo?(proyectosTC.find(p=>p.codigo===t.proyectoCodigo)?.nombre||t.proyecto):t.proyecto;
-    return `<div class="print-ticket">
+    return banda + `<div class="print-ticket">
       <div class="pt-header ${aClass}">
         <div style="flex:1;margin-right:6px">
           <div class="pt-name">${numeroOrdenTicket(t)?`<span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:#fff;color:#222;font-size:12px;font-weight:700;margin-right:6px;vertical-align:middle">${numeroOrdenTicket(t)}</span>`:''}${names}</div>
@@ -1124,6 +1137,14 @@ function imprimirHoy(fechaFiltro){
         <div class="pt-row"><span class="pt-label">Ejecución</span><div class="pt-ejec">${t.fechaEjecucion}</div></div>
         <div class="pt-row"><span class="pt-label">Producto</span><div class="pt-value">${escapeHtml(t.producto)}</div></div>
         <div class="pt-row"><span class="pt-label">Tarea</span><div class="pt-tarea">${escapeHtml(t.tarea)}</div></div>
+        <div class="pt-row"><span class="pt-label">Operación</span><div class="pt-oper">${
+          t.fueraCatalogo || !t.operacion
+            ? '<span class="pt-fuera">FUERA DE CATÁLOGO</span>'
+            : escapeHtml(t.operacion)
+        } <span class="pt-cant">· ${escapeHtml(cantidadConUnidad(t.n, t.unidad))}</span></div></div>
+        ${t.esPrototipo||t.esReproceso
+          ? `<div class="pt-marca">${t.esPrototipo?'◈ PROTOTIPO':''}${t.esPrototipo&&t.esReproceso?' · ':''}${t.esReproceso?'↺ REPROCESO':''}</div>`
+          : ''}
       </div>
       <div class="pt-nums">
         <div class="pt-num"><span class="pt-num-label">Unidades</span><span class="pt-num-val ${nClass}">${t.n}</span></div>
@@ -6906,7 +6927,7 @@ function elegirHoraEstaciones(h){ _horaEst = h; renderEstaciones(); }
 
 window.elegirHoraEstaciones = elegirHoraEstaciones;
 
-// ===== METODOS — RUTA DE INSPECCION (F2-40) =====
+// ===== METODOS — RUTA DE INSPECCION (F2-40 · universo completo F2-41) =====
 //
 // Pablo mejora el metodo de cada estacion. El problema no es su capacidad: es el orden. Esta
 // pantalla existe para que no tenga que decidir cada manana por donde empezar.
@@ -6983,13 +7004,23 @@ function claveMetodo(area, operacion){ return (area||'?') + ' / ' + operacion; }
 // Una medición vale si el ticket se hizo, se midió, y es trabajo de serie. Prototipo y reproceso
 // se excluyen a propósito: el prototipo siempre tarda más y el reproceso es otra cosa. Meterlos
 // inflaría la variación de casi todo y mandaría a Pablo a perseguir fantasmas.
+// Trabajo de serie que se hizo. Es el universo de la pantalla, MIDA O NO MIDA. Separarlo de
+// `medicionesDe` es la correccion del F2-41: cuando el universo se armaba solo con lo medido, una
+// operacion que se ejecuto diez veces y no se midio ninguna no existia en ninguna de las dos
+// listas — ni en la ruta de Pablo (correcto, no hay que ordenar) ni en la de Andree (grave: es
+// justo la que hay que medir primero). Nueve operaciones estaban en ese hueco.
+function esTicketDeMetodo(t){
+  if(!t || t.noEjecutado) return false;
+  if(t.esPrototipo || t.esReproceso) return false;
+  if(!t.operacion || t.operacion === 'Otra') return false;
+  if(esTransversalMetodo(t.operacion)) return false;
+  return true;
+}
+
 function medicionesDe(historial_, area, operacion, desde, hasta){
   const v = [];
   (historial_ || []).forEach(t => {
-    if(t.noEjecutado || t.tu_real == null) return;
-    if(t.esPrototipo || t.esReproceso) return;
-    if(!t.operacion || t.operacion === 'Otra') return;
-    if(esTransversalMetodo(t.operacion)) return;
+    if(!esTicketDeMetodo(t) || t.tu_real == null) return;
     if(operacion && t.operacion !== operacion) return;
     const a = areaDeMedicion(t);
     if(area && a !== area) return;
@@ -7019,18 +7050,25 @@ function estadisticaTu(tickets){
 function rutaDeMetodos(historial_, umbrales){
   const U = Object.assign({}, UMBRALES_METODO, umbrales || {});
   const grupos = {};
-  medicionesDe(historial_).forEach(t => {
+  (historial_ || []).forEach(t => {
+    if(!esTicketDeMetodo(t)) return;
     const a = areaDeMedicion(t);
     const k = claveMetodo(a, t.operacion);
     (grupos[k] = grupos[k] || {area:a, operacion:t.operacion, tickets:[]}).tickets.push(t);
   });
   const todas = Object.keys(grupos).map(k => {
     const g = grupos[k];
-    const e = estadisticaTu(g.tickets);
+    const medidos = g.tickets.filter(t => t.tu_real != null);
+    const e = estadisticaTu(medidos);
     return {
       clave: k, area: g.area, operacion: g.operacion,
       n: e.n, media: e.media, cv: e.cv, min: e.min, max: e.max,
       horas: e.horas, horasPlan: e.horasPlan,
+      // El peso del grupo ENTERO, medido o no. Es lo unico comparable en la lista de lo que
+      // falta medir: las horas reales de una operacion sin mediciones son cero, y ordenar por
+      // cero hunde justo a la que mas urge medir.
+      tickets: g.tickets.length,
+      horasPlanTotal: g.tickets.reduce((s,t)=> s + (t.tt || 0), 0),
       desv: e.horasPlan ? (e.horas - e.horasPlan) / e.horasPlan : null,
       criticidad: e.horas * e.cv
     };
@@ -7040,7 +7078,8 @@ function rutaDeMetodos(historial_, umbrales){
   // ahi es hacerle perder la mañana mirando algo que funciona.
   const estables  = medidas.filter(f => f.cv <  U.cvMinimo).sort((a,b) => b.horas - a.horas);
   const rankeadas = medidas.filter(f => f.cv >= U.cvMinimo).sort((a,b) => b.criticidad - a.criticidad);
-  const sinDatos  = todas.filter(f => f.n <  U.minMediciones).sort((a,b) => b.horas - a.horas);
+  const sinDatos  = todas.filter(f => f.n <  U.minMediciones)
+                         .sort((a,b) => b.horasPlanTotal - a.horasPlanTotal);
   return {ruta: rankeadas.slice(0, U.tope), resto: rankeadas.slice(U.tope), estables, sinDatos, umbrales: U};
 }
 
@@ -7093,7 +7132,7 @@ function renderMetodos(){
 
   if(!R.ruta.length && !R.sinDatos.length){
     cont.innerHTML = '<div class="card"><div class="empty"><div class="empty-icon">🔍</div>' +
-      '<div>Todavía no hay mediciones suficientes para ordenar ninguna estación.</div></div></div>';
+      '<div>Todavía no hay trabajo registrado para ordenar.</div></div></div>';
     return;
   }
 
@@ -7133,21 +7172,26 @@ function renderMetodos(){
     '</div>';
   }).join('');
 
-  const faltaMedir = R.sinDatos.slice(0, 10).map(f =>
+  const faltaMedir = R.sinDatos.slice(0, 12).map(f =>
     '<tr><td>' + escapeHtml(f.operacion) + '</td><td class="suave">' + escapeHtml(f.area) + '</td>' +
-    '<td class="c num">' + f.n + '</td><td class="c num suave">' + f.horas.toFixed(1) + '</td></tr>').join('');
+    '<td class="c num">' + f.tickets + '</td>' +
+    '<td class="c num' + (f.n ? '' : ' warn') + '">' + f.n + '</td>' +
+    '<td class="c num suave">' + f.horasPlanTotal.toFixed(1) + '</td></tr>').join('');
 
   cont.innerHTML =
   '<div class="card">' +
-    '<div class="card-title">Ruta de inspección · ' + plural(R.ruta.length, 'estación', 'estaciones') + '</div>' +
+    '<div class="card-title">Ruta de inspección · ' + plural(R.ruta.length, 'operación', 'operaciones') + '</div>' +
     '<div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:12px">' +
       'Ordenadas por <strong>horas × variación</strong>. La variación es lo que importa: si la misma ' +
       'operación tarda 20 minutos una vez y 60 la siguiente, no hay método, hay improvisación — y eso ' +
       'sí se puede arreglar. Las horas multiplican porque arreglar algo que consume dos horas al mes ' +
       'no cambia nada, por mal que esté.' +
+      '<div style="margin-top:6px;color:var(--text-muted)">No es cuántas estaciones hay ocupadas ' +
+      '—eso se ve en <strong>Estaciones</strong>—: es por dónde empezar. Son las operaciones que ' +
+      'tienen suficientes mediciones para ordenarlas y todavía no están parejas.</div>' +
     '</div>' + fichas +
     (R.resto.length ? '<div style="font-size:11px;color:var(--text-muted)">Hay ' +
-      plural(R.resto.length, 'estación más medida', 'estaciones más medidas') +
+      plural(R.resto.length, 'operación más medida', 'operaciones más medidas') +
       ' por debajo de estas. Una lista de cuarenta no es una ruta.</div>' : '') +
     (R.estables.length ? '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">' +
       plural(R.estables.length, 'operación medida está estandarizada', 'operaciones medidas están estandarizadas') +
@@ -7161,11 +7205,17 @@ function renderMetodos(){
       plural(R.sinDatos.length, 'operación', 'operaciones') + '</div>' +
     '<div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">' +
       'Con menos de ' + U.minMediciones + ' mediciones la variación es ruido: dos tickets siempre dan ' +
-      'un número y ese número no significa nada. <strong>Esta lista no es de Pablo, es de Andree.</strong>' +
+      'un número y ese número no significa nada. <strong>Esta lista no es de Pablo, es de Andree.</strong> ' +
+      'Ordenadas por horas de plan, que es lo único comparable cuando todavía no hay medición: ' +
+      'primero la que más pesa. Las que están en <strong>cero</strong> se ejecutaron y no se midió ' +
+      'ninguna vez.' +
     '</div>' +
     '<div style="overflow-x:auto"><table class="dsh-tabla"><thead><tr>' +
-      '<th>Operación</th><th>Área</th><th class="c" style="width:90px">Mediciones</th>' +
-      '<th class="c" style="width:80px">Horas</th></tr></thead><tbody>' + faltaMedir + '</tbody></table></div>' +
+      '<th>Operación</th><th>Área</th><th class="c" style="width:80px">Tickets</th>' +
+      '<th class="c" style="width:90px">Mediciones</th>' +
+      '<th class="c" style="width:95px">Horas plan</th></tr></thead><tbody>' + faltaMedir + '</tbody></table></div>' +
+    (R.sinDatos.length > 12 ? '<div style="font-size:11px;color:var(--text-muted);margin-top:6px">' +
+      'Se muestran las 12 de más peso de ' + R.sinDatos.length + '.</div>' : '') +
   '</div>' : '') +
 
   '<div class="card"><div style="font-size:11px;color:var(--text-muted);line-height:1.6">' +
@@ -9144,6 +9194,17 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 .pt-num{text-align:center;padding:7px 3px;}.pt-num:not(:last-child){border-right:1px solid #eee;}
 .pt-num-label{font-size:7px;font-weight:800;color:#bbb;text-transform:uppercase;display:block;letter-spacing:0.3px;}
 .pt-num-val{font-size:18px;font-weight:900;display:block;line-height:1.1;margin-top:2px;}
+.pt-oper{font-size:10px;font-weight:700;color:#1a1a18;line-height:1.35;margin-top:1px;}
+.pt-cant{font-weight:600;color:#555;}
+.pt-fuera{color:#8a5a00;}
+.pt-marca{font-size:8px;font-weight:800;letter-spacing:0.4px;color:#8a5a00;border:1px solid #d9b26a;border-radius:4px;padding:2px 5px;display:inline-block;margin-top:4px;}
+/* La banda ocupa la fila entera de la grilla y no se queda sola al pie de una hoja. */
+.pt-area-banda{grid-column:1/-1;display:flex;justify-content:space-between;align-items:baseline;
+  font-size:10px;font-weight:900;letter-spacing:1.2px;text-transform:uppercase;color:#1a1a18;
+  border-bottom:2px solid #1a1a18;padding:6px 2px 3px;margin-top:6px;
+  break-after:avoid;page-break-after:avoid;}
+.pt-area-banda:first-child{margin-top:0;}
+.pt-area-banda span{font-size:8px;font-weight:700;letter-spacing:0.3px;color:#777;}
 
 
 .hamburger-btn { display: none; align-items: center; justify-content: center; width: 36px; height: 36px; border: none; background: transparent; cursor: pointer; color: var(--text-secondary); font-size: 20px; border-radius: 6px; flex-shrink: 0; }

@@ -39,7 +39,7 @@ node arnes.mjs
 
 Encuentra solo `../Matransa/index.html` y `../Backups/`. Si faltan los backups corre las
 pruebas que solo miran el código y avisa. Se puede forzar con `MATRANSA_HTML` y
-`MATRANSA_BACKUPS`. Hoy son **581 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
+`MATRANSA_BACKUPS`. Hoy son **609 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
 backup reciente y se salta sola si no hay ninguno.
 
 ---
@@ -263,6 +263,30 @@ no siete colores.
 
 ---
 
+## El ticket impreso (F2-42)
+
+El papel es lo que el operario tiene en la mano. La regla: **lo que distingue un ticket de otro
+tiene que estar en el papel, no solo en la pantalla.** En la hoja del 17/9 había tres tickets de
+la misma persona que impresos se leían idénticos —"PERFIL DE CUBIERTA · 11 und · 10′"— y eran
+tres trabajos distintos. La operación solo salía en pantalla.
+
+El ticket impreso lleva:
+
+| | por qué |
+|---|---|
+| **Operación + cantidad con unidad** | es lo que se hace y lo que se cuenta. "11 muebles × mano", no "11": el número pelado es la trampa vieja del rótulo genérico |
+| **Fuera de catálogo**, marcado | ese ticket no puede alimentar el estándar y quien lo tiene en la mano debe saberlo |
+| **Prototipo / Reproceso** | en pantalla llevan marca; sin ella en el papel el tiempo entra al estándar como si fuera serie, que es justo lo que F2-12 evita |
+
+**El orden de la hoja:** área (orden de planta) → persona → **número de orden del día ascendente**.
+Cada área abre con una banda a todo el ancho con su nombre y cuántos tickets lleva, para cortar
+la hoja por ahí. Antes salían 4, 3, 2, 1 dentro de cada persona: al revés de como se trabaja.
+
+`getAreaIndex()` y no `ORDEN_AREAS_GLOBAL.indexOf()`: con `indexOf`, un área desconocida da −1 y
+se colaba **al frente** de la hoja. Lo que no se sabe clasificar va al final.
+
+---
+
 ## Métodos — la ruta de inspección de Pablo (F2-40)
 
 Pablo mejora el método de trabajo de cada estación. El problema no es su capacidad, es el orden:
@@ -292,6 +316,24 @@ corrige en Rutas. Se muestra como dato al costado, pero **no ordena**.
 
 Cada exclusión se **muestra y se cuenta** en pantalla. Una lista que esconde lo que descartó no
 se puede auditar, y Pablo tiene que poder decir "esa sí me interesa".
+
+### El universo es el trabajo HECHO, no el trabajo MEDIDO (F2-41)
+`esTicketDeMetodo(t)` define de una vez qué mira esta pantalla: ejecutado, de serie, con
+operación real y no transversal — **mida o no mida**. `medicionesDe()` es ese mismo universo con
+`tu_real != null`.
+
+La primera versión armaba los grupos solo con lo medido, y por eso **una operación ejecutada
+siete veces y medida ninguna no existía en ninguna de las dos listas**: ni en la ruta de Pablo
+(correcto, no hay nada que ordenar) ni en la de Andree (grave, es justo la que hay que medir
+primero). Eran nueve operaciones. Lo destapó Ricardo preguntando por qué la ruta mostraba 7.
+
+Por eso la lista de "falta medir" se ordena por **horas de plan del grupo entero**
+(`horasPlanTotal`), no por horas reales: las horas reales de una operación sin mediciones son
+cero, y ordenar por cero hunde exactamente a la que urge.
+
+**"Estación" no se usa en esta pantalla.** En esta app una estación es un ticket en curso
+(F2-38) y la ruta se cuenta en **operaciones**. Llamarlas estaciones hizo que el rótulo
+"7 estaciones" se leyera como "hay 7 estaciones ocupadas" cuando en planta había 16.
 
 ### `areaDeMedicion(t)` — por qué no basta `areaDeOperacion()`
 "Lijado" existe en ACABADO y en PINTURA DE FIERRO, y `areaDeOperacion()` devuelve `null` a
