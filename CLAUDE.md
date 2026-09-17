@@ -39,7 +39,7 @@ node arnes.mjs
 
 Encuentra solo `../Matransa/index.html` y `../Backups/`. Si faltan los backups corre las
 pruebas que solo miran el código y avisa. Se puede forzar con `MATRANSA_HTML` y
-`MATRANSA_BACKUPS`. Hoy son **520 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
+`MATRANSA_BACKUPS`. Hoy son **526 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
 backup reciente y se salta sola si no hay ninguno.
 
 ---
@@ -63,11 +63,19 @@ Hay tres, y la distinción es el motivo de existir de buena parte del código:
 
 | estado | campos | significa |
 |---|---|---|
-| Ejecutado y medido | `completado`, `tu_real` | alimenta el tiempo estándar |
-| Ejecutado sin medir | `ejecutadoSinMedir`, `fechaCierreSinMedir` | se hizo, pero no aporta al estándar |
+| Ejecutado y medido | `completado`, `tu_real`, `medidoEn` | alimenta el tiempo estándar |
+| Ejecutado sin medir | `ejecutadoSinMedir`, `fechaCierreSinMedir`, `medidoEn` | se hizo, pero no aporta al estándar |
 | No ejecutado | `noEjecutado`, `motivoNoEjecucion`, `notaNoEjecucion` | no se hizo, con motivo |
 
 `MOTIVOS_EXIGEN_NOTA = ['prioridad','insumo']` — en esos dos la nota **es** el dato.
+
+**`medidoEn` es la hora del REGISTRO, no la del trabajo (F2-39).** Hasta el F2-39 el ticket sabía
+cuánto duró y no cuándo terminó: 311 tickets medidos, ninguno con hora, y sin eso la app no puede
+saber dónde está el trabajo. Ahora se escribe al registrar el tiempo y al cerrar sin medir, y se
+borra al deshacer — un ticket que vuelve a estar en curso no tiene hora de cierre. Pero Andree
+pasa por rondas: el desfase con el fin real puede ser de horas y siempre en el mismo sentido.
+Sirve como **cota superior** y para ordenar el día; no para afirmar "terminó a las 11:40". Por eso
+no se llama `fechaFin`. La hora real solo la puede dar quien hizo el trabajo.
 
 ### `visibleTareo` es una bandera de VISTA, no de validez (F2-26)
 `visibleTareo:false` significa "no se dibuja en el tareo de hoy". Hoy solo lo escribe el cierre

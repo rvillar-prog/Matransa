@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-23 \u00b7 F2-38';
+const VERSION_APP = 'v2026-09-23 \u00b7 F2-39';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -1973,9 +1973,11 @@ async function registrarTiempo(fbId,n){
   const inp=document.getElementById(`tr-${fbId}`);
   const val=parseInt(inp.value);
   if(!val||val<1){inp.style.borderColor='#e8a020';inp.focus();return;}
-  await escribir('registrar el tiempo real', ()=>updateDoc(doc(db,'historial',fbId),{tu_real:val,tt_real:parseFloat((n*val/60).toFixed(2)),completado:true}), {pagina:'andree', trabajando:'Registrando...'});
+  // `medidoEn` es la hora del REGISTRO, no la del trabajo: Andree pasa por rondas. Es cota
+  // superior y sirve para ordenar el dia; no para decir "termino a las 11:40" con precision.
+  await escribir('registrar el tiempo real', ()=>updateDoc(doc(db,'historial',fbId),{tu_real:val,tt_real:parseFloat((n*val/60).toFixed(2)),completado:true,medidoEn:new Date().toISOString()}), {pagina:'andree', trabajando:'Registrando...'});
 }
-async function resetTiempo(fbId){await escribir('deshacer el tiempo registrado', ()=>updateDoc(doc(db,'historial',fbId),{tu_real:null,tt_real:null,completado:false}), {pagina:'andree', trabajando:'Deshaciendo...'});}
+async function resetTiempo(fbId){await escribir('deshacer el tiempo registrado', ()=>updateDoc(doc(db,'historial',fbId),{tu_real:null,tt_real:null,completado:false,medidoEn:null}), {pagina:'andree', trabajando:'Deshaciendo...'});}
 
 // ===== CIERRE SIN EJECUCION =====
 // El boton X ya existia y ya se usaba: quitaba el ticket de la vista y no guardaba nada.
@@ -2131,7 +2133,8 @@ async function guardarNoEjecutado(){
   const datos = sinMedir
     ? Object.assign({}, comun, {
         ejecutadoSinMedir:true,
-        fechaCierreSinMedir:new Date().toISOString()
+        fechaCierreSinMedir:new Date().toISOString(),
+        medidoEn:new Date().toISOString()
       })
     : Object.assign({}, comun, {
         noEjecutado:true,
