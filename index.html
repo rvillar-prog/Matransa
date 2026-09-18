@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-25 \u00b7 F2-43';
+const VERSION_APP = 'v2026-09-26 \u00b7 F2-45';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -1949,6 +1949,7 @@ function renderAndree(){
         <div class="andree-info">${opHTML}
           <div class="andree-name">${ordenBadge}${names} <span style="font-size:10px;color:var(--text-muted);font-weight:400">· ${area}</span></div>
           <div class="andree-sub">${escapeHtml(t.proyecto)} · ${escapeHtml(t.producto)} · ${escapeHtml(t.tarea)}</div>
+          ${bloqueAvance(t)}
           ${incHTML}
         </div>
         <div class="andree-right">
@@ -1998,6 +1999,19 @@ async function registrarTiempo(fbId,n){
   if(!val||val<1){inp.style.borderColor='#e8a020';inp.focus();return;}
   // `medidoEn` es la hora del REGISTRO, no la del trabajo: Andree pasa por rondas. Es cota
   // superior y sirve para ordenar el dia; no para decir "termino a las 11:40" con precision.
+  // Si el ultimo conteo dice menos que la cantidad del ticket, la app NO decide sola: pregunta.
+  // El conteo pudo ser de las 15:00 y el operario pudo terminar a las 17:00, y eso solo lo sabe
+  // quien estuvo ahi. Lo que no puede pasar es cerrar 150 en silencio habiendo contado 40.
+  const tkAv = historial.find(x=>x.fbId===fbId);
+  const parcial = faltantePorAvance(tkAv);
+  if(parcial){
+    const sigue = confirm(
+      'El \u00faltimo conteo dice ' + parcial.hechas + ' de ' + n + '.\n\n' +
+      'Aceptar = se hicieron las ' + n + ' completas.\n' +
+      'Cancelar = se hicieron ' + parcial.hechas + ', y las ' + parcial.falta +
+      ' que faltan pasan a un ticket nuevo para el siguiente d\u00eda h\u00e1bil.');
+    if(!sigue){ await cerrarParcialYContinuar(fbId, val, parcial.hechas); return; }
+  }
   await escribir('registrar el tiempo real', ()=>updateDoc(doc(db,'historial',fbId),{tu_real:val,tt_real:parseFloat((n*val/60).toFixed(2)),completado:true,medidoEn:new Date().toISOString()}), {pagina:'andree', trabajando:'Registrando...'});
 }
 async function resetTiempo(fbId){await escribir('deshacer el tiempo registrado', ()=>updateDoc(doc(db,'historial',fbId),{tu_real:null,tt_real:null,completado:false,medidoEn:null}), {pagina:'andree', trabajando:'Deshaciendo...'});}
@@ -4286,6 +4300,26 @@ function calcularAtencion(){
       detalle: desglose+' \u2014 '+quienes.slice(0,6).join(', ')+(quienes.length>6?` y ${quienes.length-6} m\u00e1s`:''),
       pagina:'andree',
       foco:sinTiempo.map(t=>t.fbId).filter(Boolean)});
+  }
+
+  // --- 3c. Tickets cerrados que NO cabian en un dia ---
+  // Decision de Ricardo, 18/9: marcarlos, no tocarlos. Un ticket con mas horas que la jornada
+  // no se pudo hacer en un dia: o se hizo en varios y se cerro como si fuera uno, o el tiempo
+  // unitario esta mal puesto. La app no puede distinguir los dos casos, y las dos lecturas son
+  // un dato malo. Desde el F2-45 esto no deberia volver a pasar —el avance parte el ticket—
+  // pero el historial viejo se queda como esta: no se reescribe historia.
+  const imposibles = historial.filter(t=>
+    (t.completado || t.ejecutadoSinMedir) && !t.noEjecutado && !t.partidoEn &&
+    (t.tt || 0) > jornadaProductiva(t.fechaEjecucion || hoy));
+  if(imposibles.length){
+    const hs = imposibles.reduce((s,t)=>s+(t.tt||0),0);
+    A.push({sev:1, grupo:'Registro',
+      titulo: imposibles.length + ' ticket' + (imposibles.length>1?'s':'') +
+              ' cerrado' + (imposibles.length>1?'s':'') + ' con m\u00e1s horas de las que tiene un d\u00eda',
+      detalle: hs.toFixed(0) + ' h que no caben en una jornada. O se hicieron en varios d\u00edas y se ' +
+               'cerraron como uno, o el tiempo unitario est\u00e1 mal. No se corrigen solos: es hist\u00f3rico.',
+      pagina:'historial',
+      foco: imposibles.map(t=>t.fbId).filter(Boolean)});
   }
 
   // --- 3b. Tickets que se hicieron pero nadie midio ---
@@ -7689,6 +7723,587 @@ window.borrarMaquina = borrarMaquina;
 window.abrirImportarMaquinas = abrirImportarMaquinas;
 window.importarMaquinas = importarMaquinas;
 
+// ===== PANEL DE PERSONAS EN GENERAR TAREO (F2-44) =====
+//
+// Ricardo, mirando a Andree generar el tareo: "no tiene la certeza de a quien le falta generarle
+// un tareo, eso lo esta haciendo solamente con memoria". Con 37 personas y seis areas, la
+// memoria falla — y falla en silencio, que es lo peor: nadie se entera de que Miguel se quedo
+// sin trabajo hasta la manana siguiente.
+//
+// EL PANEL NO TRAE INFORMACION NUEVA. Todo lo que muestra ya estaba en la app: las horas
+// asignadas las sabia `actualizarHorasTrabajador`, los arrastres los reclamaba `calcularAtencion`
+// y las ausencias las tenia `getAusenciasDelDia`. Lo que faltaba era tenerlas DELANTE en el
+// momento de decidir, y no repartidas en tres pantallas que hay que acordarse de abrir.
+//
+// EL CASO QUE LO ORDENA TODO — Cesar. Tenia sus ocho horas del dia asignadas: por horas se veia
+// completo. Y estaba toda la manana terminando lo de ayer. Por eso EL ARRASTRE MANDA SOBRE
+// "LISTO": si alguien con un ticket abierto de ayer se apagara por tener la jornada llena, el
+// panel repetiria exactamente el error que vino a arreglar.
+//
+// LO QUE NO HACE, a proposito:
+//   - No desaparece a nadie. El completo se apaga y se va al final, porque a veces hay que
+//     corregir lo que ya se asigno y a un icono que no existe no se llega.
+//   - No salta solo de area. Mover la pantalla debajo de quien esta escribiendo es de las cosas
+//     que mas molestan de un software.
+//   - No hay animacion de entrada. Andree hace esto todos los dias; tres segundos de cuenta
+//     regresiva son dos horas al año mirando numeros que no dicen nada.
+
+// El colchon lo decidio Ricardo el 18/9. Con el umbral en la jornada exacta, Fierro salia
+// "6 de 6 sin completar" porque tres tenian 8.00 de 8.5 — y si todo esta pendiente, nada lo
+// esta. A quien le faltan 30 minutos no se le mete otra tarea.
+const COLCHON_CARGA = 0.75;
+
+let _areaPanel = null;   // null = todavia no eligio; '' = ver todas
+
+// Las horas ya asignadas a una persona para una fecha. Un ticket de dos personas carga `tt`
+// COMPLETO a las dos: no es trabajo que se reparte, es tiempo que las dos pasan ahi.
+function cargaDePersona(nombre, fecha){
+  let horas = 0, tickets = 0;
+  historial.forEach(t=>{
+    if(t.visibleTareo === false || t.fechaEjecucion !== fecha) return;
+    if(t.noEjecutado) return;
+    if(!(t.nombres || []).includes(nombre)) return;
+    horas += (t.tt || 0); tickets++;
+  });
+  return {horas, tickets};
+}
+
+// Lo que quedo abierto de dias anteriores. Misma ventana que usa la alerta de Atencion a
+// proposito: si una pantalla reclama tres dias y la otra dos, la planta recibe dos verdades.
+//
+// `fecha` es el dia que se esta tareando y se EXCLUYE: un ticket del dia que estas planificando
+// no es un arrastre, es el trabajo que acabas de asignar. Sin esta linea, generar el tareo de un
+// dia que cae dentro de la ventana marcaba a la planta entera en rojo — 29 de 30 personas — y
+// una pantalla donde todo esta en alerta no avisa de nada.
+function arrastresDe(nombre, fecha){
+  const ventana = diasHabilesAtras(VENTANA_ARRASTRE_DIAS).filter(d => d !== fecha);
+  return historial.filter(t=>
+    t.visibleAndree !== false && !t.noEjecutado && !t.ejecutadoSinMedir && !t.completado &&
+    ventana.includes(t.fechaEjecucion) && (t.nombres || []).includes(nombre));
+}
+
+// Donde trabaja hoy, si no es su area base. El punto ciego que CLAUDE.md tiene anotado —la
+// capacidad se cuenta por area base y la carga por area de ejecucion— deja de ser ciego cuando
+// el prestamo se ve en la tarjeta.
+function areasDeTrabajoEn(nombre, fecha){
+  const s = new Set();
+  historial.forEach(t=>{
+    if(t.visibleTareo === false || t.fechaEjecucion !== fecha || t.noEjecutado) return;
+    if(!(t.nombres || []).includes(nombre)) return;
+    const a = t.areaEjecucion || getAreaEjecucion(t);
+    if(a) s.add(a);
+  });
+  return [...s];
+}
+
+function estadoCarga(p){
+  if(p.ausente)  return 'ausente';
+  if(p.arrastre) return 'arrastre';
+  // Un coordinador que hoy ejecuta tiene que VERSE —para no asignarle encima— pero su jornada
+  // no se completa con tareo: supervisa. Marcarlo "faltan 6 h" mandaria a Andree a llenarle el
+  // dia a quien no es capacidad, y de paso taparia la falta de personal que esas horas revelan.
+  if(p.noEsCapacidad) return 'apoyo';
+  if(p.horas === 0) return 'vacio';
+  if(p.horas > p.jornada + 0.01) return 'sobre';
+  if(p.horas >= p.jornada - COLCHON_CARGA) return 'listo';
+  return 'parcial';
+}
+
+// Quien sale en el panel, y por que. La plantilla del dia ya resuelve las tres reglas de quien
+// es capacidad (operario fijo, practicante solo el dia que vino, coordinador nunca). Encima de
+// eso, el panel AÑADE a los ausentes —marcados, para que nadie se pregunte donde estan— y a
+// quien no es de esta area pero hoy trabaja aqui.
+function personasDelPanel(fecha){
+  if(!fecha) return [];
+  const plant = plantillaDelDia(fecha);
+  const jornada = jornadaProductiva(fecha);
+  const ausentes = plant.ausentes;
+  const base = plant.operarios.concat(plant.practicantes);
+  // Los coordinadores NO son capacidad y no se les completa la jornada, pero el que hoy ejecuta
+  // tiene tickets y hay que poder verlos. El que no ejecuta no aparece: no hay nada que mirar.
+  const apoyo = plant.coordinadoresEjecutando || [];
+  const noCapacidad = new Set(apoyo.map(w => w.nombre));
+
+  const vistos = new Set();
+  const out = [];
+  const meter = (w, forzada) => {
+    const clave = w.nombre + '|' + (forzada || w.area || '');
+    if(vistos.has(clave)) return;
+    vistos.add(clave);
+    const c = cargaDePersona(w.nombre, fecha);
+    const donde = areasDeTrabajoEn(w.nombre, fecha);
+    const areaPanel = forzada || w.area || '?';
+    out.push({
+      nombre: w.nombre,
+      corto: w.nombre.split(' ').slice(0,2).join(' '),
+      areaBase: w.area || '?',
+      areaPanel,
+      prestado: areaPanel !== (w.area || '?'),
+      // Solo se avisa de "hoy en otra area" si NO trabaja nada en la suya: si hace las dos
+      // cosas, decir que esta fuera seria falso.
+      fuera: donde.length && !donde.includes(w.area) ? donde[0] : null,
+      horas: c.horas, tickets: c.tickets, jornada,
+      arrastre: arrastresDe(w.nombre, fecha).length,
+      ausente: ausentes.has(w.nombre),
+      noEsCapacidad: noCapacidad.has(w.nombre),
+      cargo: w.cargo || ''
+    });
+  };
+
+  base.forEach(w => meter(w));
+  apoyo.forEach(w => meter(w));
+  // Los ausentes no son capacidad, pero tienen que verse: el error mas caro de un tareo es
+  // asignarle un dia entero a alguien que no vino.
+  trabajadores.forEach(w => { if(ausentes.has(w.nombre)) meter(w); });
+  // Prestados: aparecen tambien en el area donde hoy trabajan.
+  base.concat(apoyo).forEach(w => areasDeTrabajoEn(w.nombre, fecha)
+    .forEach(a => { if(a !== w.area) meter(w, a); }));
+
+  return out;
+}
+
+function areasDelPanel(personas){
+  const conGente = [...new Set(personas.map(p => p.areaPanel))];
+  return ORDEN_AREAS_GLOBAL.filter(a => conGente.includes(a))
+    .concat(conGente.filter(a => ORDEN_AREAS_GLOBAL.indexOf(a) < 0).sort());
+}
+
+// Sobrecargado y ausente no son "sin completar": son otros problemas y se cuentan aparte.
+function faltanEn(personas){
+  return personas.filter(p => ['vacio','parcial','arrastre'].includes(estadoCarga(p))).length;
+}
+
+// --------------------------------------------------------------------------- pantalla
+const TONO_CARGA = {vacio:'var(--crit)', parcial:'var(--warn)', listo:'var(--ok)',
+                    sobre:'var(--crit)', arrastre:'var(--crit)', ausente:'var(--text-muted)',
+                    apoyo:'var(--text-muted)'};
+
+function tarjetaPersona(p){
+  const e = estadoCarga(p);
+  const tono = TONO_CARGA[e];
+  const pct = p.jornada > 0 ? Math.min(100, Math.round(p.horas / p.jornada * 100)) : 0;
+  const falta = Math.max(0, p.jornada - p.horas);
+  const etiqueta =
+    e === 'ausente'  ? 'ausente este día' :
+    e === 'apoyo'    ? 'no se le completa jornada' :
+    e === 'arrastre' ? 'mirar antes de asignarle' :
+    e === 'vacio'    ? 'sin nada asignado' :
+    e === 'parcial'  ? 'faltan ' + falta.toFixed(1).replace('.0','') + ' h' :
+    e === 'sobre'    ? 'pasado ' + (p.horas - p.jornada).toFixed(1) + ' h' : 'completo';
+  const arg = JSON.stringify(p.nombre).replace(/"/g,'&quot;');
+  return '<div class="pt-p' + (e === 'listo' ? ' pt-apagada' : '') +
+      (e === 'arrastre' ? ' pt-alerta' : '') +
+      (e === 'ausente' || e === 'apoyo' ? ' pt-apagada' : '') + '">' +
+    '<div class="pt-p-cab"><span class="pt-p-nom">' + escapeHtml(p.corto) + '</span>' +
+      (e === 'listo' ? '<span class="pt-p-ok">✓</span>' : '') + '</div>' +
+    '<div class="pt-p-barra"><div class="pt-p-fill" style="width:' + pct + '%;background:' + tono + '"></div></div>' +
+    '<div class="pt-p-h"><strong>' + (p.horas % 1 ? p.horas.toFixed(1) : p.horas) + '</strong> de ' +
+      p.jornada + ' h</div>' +
+    '<div class="pt-p-est" style="color:' + tono + '">' + etiqueta + '</div>' +
+    (p.arrastre ? '<div class="pt-p-tag pt-p-tag-crit">⚠ ' +
+      plural(p.arrastre, 'ticket sin cerrar', 'tickets sin cerrar') + ' de días anteriores</div>' : '') +
+    (e === 'apoyo' ? '<div class="pt-p-tag">' + escapeHtml(p.cargo || 'Coordinador') +
+      ' — ejecuta por excepción</div>' : '') +
+    (p.prestado ? '<div class="pt-p-tag">↪ prestado de ' + escapeHtml(p.areaBase) + '</div>' : '') +
+    (p.fuera && !p.prestado ? '<div class="pt-p-tag">↪ hoy en ' + escapeHtml(p.fuera) + '</div>' : '') +
+    (['listo','ausente','apoyo'].includes(e) ? '' :
+      '<button class="btn btn-xs pt-p-btn" onclick="' +
+      (e === 'arrastre' ? 'verArrastreDe(' : 'asignarTrabajoA(') + arg + ')">' +
+      (e === 'arrastre' ? 'Ver qué tiene abierto' : 'Asignarle trabajo') + '</button>') +
+  '</div>';
+}
+
+function renderPanelTareo(){
+  const cont = document.getElementById('tareo-panel');
+  if(!cont) return;
+  const sel = document.getElementById('t-fecha-ejec');
+  const fecha = sel ? sel.value : '';
+  if(!fecha || !trabajadores.length){ cont.innerHTML = ''; return; }
+
+  const personas = personasDelPanel(fecha);
+  if(!personas.length){ cont.innerHTML = ''; return; }
+  const areas = areasDelPanel(personas);
+  if(_areaPanel == null) _areaPanel = areas[0] || '';
+
+  const chips = areas.map(a=>{
+    const g = personas.filter(p => p.areaPanel === a);
+    const f = faltanEn(g);
+    return '<button class="pt-chip' + (a === _areaPanel ? ' pt-chip-on' : '') +
+      '" onclick="elegirAreaPanel(' + JSON.stringify(a).replace(/"/g,'&quot;') + ')">' +
+      '<span class="pt-chip-n">' + escapeHtml(a) + '</span>' +
+      '<span class="pt-chip-c" style="color:' + (f ? 'var(--warn)' : 'var(--ok)') + '">' +
+        (f ? f + ' por completar' : '✓ lista') + '</span></button>';
+  }).join('');
+
+  const gente = personas.filter(p => p.areaPanel === _areaPanel);
+  const pend   = gente.filter(p => !['listo','ausente','apoyo'].includes(estadoCarga(p)));
+  const listos = gente.filter(p => estadoCarga(p) === 'listo');
+  const aus    = gente.filter(p => estadoCarga(p) === 'ausente');
+  const apo    = gente.filter(p => estadoCarga(p) === 'apoyo');
+  const sobre  = gente.filter(p => estadoCarga(p) === 'sobre').length;
+  const totalF = faltanEn(personas);
+
+  cont.innerHTML =
+  '<div class="card" style="padding-bottom:13px">' +
+    '<div class="card-title">¿A quién le falta tareo para ' + escapeHtml(fecha) + '?</div>' +
+    '<div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:9px">' +
+      (totalF
+        ? '<strong>' + plural(totalF, 'persona', 'personas') + '</strong> sin la jornada completa en toda la planta.'
+        : '<strong style="color:var(--ok)">Toda la planta tiene su jornada completa.</strong>') +
+      ' Se cuenta como completo a partir de <strong>' +
+      (jornadaProductiva(fecha) - COLCHON_CARGA).toFixed(2) + ' h</strong>.' +
+    '</div>' +
+    '<div class="pt-chips">' + chips + '</div>' +
+  '</div>' +
+
+  '<div class="card">' +
+    '<div class="card-title">' + escapeHtml(_areaPanel) + ' · ' +
+      faltanEn(gente) + ' de ' +
+      gente.filter(p => !['apoyo','ausente'].includes(estadoCarga(p))).length + ' sin completar' +
+      (sobre ? ' <span style="color:var(--crit)">· ' +
+        plural(sobre, 'pasado de horas', 'pasados de horas') + '</span>' : '') + '</div>' +
+    (pend.length ? '<div class="pt-grid">' + pend.map(tarjetaPersona).join('') + '</div>'
+                 : '<div style="font-size:12px;color:var(--ok);font-weight:600">Esta área está completa. Elige otra arriba.</div>') +
+    (listos.length ? '<div class="pt-sep">Listos — ' + listos.length + ' de ' +
+      gente.filter(p => !['apoyo','ausente'].includes(estadoCarga(p))).length + '</div>' +
+      '<div class="pt-grid pt-grid-min">' + listos.map(tarjetaPersona).join('') + '</div>' : '') +
+    (apo.length ? '<div class="pt-sep">Apoyo — no cuentan como capacidad</div>' +
+      '<div class="pt-grid pt-grid-min">' + apo.map(tarjetaPersona).join('') + '</div>' : '') +
+    (aus.length ? '<div class="pt-sep">Ausentes — ' + aus.length + '</div>' +
+      '<div class="pt-grid pt-grid-min">' + aus.map(tarjetaPersona).join('') + '</div>' : '') +
+  '</div>';
+}
+
+function elegirAreaPanel(a){ _areaPanel = a; renderPanelTareo(); }
+
+// Rellena el formulario de abajo, no crea nada. Crear el ticket sigue siendo un acto explicito.
+function asignarTrabajoA(nombre){
+  const t1 = document.getElementById('t-t1');
+  if(!t1) return;
+  t1.value = nombre;
+  // El area de ejecucion se rellena sola SOLO si el panel esta en un area que no es la suya:
+  // es exactamente el caso del prestado, y olvidarlo es como se pierde la trazabilidad del
+  // trabajo entre areas.
+  const w = trabajadores.find(x => x.nombre === nombre);
+  const ae = document.getElementById('t-area-ejec');
+  if(ae) ae.value = (w && w.area !== _areaPanel) ? _areaPanel : '';
+  if(typeof autocompletarUltimoTareo === 'function') autocompletarUltimoTareo();
+  actualizarHorasTrabajador();
+  if(typeof actualizarOperaciones === 'function') actualizarOperaciones();
+  const card = document.getElementById('t-operacion') || t1;
+  card.scrollIntoView({behavior:'smooth', block:'center'});
+  setTimeout(()=>{ const d = document.getElementById('t-tarea'); if(d) d.focus(); }, 320);
+}
+
+// No resuelve el arrastre desde aqui: lleva a donde se resuelve, que es la pagina de Andree.
+// Cerrar un ticket de ayer desde la pantalla de generar el de manana invita a cerrarlo "para
+// que no estorbe", que es justo lo contrario de lo que hace falta.
+function verArrastreDe(nombre){
+  const sel = document.getElementById('t-fecha-ejec');
+  const abiertos = arrastresDe(nombre, sel ? sel.value : '');
+  if(!abiertos.length){ showAlert('tareo','Ya no tiene tickets abiertos de días anteriores.','ok'); return; }
+  _foco = {pagina:'andree', ids: abiertos.map(t=>t.fbId).filter(Boolean), pintado:false};
+  showPage('andree');
+}
+
+window.elegirAreaPanel = elegirAreaPanel;
+window.asignarTrabajoA = asignarTrabajoA;
+window.verArrastreDe = verArrastreDe;
+
+// ===== AVANCE DEL TICKET — LAS RONDAS DE ANDREE (F2-45) =====
+//
+// Lo destapo Ricardo con una pregunta: "si Andree mide el tiempo unitario de la primera pieza
+// de 150, el ticket se da por cerrado, pero si el operario no termino ese dia y continua
+// manana, ¿no lo sabremos?".
+//
+// No se sabia. `completado: true` NO significa "el trabajo termino": significa "hay una
+// medicion". El campo se llama como una cosa y quiere decir otra, y de ahi salen tres daños:
+//
+//   1. `tt_real = n * tu_real` es una PROYECCION, no una medicion. Si se hicieron 40 de 150,
+//      la app le atribuye a ese dia las horas de 150.
+//   2. El ticket medido-pero-no-terminado tiene `completado:true`, asi que NO aparece como
+//      arrastre. El panel del F2-44 no lo veria.
+//   3. En el historial hay 13 tickets cerrados con tt mayor que la jornada — uno de 21.67 h en
+//      un dia de 8.5. O se hicieron en varios dias y se cerraron mintiendo, o el tt esta mal.
+//      La app no podia distinguirlo.
+//
+// LA SOLUCION ES DE RICARDO, y es mejor que la que yo habia propuesto: que Andree, en cada
+// ronda, anote cuanto lleva hecho. No es una medicion mas: es la MISMA ronda que ya hace.
+//
+// EL REGALO QUE TRAE. Con dos conteos separados en el tiempo, el tiempo unitario sale solo:
+// 40 piezas a las 10:00 y 95 a las 12:00 son 55 piezas en 2 horas = 2.2 min/pieza. Y ese dato
+// es MEJOR que el cronometro, porque el ciclo de una pieza medido con Andree al lado es el
+// mejor caso — sin interrupciones, sin cambio de herramienta, sin la pieza que salio mal. El
+// ritmo entre dos rondas es el ritmo de verdad.
+//
+// DONDE NO APLICA, y es el 24% de los tickets: los de n=1. Un mueble unico no tiene piezas que
+// contar. Ahi la pregunta es otra —¿termina hoy?— y se contesta si/no.
+//
+// LO QUE ESTO NO ES. Tres visitas al dia anotando cuanto llevas se lee como vigilancia si nadie
+// explica para que es. El tercer principio del roadmap: medir no es control del operario; si en
+// planta se entiende al reves, los numeros se acomodan y todo lo demas da igual.
+
+const UMBRAL_AVANCE = {
+  // Por debajo de esto no hay nada que seguir: un ticket de hora y media empieza y termina
+  // entre dos rondas. Con 4 h son 14 tickets al dia de los 21.6 que se ejecutan.
+  horasMin: 4,
+  // Dos conteos con al menos esta separacion sirven para derivar el ritmo. Mas cerca, el ruido
+  // de "cuando exactamente paso Andree" pesa mas que las piezas.
+  horasEntreConteos: 0.75
+};
+
+// Un ticket admite seguimiento si dura lo suficiente y todavia no esta cerrado.
+function admiteAvance(t){
+  if(!t || t.noEjecutado || t.ejecutadoSinMedir || t.completado) return false;
+  return (t.tt || 0) >= UMBRAL_AVANCE.horasMin;
+}
+
+// Los de una sola unidad no se cuentan, se preguntan.
+function avancePorPiezas(t){ return (t.n || 0) >= 2; }
+
+function avancesDe(t){
+  return ((t && t.avances) || []).slice()
+    .sort((a,b) => String(a.hora || '').localeCompare(String(b.hora || '')));
+}
+
+function ultimoAvance(t){
+  const v = avancesDe(t);
+  return v.length ? v[v.length - 1] : null;
+}
+
+// Cuanto lleva hecho, en porcentaje. Null si no se sabe: "no se sabe" y "cero" no son lo mismo.
+function pctAvance(t){
+  const u = ultimoAvance(t);
+  if(!u) return null;
+  if(avancePorPiezas(t)) return t.n ? Math.min(100, Math.round((u.hechas || 0) / t.n * 100)) : null;
+  return u.terminaHoy === 'si' ? 100 : (u.terminaHoy === 'no' ? 50 : null);
+}
+
+// EL RITMO REAL, derivado de dos conteos. Minutos por unidad, sin cronometro.
+// Se usan el PRIMERO y el ULTIMO conteo con piezas: cuanto mas separados, menos pesa el error
+// de "a que hora exactamente paso Andree".
+function ritmoDeAvances(t){
+  if(!avancePorPiezas(t)) return null;
+  const v = avancesDe(t).filter(a => a && a.hechas != null);
+  if(v.length < 2) return null;
+  const a = v[0], b = v[v.length - 1];
+  const piezas = (b.hechas || 0) - (a.hechas || 0);
+  const ms = new Date(b.hora) - new Date(a.hora);
+  if(!(piezas > 0) || !(ms > 0)) return null;
+  const horas = ms / 3600000;
+  if(horas < UMBRAL_AVANCE.horasEntreConteos) return null;
+  return {
+    minPorUnidad: (horas * 60) / piezas,
+    piezas, horas,
+    desde: a.hora, hasta: b.hora
+  };
+}
+
+// ¿Va a terminar hoy? Se contesta con el ritmo, no con una corazonada. Devuelve null cuando no
+// hay con que contestarla — que es la mayoria de las veces, y decirlo es parte del dato.
+function proyeccionAvance(t, fecha){
+  if(!avancePorPiezas(t)) {
+    const u = ultimoAvance(t);
+    return u && u.terminaHoy ? {tipo:'declarado', terminaHoy: u.terminaHoy} : null;
+  }
+  const r = ritmoDeAvances(t);
+  const u = ultimoAvance(t);
+  if(!r || !u || u.hechas == null) return null;
+  const faltan = (t.n || 0) - u.hechas;
+  if(faltan <= 0) return {tipo:'derivado', terminaHoy:'si', faltan:0, horasFaltan:0};
+  const horasFaltan = faltan * r.minPorUnidad / 60;
+  const fin = horaFinJornada(fecha || t.fechaEjecucion || hoyStr());
+  const desde = new Date(u.hora);
+  const horaAhora = desde.getHours() + desde.getMinutes()/60;
+  // El refrigerio no se trabaja: sumarlo como tiempo util daria una proyeccion optimista.
+  const resto = Math.max(0, fin - horaAhora) -
+                (hayRefrigerio(fecha || t.fechaEjecucion || hoyStr()) && horaAhora < REFRIGERIO_INI ? 1 : 0);
+  return {tipo:'derivado', terminaHoy: horasFaltan <= resto ? 'si' : 'no',
+          faltan, horasFaltan, horasRestantes: resto, minPorUnidad: r.minPorUnidad};
+}
+
+// --------------------------------------------------------------------------- escribir
+async function guardarAvance(fbId){
+  const t = historial.find(x => x.fbId === fbId);
+  if(!t) return;
+  const inp = document.getElementById('av-' + fbId);
+  const sel = document.getElementById('avs-' + fbId);
+  const entrada = {hora: new Date().toISOString(), por: (usuarioActivo && usuarioActivo.correo) || ''};
+
+  if(avancePorPiezas(t)){
+    const v = parseInt((inp || {}).value, 10);
+    if(!(v >= 0)){ showAlert('andree','Escribe cuántas piezas lleva hechas.','warn'); return; }
+    // Mas piezas de las que tiene el ticket no es un avance, es un error de tecleo o un ticket
+    // mal planificado. Se avisa en vez de guardarlo: un avance de 200 sobre 150 ensucia el
+    // ritmo y la proyeccion para siempre.
+    if(v > (t.n || 0)){
+      showAlert('andree','El ticket tiene ' + t.n + ' y estás anotando ' + v +
+                '. Si de verdad se hicieron más, corrige la cantidad del ticket primero.','warn');
+      return;
+    }
+    const prev = ultimoAvance(t);
+    // Un conteo que baja significa que alguien se equivoco en uno de los dos. No se rechaza
+    // —puede ser la correccion de un conteo anterior mal tomado— pero se avisa.
+    if(prev && prev.hechas != null && v < prev.hechas)
+      showAlert('andree','Ojo: el conteo anterior decía ' + prev.hechas + ' y este dice ' + v + '.','warn');
+    entrada.hechas = v;
+  } else {
+    const v = (sel || {}).value;
+    if(!v){ showAlert('andree','Elige si termina hoy.','warn'); return; }
+    entrada.terminaHoy = v;
+  }
+
+  const ok = await escribir('registrar el avance',
+    ()=>updateDoc(doc(db,'historial',fbId), {avances: avancesDe(t).concat([entrada])}),
+    {pagina:'andree', exito:'Avance registrado.'});
+  if(ok && inp) inp.value = '';
+}
+
+async function borrarUltimoAvance(fbId){
+  const t = historial.find(x => x.fbId === fbId);
+  if(!t) return;
+  const v = avancesDe(t);
+  if(!v.length) return;
+  if(!confirm('¿Borrar el último conteo?')) return;
+  await escribir('borrar el avance',
+    ()=>updateDoc(doc(db,'historial',fbId), {avances: v.slice(0, -1)}),
+    {pagina:'andree', exito:'Conteo borrado.'});
+}
+
+// --------------------------------------------------------------------------- pintar
+function bloqueAvance(t){
+  if(!admiteAvance(t)) return '';
+  const v = avancesDe(t);
+  const u = ultimoAvance(t);
+  const pct = pctAvance(t);
+  const proy = proyeccionAvance(t);
+  const r = ritmoDeAvances(t);
+  const id = t.fbId || '';
+
+  const historia = v.length
+    ? v.map(a => hhmmDe(a.hora) + ' ' +
+        (a.hechas != null ? '<strong>' + a.hechas + '</strong>'
+                          : (a.terminaHoy === 'si' ? 'termina hoy'
+                             : a.terminaHoy === 'no' ? 'no termina' : 'no se sabe')))
+        .join(' <span class="av-flecha">→</span> ')
+    : '<span style="color:var(--text-muted)">sin conteos todavía</span>';
+
+  const entrada = avancePorPiezas(t)
+    ? '<input type="number" class="tiempo-inp av-inp" id="av-' + id + '" min="0" max="' + (t.n||0) +
+      '" placeholder="van..." />'
+    : '<select class="av-sel" id="avs-' + id + '">' +
+        '<option value="">¿termina hoy?</option>' +
+        '<option value="si">Sí, termina hoy</option>' +
+        '<option value="no">No, sigue mañana</option>' +
+        '<option value="nose">No se sabe</option>' +
+      '</select>';
+
+  const tonoProy = proy && proy.terminaHoy === 'no' ? 'var(--crit)'
+                 : proy && proy.terminaHoy === 'si' ? 'var(--ok)' : 'var(--text-muted)';
+
+  return '<div class="av-caja">' +
+    '<div class="av-fila">' +
+      '<span class="av-rot">Avance</span>' +
+      (pct != null
+        ? '<div class="av-barra"><div class="av-fill" style="width:' + pct + '%"></div></div>' +
+          '<span class="av-pct">' + (avancePorPiezas(t)
+            ? (u.hechas + ' de ' + t.n) : pct + '%') + '</span>'
+        : '<span class="av-pct" style="color:var(--text-muted)">sin medir</span>') +
+      entrada +
+      '<button class="btn btn-xs btn-amber" onclick="guardarAvance(' +
+        JSON.stringify(id).replace(/"/g,'&quot;') + ')">Anotar</button>' +
+      (v.length ? '<button class="btn btn-xs" title="Borrar el último conteo" onclick="borrarUltimoAvance(' +
+        JSON.stringify(id).replace(/"/g,'&quot;') + ')">↩</button>' : '') +
+    '</div>' +
+    '<div class="av-hist">' + historia + '</div>' +
+    (r ? '<div class="av-ritmo">Ritmo medido: <strong>' + r.minPorUnidad.toFixed(1) +
+         '′ por unidad</strong> · ' + r.piezas + ' en ' + r.horas.toFixed(1) + ' h' +
+         (t.tu ? ' · plan ' + t.tu + '′' : '') + '</div>' : '') +
+    (proy && proy.terminaHoy
+      ? '<div class="av-proy" style="color:' + tonoProy + '">' +
+        (proy.tipo === 'declarado'
+          ? (proy.terminaHoy === 'si' ? 'Andree anotó que termina hoy'
+             : proy.terminaHoy === 'no' ? 'Andree anotó que sigue mañana' : 'Todavía no se sabe si termina hoy')
+          : (proy.terminaHoy === 'si'
+             ? 'Al ritmo medido termina hoy'
+             : 'Al ritmo medido NO termina hoy: faltan ' + proy.faltan + ' ≈ ' +
+               proy.horasFaltan.toFixed(1) + ' h y quedan ' + proy.horasRestantes.toFixed(1) + ' h')) +
+        '</div>' : '') +
+  '</div>';
+}
+
+function hhmmDe(iso){
+  const d = new Date(iso);
+  if(isNaN(d)) return '--:--';
+  return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+}
+
+window.guardarAvance = guardarAvance;
+window.borrarUltimoAvance = borrarUltimoAvance;
+
+// --------------------------------------------------------------------------- cierre parcial
+//
+// AQUI ES DONDE EL AVANCE SIRVE DE ALGO. Sin esto, anotar los conteos seria coleccionar datos
+// que no cambian nada: el ticket se seguiria cerrando como si se hubieran hecho las 150.
+//
+// La app NO decide sola. Si el ultimo conteo dice menos que la cantidad del ticket, pregunta —
+// porque el conteo pudo ser de las 15:00 y el operario pudo terminar a las 17:00, y la app no
+// tiene forma de saberlo. Quien sabe es Andree, que estuvo ahi.
+function faltantePorAvance(t){
+  if(!t || !avancePorPiezas(t)) return null;
+  const u = ultimoAvance(t);
+  if(!u || u.hechas == null) return null;
+  const falta = (t.n || 0) - u.hechas;
+  return falta > 0 ? {hechas: u.hechas, falta, hora: u.hora} : null;
+}
+
+// Cierra el ticket con la cantidad REALMENTE hecha y deja la continuacion para el dia siguiente.
+// `tt_real` pasa a ser lo que se trabajo ese dia, no una proyeccion sobre la cantidad planificada.
+async function cerrarParcialYContinuar(fbId, tu_real, hechas){
+  const t = historial.find(x => x.fbId === fbId);
+  if(!t) return false;
+  const falta = (t.n || 0) - hechas;
+  if(!(falta > 0)) return false;
+
+  const sigue = siguienteDiaHabil(new Date(fechaStrToDate(t.fechaEjecucion).getTime() + 86400000));
+  const fechaSig = sigue.toLocaleDateString('es-PE');
+
+  const lote = writeBatch(db);
+  // El ticket de hoy queda con lo que de verdad se hizo.
+  lote.update(doc(db,'historial',fbId), {
+    n: hechas,
+    tt: parseFloat((hechas * t.tu / 60).toFixed(2)),
+    tu_real, tt_real: parseFloat((hechas * tu_real / 60).toFixed(2)),
+    completado: true,
+    medidoEn: new Date().toISOString(),
+    nPlanificado: t.n,            // lo que decia antes de partirse, para no perder el rastro
+    partidoEn: new Date().toISOString()
+  });
+  // Y la continuacion, con el resto. Hereda todo salvo la cantidad, la fecha y la medicion:
+  // el tiempo de manana se mide manana.
+  const cont = Object.assign({}, t, {
+    n: falta,
+    tt: parseFloat((falta * t.tu / 60).toFixed(2)),
+    fechaEjecucion: fechaSig,
+    fechaISO: fechaAISO(fechaSig),
+    tu_real: null, tt_real: null, completado: false, medidoEn: null,
+    avances: [], incidencias: [],
+    visibleTareo: true, visibleAndree: true,
+    continuaDe: fbId,
+    fechaCreacion: new Date().toISOString(),
+    guardado: new Date().toISOString()
+  });
+  delete cont.fbId; delete cont.nPlanificado; delete cont.partidoEn;
+  lote.set(doc(collection(db,'historial')), cont);
+
+  return await escribir('cerrar el ticket con lo hecho y dejar la continuación',
+    ()=>lote.commit(),
+    {pagina:'andree',
+     exito:'Cerrado con ' + hechas + '. Quedan ' + falta + ' para el ' + fechaSig + '.'});
+}
+
+window.cerrarParcialYContinuar = cerrarParcialYContinuar;
+
 // ===== REDIBUJADO SELECTIVO =====
 // Antes, cada cambio en cualquier ticket redibujaba las siete vistas, estuvieran o no en
 // pantalla. Ahora solo se redibuja la que se está viendo; showPage() refresca la vista a la
@@ -7703,7 +8318,7 @@ function refrescarVista(nombre){
   if(_foco && _foco.pagina===p) setTimeout(aplicarFoco, 0);
   if(p==='hoy'){ enlazarControlesHoy(); renderHoy(); }
   else if(p==='atencion'){ renderAtencion(); }
-  else if(p==='tareo'){ renderTicketsHoy(); actualizarHorasTrabajador(); }
+  else if(p==='tareo'){ renderTicketsHoy(); actualizarHorasTrabajador(); renderPanelTareo(); }
   else if(p==='andree'){ renderAndree(); }
   else if(p==='kanban'){ const k=document.getElementById('k-fecha'); if(k)k.dataset.poblado=''; renderKanban(); }
   else if(p==='historial'){ poblarFiltrosHist(); renderHist(); }
@@ -9577,6 +10192,53 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
   body{background:#fff;}nav,.no-print,.ticket-remove-btn{display:none!important;}
   .page{display:none!important;padding:0;max-width:100%;}#print-sheet{display:block!important;}
 }
+/* ---- Avance del ticket (F2-45) ---- */
+.av-caja{margin-top:7px;padding:7px 9px;border:0.5px dashed var(--border);border-radius:8px;background:var(--surface-1)}
+.av-fila{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.av-rot{font-size:9.5px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted)}
+.av-barra{flex:1;min-width:70px;max-width:180px;height:6px;border-radius:3px;background:var(--surface-2);overflow:hidden}
+.av-fill{height:100%;border-radius:3px;background:var(--mt-verde)}
+.av-pct{font-family:var(--f-num);font-size:11.5px;font-weight:700;white-space:nowrap}
+.av-inp{width:80px}
+.av-sel{height:28px;border:0.5px solid var(--border);border-radius:7px;padding:0 6px;font-size:11.5px;background:var(--surface-0)}
+.av-hist{font-family:var(--f-num);font-size:10.5px;color:var(--text-secondary);margin-top:5px}
+.av-flecha{color:var(--text-muted)}
+.av-ritmo{font-size:10.5px;color:var(--text-primary);margin-top:3px}
+.av-proy{font-size:10.5px;font-weight:600;margin-top:2px}
+@media print{.av-caja{display:none!important}}
+
+/* ---- Panel de personas de Generar tareo (F2-44) ---- */
+.pt-chips{display:flex;gap:8px;flex-wrap:wrap}
+.pt-chip{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:8px 13px;
+  border-radius:9px;border:0.5px solid var(--border);background:var(--surface-0);cursor:pointer;text-align:left}
+.pt-chip:hover{border-color:var(--text-muted)}
+.pt-chip-on{border-color:var(--mt-verde);box-shadow:inset 0 0 0 1px var(--mt-verde)}
+.pt-chip-n{font-size:12px;font-weight:700;letter-spacing:.03em}
+.pt-chip-c{font-size:10.5px;font-weight:600}
+.pt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(178px,1fr));gap:10px}
+.pt-grid-min{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+.pt-p{border:0.5px solid var(--border);border-radius:10px;padding:11px 12px 12px;background:var(--surface-0)}
+.pt-apagada{opacity:.5}
+/* Marco y no relleno: el fondo de la tarjeta ya significa algo. */
+.pt-alerta{border-color:var(--crit);box-shadow:inset 0 0 0 1px var(--crit)}
+.pt-p-cab{display:flex;justify-content:space-between;align-items:center;gap:6px}
+.pt-p-nom{font-size:12.5px;font-weight:700;line-height:1.25}
+.pt-p-ok{color:var(--ok);font-size:14px;font-weight:700}
+.pt-p-barra{height:6px;border-radius:3px;background:var(--surface-2);margin:8px 0 6px;overflow:hidden}
+.pt-p-fill{height:100%;border-radius:3px}
+.pt-p-h{font-family:var(--f-num);font-size:12px;color:var(--text-secondary)}
+.pt-p-h strong{font-size:15px;color:var(--text-primary)}
+.pt-p-est{font-size:11px;font-weight:600;margin-top:1px}
+.pt-p-tag{font-size:10.5px;color:var(--text-secondary);background:var(--surface-2);
+  border-radius:5px;padding:3px 6px;margin-top:6px;line-height:1.35}
+.pt-p-tag-crit{color:var(--crit);background:transparent;border:0.5px solid var(--crit);font-weight:600}
+.pt-p-btn{margin-top:9px;width:100%;background:transparent;color:var(--text-primary);
+  border:0.5px solid var(--border);font-weight:600}
+.pt-p:hover .pt-p-btn{border-color:var(--mt-verde);color:var(--mt-verde)}
+.pt-sep{font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted);
+  margin:14px 0 7px;padding-top:10px;border-top:1px dashed var(--border)}
+@media print{#tareo-panel{display:none!important}}
+
 #print-sheet{display:none;font-family:system-ui,sans-serif;}
 .print-header{display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #1a1a18;padding-bottom:6px;margin-bottom:10px;}
 .print-logo{font-size:16px;font-weight:800;letter-spacing:1px;}.print-logo span{color:#e8a020;}
@@ -10085,6 +10747,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
 
 <!-- TAREO -->
 <div class="page" id="page-tareo">
+  <div id="tareo-panel"></div>
   <div class="card">
     <div class="card-title">Nuevo ticket</div>
     <div id="alert-tareo" style="display:none" class="alert"></div>
@@ -10118,7 +10781,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
     <div style="margin-top:0.875rem">
       <div class="field">
         <label>Fecha de ejecución</label>
-        <select id="t-fecha-ejec" style="max-width:280px" onchange="actualizarHorasTrabajador()"></select>
+        <select id="t-fecha-ejec" style="max-width:280px" onchange="actualizarHorasTrabajador();renderPanelTareo()"></select>
       </div>
       <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Si generas el tareo antes de las 3pm → hoy por defecto. Después de las 3pm → mañana por defecto.</div>
       <div id="t-horas-trabajador" style="display:none;margin-top:8px;padding:8px 12px;border-radius:6px;font-size:12px;font-weight:600"></div>

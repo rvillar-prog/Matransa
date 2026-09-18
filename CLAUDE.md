@@ -39,7 +39,7 @@ node arnes.mjs
 
 Encuentra solo `../Matransa/index.html` y `../Backups/`. Si faltan los backups corre las
 pruebas que solo miran el código y avisa. Se puede forzar con `MATRANSA_HTML` y
-`MATRANSA_BACKUPS`. Hoy son **636 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
+`MATRANSA_BACKUPS`. Hoy son **702 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
 backup reciente y se salta sola si no hay ninguno.
 
 ---
@@ -68,6 +68,25 @@ Hay tres, y la distinción es el motivo de existir de buena parte del código:
 | No ejecutado | `noEjecutado`, `motivoNoEjecucion`, `notaNoEjecucion` | no se hizo, con motivo |
 
 `MOTIVOS_EXIGEN_NOTA = ['prioridad','insumo']` — en esos dos la nota **es** el dato.
+
+### `completado` significa "hay medición", NO "el trabajo terminó" (F2-45)
+Lo destapó Ricardo: *"si Andree mide el tiempo unitario de la primera pieza de 150, el ticket se
+da por cerrado, pero si el operario no terminó ese día y continúa mañana, ¿no lo sabremos?"*.
+
+No se sabía, y de esa confusión salían tres daños:
+
+1. **`tt_real = n × tu_real` es una proyección, no una medición.** Si se hicieron 40 de 150, la
+   app le atribuye a ese día las horas de 150.
+2. El ticket medido-pero-no-terminado tiene `completado:true`, así que **no aparece como
+   arrastre** — el panel del F2-44 no lo ve.
+3. En el histórico hay **13 tickets cerrados con más horas de las que tiene un día**, uno de
+   21.67 h en una jornada de 8.5.
+
+**La eficiencia NO está contaminada**: plan y real se inflan por el mismo `n` y la división lo
+cancela. Lo que está mal son las **horas** — la carga por persona, las horas por operación de la
+ruta de Pablo, el reparto del Gantt.
+
+Ver **El avance del ticket (F2-45)** más abajo.
 
 **`medidoEn` es la hora del REGISTRO, no la del trabajo (F2-39).** Hasta el F2-39 el ticket sabía
 cuánto duró y no cuándo terminó: 311 tickets medidos, ninguno con hora, y sin eso la app no puede
@@ -228,6 +247,105 @@ números de OF. Se pega como JSON desde la propia pantalla (botón «Importar»)
 `rutas` es una colección nueva y las reglas publicadas la niegan por el `match /{document=**}`
 final. **Hay que publicar las reglas antes que el código**, o la pantalla no lee ni escribe nada.
 Es exactamente la trampa del F2-28, paso 4.
+
+---
+
+## El avance del ticket — las rondas de Andree (F2-45)
+
+La solución la propuso Ricardo y es mejor que la que yo había planteado: que Andree, **en la
+ronda que ya hace**, anote cuánto lleva hecho.
+
+```
+ticket.avances = [{hora, hechas | terminaHoy, por}, ...]
+```
+
+### El regalo: el tiempo unitario sale solo
+Con dos conteos separados en el tiempo, `ritmoDeAvances()` deriva los minutos por unidad **sin
+cronómetro**: 40 piezas a las 10:00 y 95 a las 12:00 son 55 en 2 h = **2.2′ por pieza**.
+
+Y ese dato es **mejor** que el cronómetro: el ciclo de una pieza medido con Andree al lado es el
+mejor caso —sin interrupciones, sin cambio de herramienta, sin la pieza que salió mal—. El ritmo
+entre dos rondas es el ritmo de verdad. Esto toca la ruta de Pablo: parte de la variación puede
+ser el método de medición, no el método de trabajo.
+
+### Dónde aplica y dónde no
+
+| | regla | por qué |
+|---|---|---|
+| `horasMin: 4` | solo tickets de 4 h o más | son **14 de los 21.6** diarios; en uno de hora y media no hay nada que seguir |
+| `n ≥ 2` | *"¿cuántas van?"* — un número | |
+| **`n = 1`** | *"¿termina hoy?"* — sí/no/no sé | **el 24% de los tickets** y la mayor bolsa de horas; un mueble único no tiene piezas que contar |
+| `horasEntreConteos: 0.75` | dos conteos más pegados no dan ritmo | el ruido de *cuándo exactamente pasó Andree* pesaría más que las piezas |
+
+"No se sabe" **no es cero**: `pctAvance()` devuelve `null`, no 0.
+
+### El cierre parcial es lo que hace que anotar sirva de algo
+Sin esto, los conteos serían datos que no cambian nada. Al registrar `tu_real`, si el último
+conteo dice menos que la cantidad, **la app pregunta — no decide**: el conteo pudo ser de las
+15:00 y el operario pudo terminar a las 17:00, y eso sólo lo sabe quien estuvo ahí.
+
+Si se responde que no se completaron, `cerrarParcialYContinuar()` cierra el ticket con la
+cantidad **realmente hecha** —`tt_real` pasa a ser lo que se trabajó ese día— y crea la
+continuación con el resto para el siguiente día hábil, enlazada por `continuaDe`. Se guarda
+`nPlanificado` para no perder el rastro.
+
+### Lo viejo se marca, no se toca
+Decisión de Ricardo: los tickets cerrados con más horas que la jornada salen como alerta en
+Atención (severidad baja) y se quedan como están. **No se reescribe historia.**
+
+### Lo que esto no es
+Tres visitas al día anotando cuánto llevas **se lee como vigilancia** si nadie explica para qué
+es. Tercer principio del roadmap: medir no es control del operario. Si en planta se entiende al
+revés, los números se acomodan y todo lo demás da igual.
+
+---
+
+## El panel de personas en Generar tareo (F2-44)
+
+Ricardo, mirando a Andree generar el tareo: *"no tiene la certeza de a quién le falta generarle
+un tareo, eso lo está haciendo solamente con memoria"*. Con 37 personas en seis áreas la memoria
+falla, y falla **en silencio**: nadie se entera de que Miguel se quedó sin trabajo hasta el día
+siguiente.
+
+**El panel no trae información nueva.** Las horas ya las sabía `actualizarHorasTrabajador`, los
+arrastres los reclamaba `calcularAtencion` y las ausencias las tenía `getAusenciasDelDia`. Lo que
+faltaba era tenerlas **delante en el momento de decidir**, y no repartidas en tres pantallas que
+hay que acordarse de abrir. Se ve **una área a la vez**, la elegida, con los chips arriba.
+
+### El caso de César es el que ordena el diseño
+Tenía sus ocho horas del día asignadas —por horas se veía completo— y estaba toda la mañana
+terminando lo de ayer. Por eso **el arrastre manda sobre "listo"**: si alguien con un ticket
+abierto de días anteriores se apagara por tener la jornada llena, el panel repetiría exactamente
+el error que vino a arreglar. El orden es `ausente → arrastre → apoyo → vacío → sobre → listo`.
+
+### Los umbrales y de dónde salen
+
+| | |
+|---|---|
+| `COLCHON_CARGA = 0.75` | **decisión de Ricardo, 18/9.** Con el umbral en la jornada exacta, Fierro salía *"6 de 6 sin completar"* porque tres tenían 8.00 de 8.5 — y si todo está pendiente, nada lo está |
+| la jornada | sale de `jornadaProductiva(fecha)`, **nunca un 8.5 a mano**: el sábado el umbral baja solo a 4.25 |
+| un ticket de dos | carga `tt` **completo a las dos**, como en todas las cuentas de carga |
+
+### Quién sale, y quién no
+`plantillaDelDia()` decide: operario fijo, practicante sólo el día que vino, **coordinador nunca**.
+Encima de eso el panel añade dos cosas:
+
+- **El coordinador que HOY ejecuta** sale como `apoyo`: hay que verlo para no asignarle encima,
+  pero no se le completa la jornada. Marcarlo "faltan 6 h" mandaría a Andree a llenarle el día a
+  quien no es capacidad, y taparía la falta de personal que esas horas revelan.
+- **El prestado** sale en las dos áreas, marcado. Es el punto ciego que este archivo tiene
+  anotado —capacidad por área base, carga por área de ejecución— y aquí deja de ser ciego.
+
+Sobrecargado y ausente **no** cuentan como "sin completar": son otros problemas y se cuentan aparte.
+
+### El defecto que destapó mirarlo con datos reales
+`arrastresDe()` recibe la fecha que se está tareando y **la excluye de la ventana**. Un ticket del
+día que estás planificando no es un arrastre, es el trabajo que acabas de asignar. Sin esa línea,
+generar el tareo de un día que cae dentro de la ventana marcaba a **29 de 30 personas** en rojo.
+
+**`asignarTrabajoA()` rellena el formulario, no crea el ticket.** Crear sigue siendo un acto
+explícito. Y si el panel está en un área que no es la del trabajador, rellena también el área de
+ejecución: es el caso del prestado, y olvidarlo es como se pierde la trazabilidad entre áreas.
 
 ---
 
