@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-26 \u00b7 F2-45';
+const VERSION_APP = 'v2026-09-26 \u00b7 F2-46';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -7167,6 +7167,7 @@ function efectoInspeccion(historial_, clave, fechaISO){
 
 // ---------------------------------------------------------------- dibujo
 function renderMetodos(){
+  renderRutaDia();
   const cont = document.getElementById('metodos-content');
   if(!cont) return;
   const R = rutaDeMetodos(historial);
@@ -8303,6 +8304,223 @@ async function cerrarParcialYContinuar(fbId, tu_real, hechas){
 }
 
 window.cerrarParcialYContinuar = cerrarParcialYContinuar;
+
+// ===== LA RUTA DEL DIA DE PABLO (F2-46) =====
+//
+// Metodos (F2-40) contesta una pregunta ESTRATEGICA: de todo el historial, que estacion tiene
+// el peor metodo. Se mira una vez por semana y no cambia de un dia para otro.
+//
+// Esto contesta otra, y es la de cada mañana: "una de las funciones de Pablo es que una vez al
+// dia corrija u observe todos los metodos de todas las estaciones de trabajo". Eso es un
+// RECORRIDO, no un ranking. Y tiene una restriccion que un ranking no ve:
+//
+//   UNA ESTACION SOLO SE PUEDE OBSERVAR MIENTRAS EL TRABAJO ESTA EN CURSO.
+//
+// El 17/9, de 26 estaciones, CINCO cerraban antes de las 10:00. Si Pablo sale a las 10, ese dia
+// perdio cinco: el trabajo ya termino y no hay nada que mirar hasta mañana. Y si recorre area
+// por area —el orden natural, el que haria cualquiera— alcanza 13 de 26. Ordenando por hora de
+// cierre alcanza las 26.
+//
+//   area por area ......... 13 de 26
+//   por hora de cierre .... 26 de 26
+//
+// Esa diferencia no es de esfuerzo: es de orden. Pablo camina lo mismo.
+//
+// EL CRITERIO: primero la que cierra antes. No la mas critica — la mas critica que dura ocho
+// horas seguira ahi a las cuatro de la tarde, y la de cincuenta minutos no. La criticidad
+// historica entra solo para DESEMPATAR entre las que cierran a la misma hora, y para decirle a
+// que va cuando llegue.
+//
+// SE PLANIFICA DESDE LA HORA ACTUAL, no desde las 8:00. Una ruta que empieza a una hora que ya
+// paso es una ruta de mentira. Si Pablo abre la pantalla a las 11, la app le dice lo que queda
+// y —esto importa— lo que ya perdio, que es como se aprende a salir mas temprano.
+//
+// UNA PARADA = AREA + OPERACION. Dos personas lijando en Acabado son una sola parada: el metodo
+// es el mismo. Decision de Ricardo, 18/9, junto con los 10 minutos por estacion.
+
+// Por encima de esta variacion la parada se marca con el ojo: es donde Pablo tiene algo que
+// hacer. Debajo, la estacion se visita igual —la ronda es de todas— pero sin alarma.
+const CV_MARCA_RUTA = 0.40;
+
+const RUTA_DIA = {
+  minutosPorEstacion: 10,   // decision de Ricardo. Con 10' las 26 paradas caben y sobra dia.
+  inicioJornada: 8
+};
+
+// Las estaciones que hoy tienen trabajo, con su ventana de observacion. La agenda sale de
+// `agendaDelDia`, la MISMA que dibujan el Gantt y Estaciones: si esta pantalla repartiera el dia
+// por su cuenta, tres pantallas dirian tres horas distintas del mismo ticket.
+function estacionesDelDia(fecha){
+  const agenda = agendaDelDia(fecha);
+  const porClave = {};
+  Object.keys(agenda || {}).forEach(nom=>{
+    agenda[nom].forEach(x=>{
+      const t = x.t;
+      if(!t || !t.operacion || t.operacion === 'Otra') return;
+      // Las transversales no son una estacion con metodo: mejorar "el metodo del mantenimiento"
+      // no es lo que hace Pablo. Misma regla que en el ranking historico.
+      if(esTransversalMetodo(t.operacion)) return;
+      const area = areaDeMedicion(t);
+      const clave = claveMetodo(area, t.operacion);
+      const g = porClave[clave] = porClave[clave] ||
+        {clave, area, operacion: t.operacion, ini: 99, fin: 0, tickets: [], personas: new Set()};
+      g.ini = Math.min(g.ini, x.inicio);
+      g.fin = Math.max(g.fin, x.fin);
+      if(g.tickets.indexOf(t) < 0) g.tickets.push(t);
+      (t.nombres || []).forEach(n => g.personas.add(n));
+    });
+  });
+  // La criticidad historica viene del mismo sitio que el ranking: una sola definicion.
+  const crit = {};
+  try{
+    const R = rutaDeMetodos(historial);
+    R.ruta.concat(R.resto, R.estables).forEach(f => { crit[f.clave] = f; });
+  }catch(e){ /* sin historial suficiente, la ruta se ordena solo por hora */ }
+
+  // La agenda reparte desde las 8:00 sin tope, asi que un dia sobrecargado produce ventanas que
+  // terminan a las 19:30. Nadie observa a las 19:30: para la ruta, la ventana acaba cuando acaba
+  // la jornada. El dato de la sobrecarga no se pierde — vive en el panel de carga y en el Gantt.
+  const tope = horaFinJornada(fecha);
+  return Object.keys(porClave).map(k=>{
+    const g = porClave[k];
+    const f = crit[k];
+    g.finReal = g.fin;
+    g.fin = Math.min(g.fin, tope);
+    return Object.assign(g, {
+      personas: [...g.personas],
+      criticidad: f ? f.criticidad : 0,
+      cv: f ? f.cv : null,
+      nMediciones: f ? f.n : 0
+    });
+  });
+}
+
+// Marcada como vista si Pablo ya registro una inspeccion HOY en esa estacion. No hay coleccion
+// nueva: la visita ES la inspeccion del F2-40, y asi las dos mitades de la pantalla se cierran
+// entre si en vez de llevar cada una su propia contabilidad.
+function visitadaHoy(clave, fecha){
+  const d = fechaStrToDate(fecha);
+  if(!d) return false;
+  return (inspecciones || []).some(i=>{
+    if(i.clave !== clave || !i.fecha) return false;
+    const f = new Date(i.fecha);
+    return !isNaN(f) && f.getFullYear() === d.getFullYear() &&
+           f.getMonth() === d.getMonth() && f.getDate() === d.getDate();
+  });
+}
+
+// El plan del recorrido. Devuelve tambien lo que NO se alcanza y por que: una ruta que esconde
+// lo que dejo fuera no se puede discutir.
+function planRutaDia(fecha, horaAhora, opciones){
+  const O = Object.assign({}, RUTA_DIA, opciones || {});
+  const paso = O.minutosPorEstacion / 60;
+  const finJornada = horaFinJornada(fecha);
+  const hayRef = hayRefrigerio(fecha);
+  const todas = estacionesDelDia(fecha);
+
+  const vistas   = todas.filter(g => visitadaHoy(g.clave, fecha));
+  const cerradas = [];
+  let pend = todas.filter(g => !visitadaHoy(g.clave, fecha));
+
+  let reloj = Math.max(O.inicioJornada, horaAhora != null ? horaAhora : O.inicioJornada);
+  const ruta = [];
+  let vueltas = 0;
+  while(reloj < finJornada && pend.length && vueltas++ < 500){
+    if(hayRef && reloj >= REFRIGERIO_INI && reloj < REFRIGERIO_FIN){ reloj = REFRIGERIO_FIN; continue; }
+    // Lo que ya cerro no se puede observar: sale de la lista con su motivo.
+    const muertas = pend.filter(g => g.fin < reloj + paso);
+    if(muertas.length){
+      muertas.forEach(g => cerradas.push(g));
+      pend = pend.filter(g => muertas.indexOf(g) < 0);
+      continue;
+    }
+    const disp = pend.filter(g => g.ini <= reloj);
+    if(!disp.length){
+      const prox = Math.min.apply(null, pend.map(g => g.ini));
+      if(!isFinite(prox) || prox <= reloj) break;
+      reloj = prox; continue;
+    }
+    // EL CRITERIO. Primero la que cierra antes; la criticidad solo desempata.
+    disp.sort((a,b) => (a.fin - b.fin) || (b.criticidad - a.criticidad));
+    const g = disp[0];
+    // Si el refrigerio parte la visita, se empieza despues: media observacion no es media.
+    if(hayRef && reloj < REFRIGERIO_INI && reloj + paso > REFRIGERIO_INI){ reloj = REFRIGERIO_FIN; continue; }
+    ruta.push(Object.assign({}, g, {visita: reloj, hasta: reloj + paso}));
+    pend = pend.filter(x => x !== g);
+    reloj += paso;
+  }
+  return {ruta, cerradas, sinTiempo: pend, vistas, todas,
+          minutos: O.minutosPorEstacion, desde: Math.max(O.inicioJornada, horaAhora != null ? horaAhora : O.inicioJornada)};
+}
+
+function hhRuta(h){
+  // 8.9999 daba "08:00" en vez de "09:00": mm salia 60 y la hora no subia. Se veia como una
+  // ruta desordenada —09:50, 09:00, 10:10— y eso es peor que un error visible, porque parece
+  // un fallo del criterio y no del reloj. A minutos PRIMERO, y de ahi se parte.
+  const total = Math.round(h * 60);
+  const hh = Math.floor(total / 60), mm = total % 60;
+  return String(hh).padStart(2,'0') + ':' + String(mm).padStart(2,'0');
+}
+
+// --------------------------------------------------------------------------- pantalla
+function renderRutaDia(){
+  const cont = document.getElementById('ruta-dia');
+  if(!cont) return;
+  const fecha = hoyStr();
+  const ahora = horaAhora();
+  const P = planRutaDia(fecha, ahora);
+
+  if(!P.todas.length){ cont.innerHTML = ''; return; }
+
+  const paradas = P.ruta.map((g,i)=>{
+    const mucha = g.cv != null && g.cv >= CV_MARCA_RUTA;
+    return '<div class="rd-parada' + (mucha ? ' rd-ojo' : '') + '">' +
+      '<div class="rd-hora">' + hhRuta(g.visita) + '</div>' +
+      '<div class="rd-cuerpo">' +
+        '<div class="rd-tit"><strong>' + escapeHtml(g.operacion) + '</strong>' +
+          '<span class="rd-area"> · ' + escapeHtml(g.area) + '</span></div>' +
+        '<div class="rd-meta">Hasta las ' + hhRuta(g.fin) +
+          (g.finReal > g.fin + 0.01 ? ' <span style="color:var(--crit)">(el ticket se pasa de la jornada)</span>' : '') + ' · ' +
+          plural(g.personas.length, 'persona', 'personas') +
+          (g.cv != null ? ' · varía <strong>' + Math.round(g.cv*100) + '%</strong>' +
+            (g.nMediciones ? ' en ' + plural(g.nMediciones,'medición','mediciones') : '') : '') +
+        '</div>' +
+        (g.cv != null ? '<div class="rd-que">' + escapeHtml(queMirar(
+            {cv:g.cv, min:0, max:0, desv:null})[0]) + '</div>' : '') +
+      '</div>' +
+      '<button class="btn btn-xs btn-amber" onclick="abrirInspeccion(' +
+        JSON.stringify(g.clave).replace(/"/g,'&quot;') + ')">Anotar</button>' +
+    '</div>';
+  }).join('');
+
+  const listaSimple = (arr, nota) => arr.length
+    ? '<div class="rd-sec">' + nota + '</div><div class="rd-chips">' +
+      arr.sort((a,b)=>a.fin-b.fin).map(g=>'<span class="rd-chip">' +
+        escapeHtml(g.operacion) + ' <span class="rd-chip-a">' + escapeHtml(g.area) +
+        '</span> <span class="rd-chip-h">cerró ' + hhRuta(g.fin) + '</span></span>').join('') + '</div>'
+    : '';
+
+  cont.innerHTML =
+  '<div class="card">' +
+    '<div class="card-title">Ruta de hoy · ' +
+      plural(P.ruta.length, 'parada', 'paradas') +
+      (P.vistas.length ? ' · ' + P.vistas.length + ' ya anotada' + (P.vistas.length>1?'s':'') : '') + '</div>' +
+    '<div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:10px">' +
+      'Ordenada por <strong>hora de cierre</strong>, no por importancia: la estación crítica que ' +
+      'dura ocho horas seguirá ahí a las cuatro; la de cincuenta minutos, no. ' +
+      'Empieza a las <strong>' + hhRuta(P.desde) + '</strong> con ' + P.minutos + ' minutos por estación.' +
+    '</div>' +
+    (paradas || '<div style="font-size:12px;color:var(--text-muted)">No queda ninguna estación observable en lo que resta del día.</div>') +
+    listaSimple(P.cerradas, P.desde > RUTA_DIA.inicioJornada
+      ? 'Ya cerraron antes de que empezara la ruta — para verlas hay que salir más temprano:'
+      : 'Cerraron antes de que la ruta pudiera llegar:') +
+    listaSimple(P.sinTiempo, 'No entran en lo que queda de jornada:') +
+    (P.vistas.length ? '<div class="rd-sec">Ya anotadas hoy: ' +
+      P.vistas.map(g=>escapeHtml(g.operacion) + ' (' + escapeHtml(g.area) + ')').join(' · ') + '</div>' : '') +
+  '</div>';
+}
+
+window.renderRutaDia = renderRutaDia;
 
 // ===== REDIBUJADO SELECTIVO =====
 // Antes, cada cambio en cualquier ticket redibujaba las siete vistas, estuvieran o no en
@@ -10192,6 +10410,24 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
   body{background:#fff;}nav,.no-print,.ticket-remove-btn{display:none!important;}
   .page{display:none!important;padding:0;max-width:100%;}#print-sheet{display:block!important;}
 }
+/* ---- Ruta del dia de Pablo (F2-46) ---- */
+.rd-parada{display:flex;align-items:flex-start;gap:11px;padding:9px 11px;border:0.5px solid var(--border);
+  border-radius:9px;margin-bottom:7px;background:var(--surface-0)}
+.rd-ojo{border-left:3px solid var(--warn)}
+.rd-hora{font-family:var(--f-num);font-size:14px;font-weight:700;min-width:46px;padding-top:1px}
+.rd-cuerpo{flex:1;min-width:0}
+.rd-tit{font-size:13px;line-height:1.3}
+.rd-area{font-size:11px;color:var(--text-secondary);font-weight:400}
+.rd-meta{font-size:11px;color:var(--text-secondary);margin-top:2px}
+.rd-que{font-size:11px;color:var(--text-primary);line-height:1.45;margin-top:3px}
+.rd-sec{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--text-muted);
+  margin:13px 0 6px;padding-top:9px;border-top:1px dashed var(--border)}
+.rd-chips{display:flex;flex-wrap:wrap;gap:6px}
+.rd-chip{font-size:11px;border:0.5px solid var(--border);border-radius:6px;padding:3px 8px;
+  color:var(--text-secondary);background:var(--surface-1)}
+.rd-chip-a{color:var(--text-muted);font-size:10px}
+.rd-chip-h{font-family:var(--f-num);font-size:10px;color:var(--crit)}
+
 /* ---- Avance del ticket (F2-45) ---- */
 .av-caja{margin-top:7px;padding:7px 9px;border:0.5px dashed var(--border);border-radius:8px;background:var(--surface-1)}
 .av-fila{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
@@ -10825,6 +11061,7 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
       después: es la única forma de saber si el cambio sirvió.
     </div>
   </div>
+  <div id="ruta-dia"></div>
   <div id="metodos-content"></div>
 </div>
 

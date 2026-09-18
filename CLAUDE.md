@@ -39,7 +39,7 @@ node arnes.mjs
 
 Encuentra solo `../Matransa/index.html` y `../Backups/`. Si faltan los backups corre las
 pruebas que solo miran el código y avisa. Se puede forzar con `MATRANSA_HTML` y
-`MATRANSA_BACKUPS`. Hoy son **702 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
+`MATRANSA_BACKUPS`. Hoy son **723 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
 backup reciente y se salta sola si no hay ninguno.
 
 ---
@@ -247,6 +247,56 @@ números de OF. Se pega como JSON desde la propia pantalla (botón «Importar»)
 `rutas` es una colección nueva y las reglas publicadas la niegan por el `match /{document=**}`
 final. **Hay que publicar las reglas antes que el código**, o la pantalla no lee ni escribe nada.
 Es exactamente la trampa del F2-28, paso 4.
+
+---
+
+## La ruta del día de Pablo (F2-46)
+
+**Métodos tiene dos mitades y contestan preguntas distintas.** Arriba, la ruta de hoy: es lo que
+Pablo usa cada mañana. Abajo, el ranking histórico (F2-40): se mira una vez por semana y no
+cambia de un día para otro.
+
+> *"Una de las funciones de Pablo es que una vez al día corrija u observe todos los métodos de
+> todas las estaciones."*
+
+Eso es un **recorrido**, no un ranking — y tiene una restricción que un ranking no ve:
+
+**Una estación solo se puede observar mientras el trabajo está en curso.** El 17/9, cinco de las
+estaciones cerraban antes de las 10:00. Si Pablo sale a las 10, ese día las perdió.
+
+| orden del recorrido | alcanza |
+|---|---|
+| área por área — el orden natural | **13 de 26** |
+| por hora de cierre | **26 de 26** |
+
+Misma caminata. La diferencia es el orden.
+
+### El criterio
+**Primero la que cierra antes.** No la más crítica: la estación crítica que dura ocho horas
+seguirá ahí a las cuatro de la tarde, y la de cincuenta minutos no. La criticidad histórica entra
+sólo para **desempatar** entre las que cierran a la misma hora, y para decirle a qué va cuando
+llegue.
+
+### Se planifica desde la hora actual
+Una ruta que empieza a una hora que ya pasó es una ruta de mentira. Si Pablo abre la pantalla a
+las 13:00, la app le dice lo que queda **y lo que ya perdió, con nombre** — que es como se
+aprende a salir más temprano. Saliendo a las 8:00 pierde 0; a las 10:00, 1; a las 13:00, **6**.
+
+### Parámetros y reglas
+- `minutosPorEstacion: 10` y **una parada = área + operación** — decisiones de Ricardo, 18/9.
+  Dos personas lijando en Acabado son una sola parada: el método es el mismo.
+- La ventana sale de **`agendaDelDia`**, la misma que dibujan el Gantt y Estaciones. Si esta
+  pantalla repartiera el día por su cuenta, tres pantallas dirían tres horas del mismo ticket.
+- La ventana se **topa al fin de jornada**: la agenda reparte sin tope y un día sobrecargado
+  produce ventanas que acaban a las 19:30. Nadie observa a las 19:30 — y la parada avisa de que
+  ese ticket se pasa del día.
+- **La visita ES la inspección** del F2-40. No hay colección nueva ni una segunda contabilidad:
+  si Pablo anotó hoy en esa estación, sale de la ruta.
+- Las transversales y `Otra` no entran: no son una estación con método.
+
+**El bug que costó más encontrar fue del reloj, no del criterio.** `hhRuta(8.9999)` devolvía
+`08:00` en vez de `09:00` —los minutos daban 60 y la hora no subía— y la ruta se leía
+desordenada: 09:50, 09:00, 10:10. Parecía un fallo del algoritmo. Se pasa a minutos primero.
 
 ---
 
