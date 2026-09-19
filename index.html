@@ -24,7 +24,7 @@ const firebaseConfig = {
 
 // Version de la app. Va aqui arriba a proposito: es lo primero que se lee del archivo, asi que
 // sirve para saber que version esta publicada sin tener que recorrerlo entero.
-const VERSION_APP = 'v2026-09-26 \u00b7 F2-46';
+const VERSION_APP = 'v2026-09-19 \u00b7 F2-48';
 
 const app = initializeApp(firebaseConfig);
 // Caché persistente en disco (IndexedDB). Lo que se registra sin conexión sobrevive al
@@ -69,22 +69,38 @@ function siguienteDiaHabil(fecha) {
   if (d.getDay() === 0) d.setDate(d.getDate() + 1);
   return d;
 }
+// El sabado SE TRABAJA —la jornada va hasta la 13:00— pero esta funcion mandaba al lunes a
+// cualquier hora del sabado, y el desplegable ni siquiera ofrecia el sabado. Un sabado a las
+// 8:45 de la manana Andree no podia tarear para el dia que estaba empezando.
+//
+// La regla ahora es una sola para todos los dias: ANTES DEL CORTE, hoy; DESPUES, el siguiente
+// dia habil. Y el corte no se escribe a mano —ese es el error que ya cometimos tres veces con
+// el 8, el 17 y el 46.75— sino que se deriva de la jornada: dos horas y media antes de que
+// termine, que es cuando de verdad empieza a generarse el tareo del dia siguiente.
+//
+//   L-J  fin 17:30 -> corte 15:00   (el mismo 3pm de siempre)
+//   V    fin 18:00 -> corte 15:30
+//   S    fin 13:00 -> corte 10:30
+const HORAS_ANTES_DEL_CORTE = 2.5;
+
+function horaCorteTareo(fechaStr){
+  return horaFinJornada(fechaStr || hoyStr()) - HORAS_ANTES_DEL_CORTE;
+}
+
 function fechaEjecucionDefecto() {
   const ahora = new Date();
-  const dow = ahora.getDay();
   const objetivo = new Date();
-  if (dow === 6) {
-    // Sábado → lunes
-    objetivo.setDate(objetivo.getDate() + 2);
-  } else if (dow === 0) {
-    // Domingo → lunes
+  const dow = ahora.getDay();
+  const hAhora = ahora.getHours() + ahora.getMinutes() / 60;
+  // El domingo no se trabaja: no hay "hoy" que ofrecer.
+  if (dow === 0) {
     objetivo.setDate(objetivo.getDate() + 1);
-  } else if (ahora.getHours() >= 15) {
-    // L-V después de 3pm → mañana (si mañana es domingo, salta a lunes)
+    return objetivo.toLocaleDateString('es-PE');
+  }
+  if (hAhora >= horaCorteTareo(hoyStr())) {
     objetivo.setDate(objetivo.getDate() + 1);
     if (objetivo.getDay() === 0) objetivo.setDate(objetivo.getDate() + 1);
   }
-  // L-V antes de 3pm → hoy
   return objetivo.toLocaleDateString('es-PE');
 }
 function hoyStr() { return new Date().toLocaleDateString('es-PE'); }
@@ -371,8 +387,10 @@ async function init() {
   if(manana.getDay() === 0) manana.setDate(manana.getDate() + 1); // saltar domingo
   const diasNombres = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
   if(dow === 6) {
-    // Sábado: solo mostrar lunes
-    fe.innerHTML = `<option value="${lunes.toLocaleDateString('es-PE')}">Lunes — ${lunes.toLocaleDateString('es-PE')}</option>`;
+    // Sabado: HOY y lunes. Antes solo ofrecia el lunes, asi que un sabado por la manana no
+    // habia forma de tarear para el dia que estaba empezando — ni siquiera eligiendola a mano.
+    fe.innerHTML = `<option value="${hoyL}">Hoy — sábado ${hoyL}</option>` +
+      `<option value="${lunes.toLocaleDateString('es-PE')}">Lunes — ${lunes.toLocaleDateString('es-PE')}</option>`;
   } else if(dow === 0) {
     // Domingo: solo mostrar lunes
     fe.innerHTML = `<option value="${lunes.toLocaleDateString('es-PE')}">Lunes — ${lunes.toLocaleDateString('es-PE')}</option>`;
@@ -1187,7 +1205,7 @@ const GRUPOS_NAV = [
   { grupo:'',          paginas:['notas','config'] },
 ];
 const ETIQUETAS_NAV = {
-  hoy:'Hoy en planta', atencion:'Atención', tareo:'Generar tareo', cola:'Cola de OF', andree:'Registro Andree', kanban:'Kanban',
+  hoy:'Hoy en planta', atencion:'Atención', tareo:'Generar tareo', cola:'Cola de OF', andree:'Registro', kanban:'Kanban',
   rutas:'Rutas', metodos:'Métodos', maquinas:'Máquinas', torre:'Torre de Control', planificacion:'Planificación', personal:'Personal',
   m3:'M³ Semanal', dashboard:'Dashboard', historial:'Historial',
   notas:'Notas', config:'Configuración'
@@ -1922,6 +1940,19 @@ function renderAndree(){
          UA.medidos.length ? plural(UA.medidos.length, 'ticket medido', 'tickets medidos') : 'todavía sin mediciones');
   const lista=document.getElementById('andree-list');
   if(!hoyT.length&&!manT.length){lista.innerHTML='<div class="empty"><div class="empty-icon">⏱</div><div>No hay tareas.</div></div>';return;}
+  // Andree tenia que bajar por 39 tickets para encontrar el puesto que iba a medir. Buscar
+  // costaba mas que medir.
+  function filtrar(tickets){
+    const q = (_qAndree || '').trim().toLowerCase();
+    if(!q) return tickets;
+    return tickets.filter(t=>{
+      const campos = [(t.nombres||[]).join(' '), t.operacion||'', t.tarea||'', t.producto||'',
+                      t.proyecto||'', getAreaEjecucion(t)||''].join(' ').toLowerCase();
+      // Cada palabra por separado: "noel lij" encuentra el lijado de Noel.
+      return q.split(/\s+/).every(p => campos.indexOf(p) >= 0);
+    });
+  }
+
   function renderTickets(tickets){
     return tickets.map(t=>{
       const area=t.nombres&&t.nombres.length>0?(trabajadores.find(w=>w.nombre===t.nombres[0])?.area||''):'Sin área';
@@ -1981,17 +2012,34 @@ function renderAndree(){
       'los cerrados se esconden después de las 17:00. Las cifras de arriba sí son del ' +
       escapeHtml(hoy) + '.</div>';
   }
-  if(hoyT.length) html+=`<div style="margin-bottom:16px"><div style="font-size:11px;font-weight:700;color:#fff;background:var(--info-fuerte);padding:5px 14px;border-radius:6px;margin-bottom:8px;display:inline-block">📋 HOY — ${hoyT.length} ticket${hoyT.length!==1?'s':''}</div><div class="andree-list">${renderTickets(hoyT)}</div></div>`;
+  const hoyF = filtrar(hoyT), manF = filtrar(manT);
+  if((_qAndree||'').trim() && !hoyF.length && !manF.length){
+    html += '<div style="font-size:12px;color:var(--text-muted);padding:10px 0">' +
+      'Nada coincide con \u201c' + escapeHtml(_qAndree) + '\u201d.</div>';
+  }
+  if(hoyT.length) html+=`<div style="margin-bottom:16px"><div style="font-size:11px;font-weight:700;color:#fff;background:var(--info-fuerte);padding:5px 14px;border-radius:6px;margin-bottom:8px;display:inline-block">📋 HOY — ${hoyF.length}${hoyF.length!==hoyT.length?' de '+hoyT.length:''} ticket${hoyT.length!==1?'s':''}</div><div class="andree-list">${renderTickets(hoyF)}</div></div>`;
   if(manT.length){
     const fechaManT=manT[0]?.fechaEjecucion||manStr;
     const partesFM=fechaManT.split('/');
     const diaManT=new Date(partesFM[2],partesFM[1]-1,partesFM[0]);
     const diasSemana=['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
     const labelMan=fechaManT===manStr?`📅 MAÑANA`:`📅 ${diasSemana[diaManT.getDay()].toUpperCase()}`;
-    html+=`<div><div style="font-size:11px;font-weight:700;color:#fff;background:#7c3aed;padding:5px 14px;border-radius:6px;margin-bottom:8px;display:inline-block">${labelMan} — ${fechaManT} · ${manT.length} ticket${manT.length!==1?'s':''}</div><div class="andree-list">${renderTickets(manT)}</div></div>`;
+    html+=`<div><div style="font-size:11px;font-weight:700;color:#fff;background:#7c3aed;padding:5px 14px;border-radius:6px;margin-bottom:8px;display:inline-block">${labelMan} — ${fechaManT} · ${manF.length}${manF.length!==manT.length?' de '+manT.length:''} ticket${manT.length!==1?'s':''}</div><div class="andree-list">${renderTickets(manF)}</div></div>`;
   }
   lista.innerHTML=html;
 }
+
+// Vive fuera del HTML que se redibuja con cada snapshot: si estuviera dentro, cada ticket que
+// alguien guarda en otra maquina borraria lo que Andree acaba de escribir. Es la misma leccion
+// de los filtros del Dashboard.
+let _qAndree = '';
+function buscarAndree(v){
+  _qAndree = v || '';
+  renderAndree();
+  const i = document.getElementById('andree-q');
+  if(i){ i.value = _qAndree; i.focus(); }
+}
+window.buscarAndree = buscarAndree;
 
 async function registrarTiempo(fbId,n){
   const inp=document.getElementById(`tr-${fbId}`);
@@ -2313,7 +2361,7 @@ function renderHoy(){
     let cursor = H0, barras = fondo(), i = 0;
     tks.forEach(t => {
       i++;
-      const r = tramosTarea(cursor, t.tt||0, hayRef);
+      const r = tramosTarea(cursor, duracionEnAgenda(t), hayRef);
       const est = estadoTicket(t);
       const anchoMax = r.tramos.length ? Math.max(...r.tramos.map(x=>x.fin-x.inicio)) : 0;
       const px = anchoMax / span * 900;
@@ -2334,7 +2382,7 @@ function renderHoy(){
       cursor = r.cursor;
     });
     if(conHueco){
-      const asignadas = tks.reduce((s,t)=>s+(t.tt||0), 0);
+      const asignadas = tks.reduce((s,t)=>s+duracionEnAgenda(t), 0);
       const libre = Math.max(0, jornada - asignadas);
       if(libre >= 1 && cursor < H1)
         barras += `<div class="hoy-libre" style="left:${pct(cursor)}%;width:${pct(H1)-pct(cursor)}%">${libre.toFixed(1)} h libre</div>`;
@@ -2521,6 +2569,24 @@ function hayRefrigerio(fechaStr){
 // Devuelve los tramos a dibujar — una tarea que cruza el mediodia son dos — y donde queda el
 // cursor. Trabajar con tramos y no con un solo inicio/fin es lo que permite que la barra se
 // parta: una tarea de 4h que arranca a las 10:00 termina a las 15:00, no a las 14:00.
+// CUANTO OCUPA UN TICKET EN LA AGENDA DEL DIA. Lo que manda es lo MEDIDO, y solo si no hay
+// medicion se usa el plan.
+//
+// Lo vio Ricardo acompañando la ronda: un ticket planificado en 50 minutos que de verdad tomo
+// 10 seguia dibujandose de 50 en la pestaña Hoy despues de medirlo. Y no era un error de esa
+// pantalla: las tres que reparten el dia —Hoy, el Gantt diario y `agendaDelDia`— calculaban
+// con `t.tt` por su cuenta. Tres copias de la misma regla es como se desincronizan.
+//
+// `tt_real` es la fuente preferida porque desde el F2-45 puede venir de un cierre parcial —las
+// horas de lo que DE VERDAD se hizo— y ahi `n * tu_real` ya no vale: `n` quedo reducido a lo
+// hecho, pero el ticket pudo partirse y el calculo a mano perderia el matiz.
+function duracionEnAgenda(t){
+  if(!t) return 0;
+  if(t.tt_real != null) return t.tt_real;
+  if(t.tu_real != null && t.n != null) return t.n * t.tu_real / 60;
+  return t.tt || 0;
+}
+
 function tramosTarea(cursor, dur, hayRef){
   const tramos=[];
   let resto=Math.max(0, dur||0);
@@ -2630,7 +2696,7 @@ function renderGanttDiario(){
     let cursor=horaInicio;
     const bloques=[];
     tks.forEach(t=>{
-      const r=tramosTarea(cursor,t.tt||0,hayRef);
+      const r=tramosTarea(cursor,duracionEnAgenda(t),hayRef);
       bloques.push({t, tramos:r.tramos, inicio:r.tramos.length?r.tramos[0].inicio:cursor, fin:r.cursor});
       cursor=r.cursor;
     });
@@ -6760,7 +6826,7 @@ function agendaDelDia(fecha){
     let cursor = 8;
     agenda[nom] = [];
     porTrab[nom].forEach(t => {
-      const r = tramosTarea(cursor, t.tt || 0, hayRef);
+      const r = tramosTarea(cursor, duracionEnAgenda(t), hayRef);
       r.tramos.forEach(x => agenda[nom].push({t, inicio: x.inicio, fin: x.fin}));
       cursor = r.cursor;
     });
@@ -9962,6 +10028,11 @@ nav .tab{font-family:var(--f-rotulo);}
 .hoy-bar{position:absolute;top:5px;bottom:5px;border:0;border-radius:8px;padding:0 8px;
   display:flex;align-items:center;overflow:hidden;background:var(--acc);color:var(--text-inverso);
   font:inherit;font-size:var(--hoy-fs);font-weight:500;white-space:nowrap;cursor:pointer;text-align:left;}
+/* Dos barras del mismo color pegadas se leen como una sola tarea. Un hilo del color del fondo
+   las separa sin pintar nada nuevo: no se gasta color, se gasta un borde. */
+.hoy-bar{box-shadow:inset -2px 0 0 var(--surface-1), inset 2px 0 0 var(--surface-1);}
+.hoy-bar.m1{box-shadow:inset 2px 0 0 var(--surface-1);}
+.hoy-bar.m2{box-shadow:inset -2px 0 0 var(--surface-1);}
 .hoy-bar.m1{border-radius:8px 0 0 8px;}
 .hoy-bar.m2{border-radius:0 8px 8px 0;}
 .hoy-bar:hover{filter:brightness(1.07);}
@@ -11105,6 +11176,12 @@ td{padding:10px 12px;border-bottom:0.5px solid #f5f4f0;vertical-align:middle;}tr
   </div>
   <div class="card">
     <div class="card-title">Tareas del día — registro de tiempos reales</div>
+    <div style="margin-bottom:10px">
+      <input type="text" id="andree-q" placeholder="Buscar persona, área, operación o producto…"
+             oninput="buscarAndree(this.value)"
+             style="width:100%;max-width:420px;height:34px;border:0.5px solid var(--border);
+                    border-radius:8px;padding:0 11px;font-size:13px;background:var(--surface-0)">
+    </div>
     <div id="andree-list"><div class="empty"><div class="empty-icon">⏱</div><div>No hay tareas para hoy.</div></div></div>
   </div>
 </div>

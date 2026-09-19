@@ -39,7 +39,7 @@ node arnes.mjs
 
 Encuentra solo `../Matransa/index.html` y `../Backups/`. Si faltan los backups corre las
 pruebas que solo miran el código y avisa. Se puede forzar con `MATRANSA_HTML` y
-`MATRANSA_BACKUPS`. Hoy son **723 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
+`MATRANSA_BACKUPS`. Hoy son **741 pruebas**. La sección 7 necesita `backup5.json`; la 23 se conforma con cualquier
 backup reciente y se salta sola si no hay ninguno.
 
 ---
@@ -116,7 +116,46 @@ capacidadSemana:    8.5×4 + 9 + 5 = 48h
 ```
 
 Nunca escribir `8`, `17` ni `46.75` a mano. Todo sale de esas funciones — hubo tres parches
-seguidos arreglando justamente eso.
+seguidos arreglando justamente eso. **Y un cuarto (F2-48): el `15` de la hora de corte.**
+
+### La hora de corte del tareo — `horaCorteTareo()` (F2-48)
+Antes del corte el tareo es para **hoy**; después, para el siguiente día hábil. El corte se
+**deriva** de la jornada, no se escribe:
+
+```
+corte = horaFinJornada(día) − HORAS_ANTES_DEL_CORTE (2.5)
+
+L-J  fin 17:30 → 15:00     V  fin 18:00 → 15:30     S  fin 13:00 → 10:30
+```
+
+**El bug que cerró:** la regla vieja decía *sábado → lunes* a cualquier hora, y el desplegable
+el sábado **solo ofrecía el lunes**. Un sábado a las 8:45 Andree no podía tarear para el día que
+estaba empezando — ni eligiéndolo a mano. La app sabía que el sábado se trabaja hasta la 13:00
+(`jornadaProductiva` sábado = 5 h) y el selector de fecha lo ignoraba: dos partes de la app
+creían cosas distintas.
+
+Ninguna prueba cubría `fechaEjecucionDefecto()`. Por eso sobrevivió. Ahora la sección 35 la
+prueba hora por hora **en cuatro zonas horarias**, construyendo los instantes en hora local.
+
+### `duracionEnAgenda(t)` — lo MEDIDO manda sobre el plan (F2-47)
+Lo vio Ricardo acompañando la ronda: *"si hacer 5 piezas me iba a durar 10 minutos, el estimado
+son 50; pero solo se demoraban 2. Andree marca el tiempo, vuelve a la pestaña Hoy, y la barra
+sigue del mismo tamaño."*
+
+Tenía razón, y no era un fallo de esa pantalla: **las tres que reparten el día** —Hoy en planta,
+el Gantt diario y `agendaDelDia`— calculaban con `t.tt` cada una por su cuenta. Tres copias de la
+misma regla es como se desincronizan.
+
+```
+tt_real   si existe   ← puede venir de un cierre parcial (F2-45): horas de lo que se hizo
+n×tu_real si hay medición
+tt        si no hay nada
+```
+
+**Tiene efecto en cascada y es a propósito**: si la primera tarea encoge, las siguientes se
+corren hacia adelante, cambia la hora en que un área se queda sin trabajo y cambian las ventanas
+de la ruta de Pablo. Eso *es* la corrección — la agenda refleja lo que se sabe, no lo que se
+planificó. El arnés prohíbe que alguien vuelva a escribir `tramosTarea(cursor, t.tt||0, …)`.
 
 `tramosTarea(cursor, dur, hayRef)` reparte la duración de una tarea saltando el refrigerio:
 una tarea que cruza el mediodía se dibuja en dos tramos. **Devuelve `{tramos:[{inicio,fin}], cursor}`
